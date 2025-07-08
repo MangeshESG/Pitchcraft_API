@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.DTOs;
 using PitchGenApi.Models;
@@ -77,5 +78,83 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
+        [HttpGet("contacts/by-client-datafile")]
+        public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            if (clientId <= 0 || dataFileId <= 0)
+                return BadRequest("Both clientId and dataFileId must be greater than 0.");
+
+            // Check if data file exists and belongs to this client
+            var dataFileExists = await _context.data_files
+                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+            if (!dataFileExists)
+                return NotFound("No data file found for this client.");
+
+            // Fetch contacts for that data file
+            var contacts = await _context.contacts
+                .Where(c => c.DataFileId == dataFileId)
+                .Select(c => new
+                {
+                    c.id,
+                    c.full_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    c.email_subject,
+                    c.email_body,
+                    c.created_at,
+                    c.updated_at
+                })
+                .ToListAsync();
+
+            return Ok(new
+            {
+                contactCount = contacts.Count,
+                contacts
+            });
+        }
+
+        [HttpPost("contacts/update-email")]
+        public async Task<IActionResult> UpdateContactEmail([FromBody] ContactEmailUpdateDto request)
+        {
+            if (request.ClientId <= 0 || request.DataFileId <= 0 || request.ContactId <= 0)
+                return BadRequest("ClientId, DataFileId, and ContactId are required.");
+
+            var dataFile = await _context.data_files
+                .FirstOrDefaultAsync(df => df.id == request.DataFileId && df.client_id == request.ClientId);
+
+            if (dataFile == null)
+                return NotFound("Data file not found for this client.");
+
+            var contact = await _context.contacts
+                .FirstOrDefaultAsync(c => c.id == request.ContactId && c.DataFileId == request.DataFileId);
+
+            if (contact == null)
+                return NotFound("Contact not found for this data file.");
+
+            // ✅ null ya empty string dono skip honge
+            if (!string.IsNullOrWhiteSpace(request.EmailSubject))
+                contact.email_subject = request.EmailSubject;
+
+            if (!string.IsNullOrWhiteSpace(request.EmailBody))
+                contact.email_body = request.EmailBody;
+
+            contact.updated_at = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                success = true,
+                message = "Contact email subject/body updated successfully.",
+                contactId = contact.id
+            });
+        }
+
+
     }
 }
