@@ -1,0 +1,6 @@
+@PitchGenApi_HostAddress = http://localhost:5052
+
+GET {{PitchGenApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
