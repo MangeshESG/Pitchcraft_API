@@ -21,6 +21,7 @@ namespace PitchGenApi.Models
 
         public DateTime created_at { get; set; }
         public DateTime? updated_at { get; set; }
+        public DateTime? email_sent_at { get; set; }
 
         public DataFile data_file { get; set; } // Navigation
     }

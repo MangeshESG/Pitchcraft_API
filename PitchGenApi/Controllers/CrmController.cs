@@ -52,7 +52,8 @@ namespace PitchGenApi.Controllers
                     email_subject = c.emailSubject,
                     email_body = c.emailBody,
                     created_at = DateTime.UtcNow,
-                    updated_at = null
+                    updated_at = null,
+                    email_sent_at = null,
                 }).ToList();
 
                 _context.contacts.AddRange(contacts);
@@ -107,7 +108,8 @@ namespace PitchGenApi.Controllers
                     c.email_subject,
                     c.email_body,
                     c.created_at,
-                    c.updated_at
+                    c.updated_at,
+                    c.email_sent_at
                 })
                 .ToListAsync();
 
@@ -157,6 +159,22 @@ namespace PitchGenApi.Controllers
             });
         }
 
+        [HttpGet("by-client")]
+        public async Task<IActionResult> GetDataFilesByClientId(int clientId)
+        {
+            try
+            {
+                var result = await _context.data_files
+                    .Where(x => x.client_id == clientId)
+                    .ToListAsync();
+
+                return Ok(result); // 🔁 Returns full list of DataFile objects
+            }
+            catch (Exception ex)
+            {
+                return BadRequest("Error: " + ex.Message);
+            }
+        }
 
     }
 }
