@@ -21,7 +21,7 @@ namespace PitchGenApi.Services
             _httpClient = httpClient;
             _context = context;
 
-            _httpClient.DefaultRequestHeaders.Add("Authorization", "Bearer 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");
+            _httpClient.DefaultRequestHeaders.Add("Authorization", "Bearer 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");
 
         }
 

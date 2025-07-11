@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -71,13 +71,14 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("MyCorsPolicy", policy =>
     {
-        policy.WithOrigins("http://localhost:3000")
+        policy.WithOrigins("http://pitchcraft.dataji.co", "http://localhost:3000",
+                "https://localhost:3000")
               .AllowAnyMethod()
               .AllowAnyHeader()
-              .AllowCredentials()
-              .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS");
+              .AllowCredentials();
     });
 });
+
 
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
