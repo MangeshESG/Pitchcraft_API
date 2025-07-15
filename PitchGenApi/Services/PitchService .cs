@@ -2,6 +2,7 @@
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
@@ -14,19 +15,21 @@ namespace PitchGenApi.Services
     {
         private readonly HttpClient _httpClient;
         private readonly AppDbContext _context;
+        private readonly string _apiKey; // ✅ Declare the field
 
 
-        public PitchService(HttpClient httpClient, AppDbContext context)
+
+        public PitchService(HttpClient httpClient, AppDbContext context, IOptions<OpenAISettings> openAIOptions)
         {
             _httpClient = httpClient;
             _context = context;
+            _apiKey = openAIOptions.Value.ApiKey;
 
-            _httpClient.DefaultRequestHeaders.Add("Authorization", "Bearer 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");
-
+            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}"); // ✅ Set the header with the key
         }
 
 
-        
+
 
         public async Task<PitchResult> GeneratePitchAsync(EnquiryRequest request)
         {

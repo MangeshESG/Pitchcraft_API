@@ -8,6 +8,8 @@ using PitchGenApi.Services;
 using PitchGenApi.Repository;
 using Microsoft.OpenApi.Models;
 using PitchGenApi.Services;
+using PitchGenApi.Model;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -95,6 +97,10 @@ builder.Services.AddHttpClient<ZohoService>(client =>
     // Remove the line below if you're managing headers per request
     // client.DefaultRequestHeaders.Add("Accept", "application/json");
 });
+
+builder.Services.Configure<OpenAISettings>(
+    builder.Configuration.GetSection("OpenAI"));
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
