@@ -71,7 +71,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("MyCorsPolicy", policy =>
     {
-        policy.WithOrigins("http://pitchcraft.dataji.co", "http://localhost:3000",
+        policy.WithOrigins("https://pitchkraft.ai", "http://localhost:3000",
                 "https://localhost:3000")
               .AllowAnyMethod()
               .AllowAnyHeader()
@@ -107,6 +107,17 @@ app.UseCors("MyCorsPolicy");
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.Use(async (context, next) =>
+{
+    if (!context.Request.Path.Value.StartsWith("/api") &&
+        !System.IO.Path.HasExtension(context.Request.Path.Value))
+    {
+        context.Request.Path = "/index.html";
+    }
+
+    await next();
+});
 
 app.MapControllers();
 
