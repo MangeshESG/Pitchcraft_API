@@ -15,6 +15,8 @@ public class SequenceStep
 
     public string TimeZone { get; set; }
     public string zohoviewName { get; set; }
+    public int? DataFileId { get; set; }
+
     public int SmtpID { get; set; }
     public string? BccEmail { get; set; }
     public bool IsSent { get; set; }
