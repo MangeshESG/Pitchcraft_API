@@ -12,7 +12,9 @@ public class EmailOpenTrackDto
     public int ClientId { get; set; }
 
     [NoEncodedChars]
-    public string ZohoViewName { get; set; }
+    public string? ZohoViewName { get; set; }
+    [NoEncodedChars]
+    public int? DataFileId { get; set; }
 
     [NoEncodedChars]
     public string? FullName { get; set; }

@@ -13,10 +13,13 @@ namespace PitchGenApi.Controllers
     public class CrmController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly ContactRepository _repository;
 
         public CrmController(AppDbContext context)
         {
             _context = context;
+            _repository = new ContactRepository(context);
+
         }
 
         [HttpPost("uploadcontacts")]
@@ -76,6 +79,26 @@ namespace PitchGenApi.Controllers
                     error = ex.InnerException?.Message ?? ex.Message
                 });
             }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetContacts([FromQuery] int? dataFileId)
+        {
+            var contacts = await _repository.GetContactsAsync(dataFileId);
+            return Ok(contacts);
+        }
+        [HttpGet("Singel-contact")]
+        public async Task<IActionResult> GetContactWithNext([FromQuery] int dataFileId, [FromQuery] int? contactId = null)
+        {
+            if (dataFileId == 0)
+                return BadRequest("dataFileId is required.");
+
+            var result = await _repository.GetContactWithNextAsync(dataFileId, contactId);
+
+            if (result == null)
+                return NotFound("Contact not found.");
+
+            return Ok(result);
         }
     }
 }

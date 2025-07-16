@@ -7,7 +7,9 @@
     public DateTime Timestamp { get; set; }
     public int ClientId { get; set; }
     public string TargetUrl { get; set; }
-    public string ZohoViewName { get; set; }
+    public string? ZohoViewName { get; set; }
+    public int? DataFileId { get; set; }
+
     public string? Full_Name { get; set; }
     public string? Location { get; set; }
     public string? Company { get; set; }

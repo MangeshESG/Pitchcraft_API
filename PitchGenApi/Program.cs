@@ -85,6 +85,7 @@ builder.Services.AddScoped<IPromptRepository, PromptRepository>();
 builder.Services.AddScoped<IPitchService, PitchService>();
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddHostedService<EmailSchedulerService>();
+builder.Services.AddScoped<ContactRepository>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddHttpClient<ZohoService>(client =>

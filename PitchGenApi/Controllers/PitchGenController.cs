@@ -791,20 +791,20 @@ namespace PitchGenApi.Controllers
         }
 
 
-        [HttpGet("zohoclientid/{clientId}")]
-        public async Task<IActionResult> GetZohoClientId(int clientId)
+        [HttpGet("DataFileclientid/{clientId}")]
+        public async Task<IActionResult> GetDatafileClientId(int clientId)
         {
             // Check if ClientID exists in the database
-            var zohoViewIdDetails = await _context.zohoViewIddetails
-                                                  .Where(z => z.clientId == clientId)
+            var DataFileDetails = await _context.data_files
+                                                  .Where(z => z.client_id == clientId)
                                                   .ToListAsync();
 
-            if (zohoViewIdDetails == null || !zohoViewIdDetails.Any())
+            if (DataFileDetails == null || !DataFileDetails.Any())
             {
                 return NotFound(new { Message = "No records found for the given Client ID" });
             }
 
-            return Ok(zohoViewIdDetails);
+            return Ok(DataFileDetails);
         }
 
 
