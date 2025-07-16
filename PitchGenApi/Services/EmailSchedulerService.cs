@@ -5,47 +5,55 @@ using PitchGenApi.Services;
 
 public class EmailSchedulerService : BackgroundService
 {
-    //private readonly ILogger<EmailSchedulerService> _logger;
     private readonly IServiceProvider _serviceProvider;
-    private readonly ZohoService _zohoService;
 
-    public EmailSchedulerService(
-        // ILogger<EmailSchedulerService> logger,
-        IServiceProvider serviceProvider,
-        ZohoService zohoService)
+    public EmailSchedulerService(IServiceProvider serviceProvider)
     {
-        //_logger = logger;
         _serviceProvider = serviceProvider;
-        _zohoService = zohoService;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        Console.WriteLine("✅ EmailSchedulerService started...");
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                Console.WriteLine("🔄 Checking for pending steps...");
+
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
                 var dueSteps = await context.SequenceSteps
-                    .Where(s => !s.IsSent)
+                    .Where(s => !s.TestIsSent)
                     .ToListAsync(stoppingToken);
+
+                Console.WriteLine($"🟡 Found {dueSteps.Count} pending step(s).");
 
                 var groupedSteps = dueSteps
                     .GroupBy(s => s.ScheduledDate + s.ScheduledTime);
 
                 var groupTasks = groupedSteps.Select(async group =>
                 {
+                    Console.WriteLine($"🧩 Processing group scheduled at: {group.Key}");
+
                     var innerTasks = group.Select(async step =>
                     {
                         try
                         {
-                            var helper = new ScheduledEmailSendingHelper(_serviceProvider, _zohoService);
+                            Console.WriteLine($"➡️  Starting step ID: {step.Id}");
+
+                            var contactRepo = scope.ServiceProvider.GetRequiredService<ContactRepository>();
+                            var helper = new ScheduledEmailSendingHelper(_serviceProvider, contactRepo);
+
                             await helper.ProcessStepAsync(step, stoppingToken);
+
+                            Console.WriteLine($"✅ Finished step ID: {step.Id}");
                         }
                         catch (Exception ex)
                         {
+                            Console.WriteLine($"❌ Error in step ID: {step.Id} - {ex.Message}");
                         }
                     });
 
@@ -53,12 +61,17 @@ public class EmailSchedulerService : BackgroundService
                 });
 
                 await Task.WhenAll(groupTasks);
+
+                Console.WriteLine("⏳ Waiting 20 seconds for next cycle...");
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"🔥 Fatal error in scheduler loop: {ex.Message}");
             }
 
             await Task.Delay(TimeSpan.FromSeconds(20), stoppingToken);
         }
+
+        Console.WriteLine("🛑 EmailSchedulerService stopped.");
     }
 }

@@ -16,6 +16,7 @@ public class EmailSendingHelper
 
     public async Task<bool> SendEmailUsingSmtp(
         int clientId,
+        int dataFileId,
         string toEmail,
         string subject,
         string body,
@@ -61,8 +62,8 @@ public class EmailSendingHelper
             // Send main email
             if (!string.IsNullOrWhiteSpace(toEmail))
             {
-                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, body, clientId, zohoViewName, fullName, location, company, website, linkedin, jobtitle, trackingId);
-                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, zohoViewName, fullName, location, company, website, linkedin, jobtitle, trackingId);
+                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, body, clientId, dataFileId, fullName, location, company, website, linkedin, jobtitle, trackingId);
+                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, fullName, location, company, website, linkedin, jobtitle, trackingId);
 
                 using var toMessage = new MailMessage
                 {
@@ -81,7 +82,8 @@ public class EmailSendingHelper
                     ToEmail = toEmail,
                     Subject = subject,
                     Body = bodyWithTracking,
-                    zohoViewName = zohoViewName,
+                    zohoViewName = "from pitch craft",
+                    DataFileId = dataFileId,
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
                     TrackingId = Guid.Parse(trackingId),
@@ -120,7 +122,8 @@ public class EmailSendingHelper
                 Body = body,
                 IsSuccess = false,
                 ErrorMessage = ex.Message,
-                zohoViewName = zohoViewName,
+                zohoViewName = "from pitch craft",
+                DataFileId= dataFileId,
                 SentAt = DateTime.UtcNow,
                 process_name = "Singel"
             });

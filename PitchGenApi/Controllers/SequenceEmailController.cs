@@ -17,14 +17,14 @@ namespace PitchGenApi.Controllers
     public class SequenceEmailController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ZohoService _zohoService;
+        private readonly ContactRepository _contactRepository;
         private readonly EmailSendingHelper _emailHelper;
 
 
-        public SequenceEmailController(AppDbContext context, ZohoService zohoService, EmailSendingHelper emailHelper)
+        public SequenceEmailController(AppDbContext context, ContactRepository contactRepository, EmailSendingHelper emailHelper)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
-            _zohoService = zohoService ?? throw new ArgumentNullException(nameof(zohoService));
+            _contactRepository = contactRepository;
             _emailHelper = emailHelper;
         }
 
@@ -89,9 +89,10 @@ namespace PitchGenApi.Controllers
                         TimeZone = dto.TimeZone,
                         zohoviewName = dto.zohoviewName?.Trim() ?? string.Empty,
                         BccEmail = dto.BccEmail,
-                        TestIsSent = true,
+                        DataFileId = dto.DataFileId,
+                        TestIsSent = false,
                         SmtpID = dto.SmtpID,
-                        IsSent = false
+                        IsSent = true
                     };
 
                     newSteps.Add(entity);
@@ -261,58 +262,57 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("send-singleEmail")]
-        public async Task<IActionResult> SendSingleEmail([FromQuery] string ClientId, string zohoViewName, [FromQuery] string pageToken = null, [FromQuery] int SmtpID = 0, [FromQuery] string BccEmail = null)
+        public async Task<IActionResult> SendSingleEmail([FromQuery] int clientId, [FromQuery] int dataFileId, [FromQuery] int? contactId = null, [FromQuery] int smtpId = 0, [FromQuery] string bccEmail = null)
         {
             try
             {
                 ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
-                
+                // Get contact with optional next
+                var contactWithNext = await _contactRepository.GetContactWithNextAsync(dataFileId, contactId);
+                if (contactWithNext == null || contactWithNext.CurrentContact == null || string.IsNullOrWhiteSpace(contactWithNext.CurrentContact.email))
+                    return BadRequest("No valid contact found for the given DataFileId and ContactId.");
 
-                var result = await _zohoService.GetListviewContacts(zohoViewName, pageToken, false, 1);
+                var contact = contactWithNext.CurrentContact;
 
-                var contact = result.Data.FirstOrDefault();
-                if (contact == null || string.IsNullOrWhiteSpace(contact.Email))
-                    return BadRequest("No valid Zoho contact found.");
+                // Basic values
+                string toEmail = contact.email;
+                string subject = contact.email_subject ?? "No Subject";
+                string rawBody = contact.email_body ?? "No Content";
+                string body = string.IsNullOrWhiteSpace(rawBody) ? "No content provided." : rawBody;
 
-                string toEmail = contact.Email;
-                string location = contact.Mailing_Country;
-                string company = contact.Account_name_friendlySingle_Line_12;
-                string website = contact.Website;
-                string linkedin = contact.LinkedIn_URL;
-                string jobtitle = contact.Job_Title;
-                string fullName = string.IsNullOrWhiteSpace(contact.Full_Name) ? "Unknown" : contact.Full_Name;
-                string rawBody = contact.Sample_email_body;
-                string body = "No content provided.";
-                string subject = contact.job_post_URL;
+                // Send email using SMTP
+                var success = await _emailHelper.SendEmailUsingSmtp(
+                    clientId,
+                    dataFileId,
+                    toEmail,
+                    subject,
+                    body,
+                    bccEmail,
+                    smtpId,
+                    dataFileId.ToString(),
+                    contact.full_name,
+                    contact.country_or_address,
+                    contact.company_name,
+                    contact.website,
+                    contact.linkedin_url,
+                    contact.job_title
+                );
 
-                if (!string.IsNullOrWhiteSpace(rawBody))
-                {
-                    var lines = rawBody.Split('\n');
-                    var filteredLines = lines
-                        .Where(line => !line.TrimStart().StartsWith("Subject:", StringComparison.OrdinalIgnoreCase));
-
-                    var cleanedBody = string.Join("\n", filteredLines).Trim();
-                    if (!string.IsNullOrWhiteSpace(cleanedBody))
-                        body = cleanedBody;
-                }
-
-                var success = await _emailHelper.SendEmailUsingSmtp(Convert.ToInt32(ClientId), toEmail, subject, body, BccEmail, SmtpID, zohoViewName,fullName,location,company,website,linkedin,jobtitle);
                 if (!success)
                     return StatusCode(500, "Failed to send email. Please try again later.");
 
                 return Ok(new
                 {
                     message = $"Email sent successfully to {toEmail}.",
-                    contactName = fullName,
-                    currentPageToken = pageToken,
-                    nextPageToken = result.Info.Next_Page_Token,
-                    isLastPage = string.IsNullOrEmpty(result.Info.Next_Page_Token)
+                    contactName = contact.full_name,
+                    currentContactId = contact.id,
+                    nextContactId = contactWithNext.NextContactId
                 });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"An unexpected error occurred: {ex.Message}");
+                return StatusCode(500, $"Unexpected error: {ex.Message}");
             }
         }
 
@@ -486,7 +486,8 @@ namespace PitchGenApi.Controllers
                     s.SmtpID,
                     s.zohoviewName,
                     s.IsSent,
-                    s.TestIsSent
+                    s.TestIsSent,
+                    s.DataFileId
                 });
 
                 return Ok(result);
@@ -606,6 +607,7 @@ namespace PitchGenApi.Controllers
                 step.zohoviewName = dto.zohoviewName?.Trim() ?? string.Empty;
                 step.BccEmail = dto.BccEmail;
                 step.SmtpID = dto.SmtpID;
+                step.DataFileId = dto.DataFileId;
 
 
                 _context.SequenceSteps.Update(step);

@@ -44,7 +44,8 @@ public class OpenTrackingController : ControllerBase
                 EventType = "Open",
                 Timestamp = DateTime.UtcNow,
                 ClientId = dto.ClientId,
-                ZohoViewName = zohoView,
+                ZohoViewName = "from pitch craft",
+                DataFileId = dto.DataFileId,
                 Full_Name = fullName,
                 Location = location,
                 Company = company,
@@ -68,23 +69,15 @@ public class OpenTrackingController : ControllerBase
         if (string.IsNullOrWhiteSpace(dto.Email) ||
             string.IsNullOrWhiteSpace(dto.Url) ||
             dto.TrackingId == Guid.Empty ||
-            dto.ClientId == 0)
+            dto.ClientId == 0 ||
+            dto.DataFileId == 0) // ✅ Agar DataFileId invalid hai toh bhi redirect
         {
-            return BadRequest("Missing required parameters.");
+            return Redirect(dto.Url);
         }
 
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
 
-        var suspiciousAgents = new[]
-        {
-        "googleimageproxy",
-        "thunderbird",
-        "yahoo",
-        "curl",
-        "bot",
-        "preview",
-        "proxy"
-    };
+        var suspiciousAgents = new[] { "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy" };
 
         bool isTrustedBrowser = userAgent.Contains("chrome") ||
                                 userAgent.Contains("firefox") ||
@@ -106,15 +99,12 @@ public class OpenTrackingController : ControllerBase
         var sentEmail = await _context.EmailLogs
             .FirstOrDefaultAsync(e => e.TrackingId == dto.TrackingId);
 
-        if (sentEmail != null)
+        if (sentEmail != null && sentEmail.SentAt.HasValue)
         {
-            if (sentEmail.SentAt.HasValue)
+            var timeSinceSent = DateTime.UtcNow - sentEmail.SentAt.Value;
+            if (timeSinceSent.TotalSeconds < 80)
             {
-                var timeSinceSent = DateTime.UtcNow - sentEmail.SentAt.Value;
-                if (timeSinceSent.TotalSeconds < 80)
-                {
-                    return Redirect(dto.Url);
-                }
+                return Redirect(dto.Url);
             }
         }
 
@@ -132,8 +122,9 @@ public class OpenTrackingController : ControllerBase
                 EventType = "Click",
                 Timestamp = DateTime.UtcNow,
                 ClientId = dto.ClientId,
+                DataFileId = dto.DataFileId,
+                ZohoViewName = "from pitch craft",
                 TargetUrl = Decode(dto.Url),
-                ZohoViewName = Decode(dto.ZohoViewName),
                 Full_Name = Decode(dto.FullName),
                 Location = Decode(dto.Location),
                 Company = Decode(dto.Company),
