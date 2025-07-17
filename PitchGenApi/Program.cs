@@ -73,7 +73,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("MyCorsPolicy", policy =>
     {
-        policy.WithOrigins("https://pitchkraft.ai", "http://localhost:3000",
+        policy.WithOrigins("https://app.pitchkraft.ai", "http://localhost:3000",
                 "https://localhost:3000")
               .AllowAnyMethod()
               .AllowAnyHeader()
