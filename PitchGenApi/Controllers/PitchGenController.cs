@@ -833,7 +833,7 @@ namespace PitchGenApi.Controllers
                 await _context.SaveChangesAsync();
 
                 // Return the created object
-                return CreatedAtAction(nameof(GetZohoClientId),
+                return CreatedAtAction(nameof(GetDatafileClientId),
                     new { clientId = newZohoView.clientId },
                     newZohoView);
             }

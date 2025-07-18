@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.DTOs;
 using PitchGenApi.Models;
@@ -99,6 +100,45 @@ namespace PitchGenApi.Controllers
                 return NotFound("Contact not found.");
 
             return Ok(result);
+        }
+
+        [HttpPost("delete-contacts-and-file")]
+        public async Task<IActionResult> DeleteContactsAndFile([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            try
+            {
+                // Step 1: Check if data_file exists
+                var dataFile = await _context.data_files
+                    .FirstOrDefaultAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+                if (dataFile == null)
+                {
+                    return NotFound("Data file not found for the given client.");
+                }
+
+                // Step 2: Get related contacts
+                var contactsToDelete = _context.contacts
+                    .Where(c => c.DataFileId == dataFileId);
+
+                int deletedContacts = await contactsToDelete.CountAsync();
+
+                // Step 3: Delete contacts
+                _context.contacts.RemoveRange(contactsToDelete);
+
+                // Step 4: Delete data file
+                _context.data_files.Remove(dataFile);
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    Message = $"Deleted {deletedContacts} contacts and data file ID {dataFileId} successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = "Internal server error", Error = ex.Message });
+            }
         }
     }
 }
