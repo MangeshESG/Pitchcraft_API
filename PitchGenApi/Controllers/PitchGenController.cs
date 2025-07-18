@@ -833,7 +833,7 @@ namespace PitchGenApi.Controllers
                 await _context.SaveChangesAsync();
 
                 // Return the created object
-                return CreatedAtAction(nameof(GetDatafileClientId),
+                return CreatedAtAction(nameof(GetZohoClientId),
                     new { clientId = newZohoView.clientId },
                     newZohoView);
             }
@@ -870,23 +870,7 @@ namespace PitchGenApi.Controllers
                 _context.zohoViewIddetails.Remove(zohoView);
                 await _context.SaveChangesAsync();
 
-                return Ok(new
-                {
-                    Message = "Record deleted successfully",
-                    DeletedRecord = new
-                    {
-                        ZohoViewId = zohoviewId,
-                        ClientId = clientId
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                // Log the exception here
-                return StatusCode(500, new { Message = "An error occurred while deleting the record", Error = ex.Message });
-            }
-        }
-
+     
 
 
 
