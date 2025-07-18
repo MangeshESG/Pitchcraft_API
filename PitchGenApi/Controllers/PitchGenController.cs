@@ -229,8 +229,13 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("process")]
-        public async Task<IActionResult> Process([FromBody] string searchTerm, string instructions, string ModelName, int searchCount)
+        public async Task<IActionResult> Process([FromBody] ProcessRequest request)
         {
+            // Extract parameters from request body
+            var searchTerm = request.SearchTerm;
+            var instructions = request.Instructions;
+            var ModelName = request.ModelName;
+            var searchCount = request.SearchCount;
             // Step 1: Call Search
             var searchResult = await Search(searchTerm);
 
@@ -287,6 +292,7 @@ namespace PitchGenApi.Controllers
 
             return BadRequest(new { Message = "Invalid search term or no results found." });
         }
+
 
 
 
