@@ -808,85 +808,9 @@ namespace PitchGenApi.Controllers
         }
 
 
-        [HttpPost("addzohoview")]
-        public async Task<IActionResult> AddZohoView([FromBody] ZohoViewCreateModel model)
-        {
-            try
-            {
-                // Validate the input
-                if (!ModelState.IsValid)
-                {
-                    return BadRequest(ModelState);
-                }
+      
 
-                // Create new zohoViewIddetails object
-                var newZohoView = new zohoViewIddetails
-                {
-                    zohoviewId = model.zohoviewId,
-                    zohoviewName = model.zohoviewName,
-                    clientId = model.clientId,
-                    TotalContact = model.TotalContact
-                };
-
-                // Add to database
-                await _context.zohoViewIddetails.AddAsync(newZohoView);
-                await _context.SaveChangesAsync();
-
-                // Return the created object
-                return CreatedAtAction(nameof(GetZohoClientId),
-                    new { clientId = newZohoView.clientId },
-                    newZohoView);
-            }
-            catch (Exception ex)
-            {
-                // Log the exception here
-                return StatusCode(500, new { Message = "An error occurred while creating the record", Error = ex.Message });
-            }
-        }
-
-
-        [HttpPost("deletezohoview/{zohoviewId}/{clientId}")]
-        public async Task<IActionResult> DeleteZohoView(string zohoviewId, int clientId)
-        {
-            try
-            {
-                // Validate input parameters
-                if (string.IsNullOrEmpty(zohoviewId))
-                {
-                    return BadRequest(new { Message = "Zoho View ID cannot be empty" });
-                }
-
-                // Find the specific record using both zohoviewId and clientId
-                var zohoView = await _context.zohoViewIddetails
-                    .FirstOrDefaultAsync(z => z.zohoviewId == zohoviewId && z.clientId == clientId);
-
-                // Check if record exists
-                if (zohoView == null)
-                {
-                    return NotFound(new { Message = "No record found with the specified Zoho View ID and Client ID" });
-                }
-
-                // Remove from database
-                _context.zohoViewIddetails.Remove(zohoView);
-                await _context.SaveChangesAsync();
-
-                return Ok(new
-                {
-                    Message = "Record deleted successfully",
-                    DeletedRecord = new
-                    {
-                        ZohoViewId = zohoviewId,
-                        ClientId = clientId
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                // Log the exception here
-                return StatusCode(500, new { Message = "An error occurred while deleting the record", Error = ex.Message });
-            }
-        }
-
+     
 
 
 
