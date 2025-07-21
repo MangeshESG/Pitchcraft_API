@@ -6,7 +6,7 @@
     public string EventType { get; set; }
     public DateTime Timestamp { get; set; }
     public int ClientId { get; set; }
-    public string TargetUrl { get; set; }
+    public string? TargetUrl { get; set; }
     public string? ZohoViewName { get; set; }
     public int? DataFileId { get; set; }
 
