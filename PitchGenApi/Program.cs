@@ -8,8 +8,12 @@ using PitchGenApi.Services;
 using PitchGenApi.Repository;
 using Microsoft.OpenApi.Models;
 using PitchGenApi.Services;
+using PitchGenApi.Model;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.Configure<OpenAISettings>(
+    builder.Configuration.GetSection("OpenAI"));
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -108,10 +112,14 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapControllers();
-
+// ? Serve React build first
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
+
+
+
+// ? Map API controllers
+app.MapControllers();
 
 app.Run();
