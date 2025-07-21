@@ -241,5 +241,48 @@ namespace PitchGenApi.Controllers
                 return BadRequest("Error: " + ex.Message);
             }
         }
+        [HttpGet("getlogs")]
+        public async Task<IActionResult> GetLogs([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            // Step 1: Validate that the dataFile belongs to this client
+            bool isValid = await _context.data_files
+                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+            if (!isValid)
+            {
+                return BadRequest("Invalid clientId or dataFileId.");
+            }
+
+            // Step 2: Fetch EmailLogs directly using the model
+            var logs = await _context.EmailLogs
+                .Where(e => e.ClientId == clientId && e.DataFileId == dataFileId)
+                .OrderByDescending(e => e.SentAt)
+                .Take(1000)
+                .ToListAsync();
+
+            return Ok(logs);
+        }
+
+        [HttpGet("gettrackinglogs")]
+        public async Task<IActionResult> GettrackingLogs([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            // Step 1: Validate dataFileId belongs to clientId
+            bool isValid = await _context.data_files
+                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+            if (!isValid)
+            {
+                return BadRequest("Invalid clientId or dataFileId.");
+            }
+
+            // Step 2: Get EmailTrackingLogs
+            var logs = await _context.EmailTrackingLogs
+                .Where(e => e.ClientId == clientId && e.DataFileId == dataFileId)
+                .OrderByDescending(e => e.Timestamp)
+                .Take(1000)
+                .ToListAsync();
+
+            return Ok(logs);
+        }
     }
 }
