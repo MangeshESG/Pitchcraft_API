@@ -70,7 +70,7 @@ public class OpenTrackingController : ControllerBase
             string.IsNullOrWhiteSpace(dto.Url) ||
             dto.TrackingId == Guid.Empty ||
             dto.ClientId == 0 ||
-            dto.DataFileId == 0) // ✅ Agar DataFileId invalid hai toh bhi redirect
+            dto.DataFileId == 0) 
         {
             return Redirect(dto.Url);
         }
@@ -102,7 +102,7 @@ public class OpenTrackingController : ControllerBase
         if (sentEmail != null && sentEmail.SentAt.HasValue)
         {
             var timeSinceSent = DateTime.UtcNow - sentEmail.SentAt.Value;
-            if (timeSinceSent.TotalSeconds < 80)
+            if (timeSinceSent.TotalSeconds < 20)
             {
                 return Redirect(dto.Url);
             }
