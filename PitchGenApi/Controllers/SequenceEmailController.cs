@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Net.Mail;
 using System.Net;
+using PitchGenApi.Models;
 
 namespace PitchGenApi.Controllers
 {
@@ -268,10 +269,9 @@ namespace PitchGenApi.Controllers
             {
                 ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
-                // Get contact with optional next
+                var nowUtc = DateTime.UtcNow;
 
-
-                // Send email using SMTP
+                // 1) Send email
                 var success = await _emailHelper.SendEmailUsingSmtp(
                     dto.clientId,
                     dto.DataFileId,
@@ -285,15 +285,42 @@ namespace PitchGenApi.Controllers
                     dto.CompanyName,
                     dto.Website,
                     dto.LinkedinUrl,
-                    dto.JobTitle    
+                    dto.JobTitle
                 );
 
                 if (!success)
                     return StatusCode(500, "Failed to send email. Please try again later.");
 
+                // 2) Sirf success ke baad update (ContactId -> DataFileId+Email -> Email fallback)
+                Contact contact = null;
+
+                if (dto.contactid > 0)
+                {
+                    contact = await _context.contacts
+                        .FirstOrDefaultAsync(c => c.id == dto.contactid);
+                }
+                else if (dto.DataFileId > 0)
+                {
+                    contact = await _context.contacts
+                        .FirstOrDefaultAsync(c => c.DataFileId == dto.DataFileId && c.email == dto.ToEmail);
+                }
+                else
+                {
+                    contact = await _context.contacts
+                        .FirstOrDefaultAsync(c => c.email == dto.ToEmail);
+                }
+
+                if (contact != null)
+                {
+                    contact.email_sent_at = nowUtc;
+
+                    await _context.SaveChangesAsync();
+                }
+
                 return Ok(new
                 {
                     message = $"Email sent successfully to {dto.ToEmail}.",
+                    emailSentAtUtc = nowUtc
                 });
             }
             catch (Exception ex)
@@ -301,6 +328,7 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, $"Unexpected error: {ex.Message}");
             }
         }
+
 
         [HttpPost("configTestMail")]
         public async Task<IActionResult> configTestMail([FromQuery] string ClientId, [FromBody] SmtpCredentialDto dto)
