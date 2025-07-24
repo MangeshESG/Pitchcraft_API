@@ -225,7 +225,7 @@ namespace PitchGenApi.Controllers
             });
         }
 
-        [HttpGet("by-client")]
+        [HttpGet("datafile-byclientid")]
         public async Task<IActionResult> GetDataFilesByClientId(int clientId)
         {
             try
