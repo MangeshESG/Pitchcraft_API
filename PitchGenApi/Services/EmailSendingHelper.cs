@@ -22,7 +22,6 @@ public class EmailSendingHelper
         string body,
         string BccEmail = "",
         int SmtpID = 0,
-        string zohoViewName = "",
         string fullName = "",
         string location = "",
         string company = "",
@@ -41,7 +40,7 @@ public class EmailSendingHelper
                 Body = body,
                 IsSuccess = false,
                 ErrorMessage = "SMTP credentials not found or invalid.",
-                zohoViewName = zohoViewName,
+                zohoViewName = "from pichkraft",
                 SentAt = DateTime.UtcNow
             });
             await _context.SaveChangesAsync();
