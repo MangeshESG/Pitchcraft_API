@@ -16,7 +16,7 @@ public static class EmailTrackingHelper
         string encodedTrackingId = WebUtility.UrlEncode(trackingId);
 
 
-        return $"<img src=\"https://pitch.dataji.co/track/open?email={encodedEmail}&clientId={clientId}&DataFileId={DataFileId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}&trackingId={encodedTrackingId}\" width=\"1\" height=\"1\" style=\"display:none; max-height:0; overflow:hidden;\" alt=\"\" />";
+        return $"<img src=\"https://app.pitchkraft.ai/track/open?email={encodedEmail}&clientId={clientId}&DataFileId={DataFileId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}&trackingId={encodedTrackingId}\" width=\"1\" height=\"1\" style=\"display:none; max-height:0; overflow:hidden;\" alt=\"\" />";
     }
 
     public static string InjectClickTracking(string email, string htmlBody, int clientId, int DataFileId, string fullName, string location, string company, string website, string linkedin, string jobtitle, string trackingId)
@@ -42,7 +42,7 @@ public static class EmailTrackingHelper
             var encodedJob = WebUtility.UrlEncode(jobtitle ?? "");
             var encodedTrackingId = WebUtility.UrlEncode(trackingId);
 
-            var trackingUrl = $"https://pitch.dataji.co/track/click?trackingId={encodedTrackingId}&email={encodedEmail}&url={encodedUrl}&clientId={clientId}&DataFileId={DataFileId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}";
+            var trackingUrl = $"https://app.pitchkraft.ai/track/click?trackingId={encodedTrackingId}&email={encodedEmail}&url={encodedUrl}&clientId={clientId}&DataFileId={DataFileId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}";
             link.SetAttributeValue("href", trackingUrl);
         }
 

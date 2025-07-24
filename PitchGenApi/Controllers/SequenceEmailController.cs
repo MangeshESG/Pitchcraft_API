@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Net.Mail;
 using System.Net;
+using PitchGenApi.Models;
 
 namespace PitchGenApi.Controllers
 {
@@ -262,52 +263,64 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("send-singleEmail")]
-        public async Task<IActionResult> SendSingleEmail([FromQuery] int clientId, [FromQuery] int dataFileId, [FromQuery] int? contactId = null, [FromQuery] int smtpId = 0, [FromQuery] string bccEmail = null)
+        public async Task<IActionResult> SendSingleEmail([FromBody] SendEmailRequestDto dto)
         {
             try
             {
                 ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
-                // Get contact with optional next
-                var contactWithNext = await _contactRepository.GetContactWithNextAsync(dataFileId, contactId);
-                if (contactWithNext == null || contactWithNext.CurrentContact == null || string.IsNullOrWhiteSpace(contactWithNext.CurrentContact.email))
-                    return BadRequest("No valid contact found for the given DataFileId and ContactId.");
+                var nowUtc = DateTime.UtcNow;
 
-                var contact = contactWithNext.CurrentContact;
-
-                // Basic values
-                string toEmail = contact.email;
-                string subject = contact.email_subject ?? "No Subject";
-                string rawBody = contact.email_body ?? "No Content";
-                string body = string.IsNullOrWhiteSpace(rawBody) ? "No content provided." : rawBody;
-
-                // Send email using SMTP
+                // 1) Send email
                 var success = await _emailHelper.SendEmailUsingSmtp(
-                    clientId,
-                    dataFileId,
-                    toEmail,
-                    subject,
-                    body,
-                    bccEmail,
-                    smtpId,
-                    dataFileId.ToString(),
-                    contact.full_name,
-                    contact.country_or_address,
-                    contact.company_name,
-                    contact.website,
-                    contact.linkedin_url,
-                    contact.job_title
+                    dto.clientId,
+                    dto.DataFileId,
+                    dto.ToEmail,
+                    dto.Subject,
+                    dto.Body,
+                    dto.BccEmail,
+                    dto.SmtpId,
+                    dto.FullName,
+                    dto.CountryOrAddress,
+                    dto.CompanyName,
+                    dto.Website,
+                    dto.LinkedinUrl,
+                    dto.JobTitle
                 );
 
                 if (!success)
                     return StatusCode(500, "Failed to send email. Please try again later.");
 
+                // 2) Sirf success ke baad update (ContactId -> DataFileId+Email -> Email fallback)
+                Contact contact = null;
+
+                if (dto.contactid > 0)
+                {
+                    contact = await _context.contacts
+                        .FirstOrDefaultAsync(c => c.id == dto.contactid);
+                }
+                else if (dto.DataFileId > 0)
+                {
+                    contact = await _context.contacts
+                        .FirstOrDefaultAsync(c => c.DataFileId == dto.DataFileId && c.email == dto.ToEmail);
+                }
+                else
+                {
+                    contact = await _context.contacts
+                        .FirstOrDefaultAsync(c => c.email == dto.ToEmail);
+                }
+
+                if (contact != null)
+                {
+                    contact.email_sent_at = nowUtc;
+
+                    await _context.SaveChangesAsync();
+                }
+
                 return Ok(new
                 {
-                    message = $"Email sent successfully to {toEmail}.",
-                    contactName = contact.full_name,
-                    currentContactId = contact.id,
-                    nextContactId = contactWithNext.NextContactId
+                    message = $"Email sent successfully to {dto.ToEmail}.",
+                    emailSentAtUtc = nowUtc
                 });
             }
             catch (Exception ex)
@@ -315,6 +328,7 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, $"Unexpected error: {ex.Message}");
             }
         }
+
 
         [HttpPost("configTestMail")]
         public async Task<IActionResult> configTestMail([FromQuery] string ClientId, [FromBody] SmtpCredentialDto dto)
