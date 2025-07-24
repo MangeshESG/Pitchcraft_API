@@ -262,41 +262,30 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("send-singleEmail")]
-        public async Task<IActionResult> SendSingleEmail([FromQuery] int clientId, [FromQuery] int dataFileId, [FromQuery] int? contactId = null, [FromQuery] int smtpId = 0, [FromQuery] string bccEmail = null)
+        public async Task<IActionResult> SendSingleEmail([FromBody] SendEmailRequestDto dto)
         {
             try
             {
                 ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
                 // Get contact with optional next
-                var contactWithNext = await _contactRepository.GetContactWithNextAsync(dataFileId, contactId);
-                if (contactWithNext == null || contactWithNext.CurrentContact == null || string.IsNullOrWhiteSpace(contactWithNext.CurrentContact.email))
-                    return BadRequest("No valid contact found for the given DataFileId and ContactId.");
 
-                var contact = contactWithNext.CurrentContact;
-
-                // Basic values
-                string toEmail = contact.email;
-                string subject = contact.email_subject ?? "No Subject";
-                string rawBody = contact.email_body ?? "No Content";
-                string body = string.IsNullOrWhiteSpace(rawBody) ? "No content provided." : rawBody;
 
                 // Send email using SMTP
                 var success = await _emailHelper.SendEmailUsingSmtp(
-                    clientId,
-                    dataFileId,
-                    toEmail,
-                    subject,
-                    body,
-                    bccEmail,
-                    smtpId,
-                    dataFileId.ToString(),
-                    contact.full_name,
-                    contact.country_or_address,
-                    contact.company_name,
-                    contact.website,
-                    contact.linkedin_url,
-                    contact.job_title
+                    dto.clientId,
+                    dto.DataFileId,
+                    dto.ToEmail,
+                    dto.Subject,
+                    dto.Body,
+                    dto.BccEmail,
+                    dto.SmtpId,
+                    dto.FullName,
+                    dto.CountryOrAddress,
+                    dto.CompanyName,
+                    dto.Website,
+                    dto.LinkedinUrl,
+                    dto.JobTitle    
                 );
 
                 if (!success)
@@ -304,10 +293,7 @@ namespace PitchGenApi.Controllers
 
                 return Ok(new
                 {
-                    message = $"Email sent successfully to {toEmail}.",
-                    contactName = contact.full_name,
-                    currentContactId = contact.id,
-                    nextContactId = contactWithNext.NextContactId
+                    message = $"Email sent successfully to {dto.ToEmail}.",
                 });
             }
             catch (Exception ex)
