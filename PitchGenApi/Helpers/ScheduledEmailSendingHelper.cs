@@ -115,7 +115,7 @@ public class ScheduledEmailSendingHelper
                     From = new MailAddress(smtpCredential.FromEmail),
                     Subject = subject,
                     Body = bodyWithTracking,
-                    IsBodyHtml = false,
+                    IsBodyHtml = true,
                     BodyEncoding = System.Text.Encoding.UTF8,
                     SubjectEncoding = System.Text.Encoding.UTF8,
                 })
@@ -146,6 +146,27 @@ public class ScheduledEmailSendingHelper
                     await smtpClient.SendMailAsync(bccMessage, cancellationToken);
 
                     Console.WriteLine($"📩 BCC sent for: {toEmail}");
+                    var nowUtc = DateTime.UtcNow;
+
+                    var dbContact = await context.contacts
+                        .AsTracking()
+                        .FirstOrDefaultAsync(c => c.email == toEmail && c.DataFileId == step.DataFileId, cancellationToken);
+
+                    if (dbContact != null)
+                    {
+                        dbContact.email_sent_at = nowUtc;
+
+                        context.Entry(dbContact).Property(x => x.email_sent_at).IsModified = true;
+                        context.Entry(dbContact).Property(x => x.updated_at).IsModified = true;
+
+                        var rows = await context.SaveChangesAsync(cancellationToken);
+                        Console.WriteLine($"📌 Contacts updated: {rows}");
+                    }
+                    else
+                    {
+                        Console.WriteLine("⚠️ Contact not found for update (email/DataFileId mismatch).");
+                    }
+
                 }
 
                 context.EmailLogs.Add(new EmailLog
