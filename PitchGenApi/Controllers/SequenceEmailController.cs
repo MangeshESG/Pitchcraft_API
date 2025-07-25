@@ -330,6 +330,63 @@ namespace PitchGenApi.Controllers
         }
 
 
+
+        //[HttpPost("send-singleEmail")]
+        //public async Task<IActionResult> SendSingleEmail([FromQuery] int clientId, [FromQuery] int dataFileId, [FromQuery] int? contactId = null, [FromQuery] int smtpId = 0, [FromQuery] string bccEmail = null)
+        //{
+        //    try
+        //    {
+        //        ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
+
+        //        // Get contact with optional next
+        //        var contactWithNext = await _contactRepository.GetContactWithNextAsync(dataFileId, contactId);
+        //        if (contactWithNext == null || contactWithNext.CurrentContact == null || string.IsNullOrWhiteSpace(contactWithNext.CurrentContact.email))
+        //            return BadRequest("No valid contact found for the given DataFileId and ContactId.");
+
+        //        var contact = contactWithNext.CurrentContact;
+
+        //        // Basic values
+        //        string toEmail = contact.email;
+        //        string subject = contact.email_subject ?? "No Subject";
+        //        string rawBody = contact.email_body ?? "No Content";
+        //        string body = string.IsNullOrWhiteSpace(rawBody) ? "No content provided." : rawBody;
+
+        //        // Send email using SMTP
+        //        var success = await _emailHelper.SendEmailUsingSmtp(
+        //            clientId,
+        //            dataFileId,
+        //            toEmail,
+        //            subject,
+        //            body,
+        //            bccEmail,
+        //            smtpId,
+        //            dataFileId.ToString(),
+        //            contact.full_name,
+        //            contact.country_or_address,
+        //            contact.company_name,
+        //            contact.website,
+        //            contact.linkedin_url,
+        //            contact.job_title
+        //        );
+
+        //        if (!success)
+        //            return StatusCode(500, "Failed to send email. Please try again later.");
+
+        //        return Ok(new
+        //        {
+        //            message = $"Email sent successfully to {toEmail}.",
+        //            contactName = contact.full_name,
+        //            currentContactId = contact.id,
+        //            nextContactId = contactWithNext.NextContactId
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, $"Unexpected error: {ex.Message}");
+        //    }
+        //}
+
+
         [HttpPost("configTestMail")]
         public async Task<IActionResult> configTestMail([FromQuery] string ClientId, [FromBody] SmtpCredentialDto dto)
         {
