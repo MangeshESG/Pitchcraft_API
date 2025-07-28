@@ -3,6 +3,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace PitchGenApi.Models
 {
+    [Table("contacts")]
     public class Contact
     {
         public int id { get; set; }
