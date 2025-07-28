@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
 using PitchGenApi.Models;
+
 namespace PitchGenApi.Database
 {
     public class AppDbContext : DbContext
@@ -23,9 +24,10 @@ namespace PitchGenApi.Database
         public DbSet<BccEmail> BccEmail { get; set; }
         public DbSet<Campaign> Campaigns { get; set; }
 
-        // Added from new code
         public DbSet<DataFile> data_files { get; set; }
         public DbSet<Contact> contacts { get; set; }
+        public DbSet<Segment> segments { get; set; }
+        public DbSet<SegmentContact> segmentContacts { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -39,12 +41,15 @@ namespace PitchGenApi.Database
             modelBuilder.Entity<Campaign>()
                 .HasIndex(c => c.PromptId);
 
-            // Added from your new snippet
             modelBuilder.Entity<Contact>()
                 .HasIndex(c => new { c.DataFileId, c.email })
                 .IsUnique();
 
-            base.OnModelCreating(modelBuilder); // Keep this at the end
+            // ✅ Composite primary key for SegmentContact
+            modelBuilder.Entity<SegmentContact>()
+                .HasKey(sc => new { sc.SegmentId, sc.ContactId });
+
+            base.OnModelCreating(modelBuilder);
         }
 
         internal async Task FirstOrDefaultAsync()

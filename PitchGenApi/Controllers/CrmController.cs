@@ -7,6 +7,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using PitchGenApi.Model.DTOs;
+using PitchGenApi.Model;
 
 
 namespace PitchGenApi.Controllers
@@ -284,5 +285,82 @@ namespace PitchGenApi.Controllers
 
             return Ok(logs);
         }
+
+        [HttpPost("Creat-Segments")]
+        public async Task<IActionResult> CreateSegment([FromQuery] int ClientId, [FromBody] CreateSegmentDto dto)
+        {
+            var dataFileExists = await _context.data_files
+                .AnyAsync(df => df.id == dto.DataFileId && df.client_id == ClientId);
+
+            if (!dataFileExists)
+            {
+                return BadRequest(new { message = "Invalid ClientId or DataFileId. No matching data file found." });
+            }
+
+            var segment = new Segment
+            {
+                Name = dto.Name,
+                ClientId = ClientId,
+                Description = dto.Description,
+                DataFileId = dto.DataFileId,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.segments.Add(segment);
+            await _context.SaveChangesAsync();
+
+            foreach (var contactId in dto.ContactIds)
+            {
+                var segmentContact = new SegmentContact
+                {
+                    SegmentId = segment.Id,
+                    ContactId = contactId,
+                    AddedAt = DateTime.UtcNow
+                };
+                _context.segmentContacts.Add(segmentContact);
+            }
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Segment created successfully", segmentId = segment.Id });
+        }
+
+        [HttpGet("get-segments-by-client")]
+        public async Task<IActionResult> GetSegmentsByClientId([FromQuery] int clientId)
+        {
+            var segments = await _context.segments
+                .Where(s => s.ClientId == clientId)
+                .Select(s => new
+                {
+                    s.Id,
+                    s.Name,
+                    s.Description,
+                    s.DataFileId,
+                    s.ClientId,
+                    s.CreatedAt,
+                    s.UpdatedAt
+                })
+                .ToListAsync();
+
+            if (segments == null || segments.Count == 0)
+            {
+                return NotFound(new { message = "No segments found for this client." });
+            }
+
+            return Ok(segments);
+        }
+
+        [HttpGet("segment/{segmentId}/contacts")]
+        public IActionResult GetContactsBySegmentId(int segmentId)
+        {
+            var contacts = _context.segmentContacts
+                .Where(sc => sc.SegmentId == segmentId)
+                .Include(sc => sc.Contact)
+                .Select(sc => sc.Contact)
+                .ToList();
+
+            return Ok(contacts);
+        }
+
     }
 }
