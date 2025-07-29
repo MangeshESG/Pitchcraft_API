@@ -362,5 +362,52 @@ namespace PitchGenApi.Controllers
             return Ok(contacts);
         }
 
+        [HttpPost("delete-segment")]
+        public async Task<IActionResult> DeleteSegment([FromQuery] int segmentId)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                // Step 1: Fetch the Segment (null-safe, no properties accessed)
+                var segment = await _context.segments
+                                            .FirstOrDefaultAsync(s => s.Id == segmentId);
+
+                if (segment == null)
+                {
+                    return NotFound(new { message = "Segment not found." });
+                }
+
+                // Step 2: Get SegmentContacts list (null-safe)
+                var segmentContacts = await _context.segmentContacts
+                                                    .Where(sc => sc.SegmentId == segmentId)
+                                                    .ToListAsync();
+
+                // Step 3: Remove related contacts
+                if (segmentContacts?.Count > 0)
+                {
+                    _context.segmentContacts.RemoveRange(segmentContacts);
+                }
+
+                // Step 4: Remove the Segment
+                _context.segments.Remove(segment);
+
+                // Save all changes
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new { message = "Segment and related contacts deleted successfully." });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(500, new
+                {
+                    message = "Internal server error",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
     }
 }
