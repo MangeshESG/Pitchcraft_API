@@ -70,7 +70,7 @@ public class OpenTrackingController : ControllerBase
             string.IsNullOrWhiteSpace(dto.Url) ||
             dto.TrackingId == Guid.Empty ||
             dto.ClientId == 0 ||
-            dto.DataFileId == 0) 
+            dto.DataFileId == 0)
         {
             return Redirect(dto.Url);
         }
@@ -99,7 +99,17 @@ public class OpenTrackingController : ControllerBase
         var sentEmail = await _context.EmailLogs
             .FirstOrDefaultAsync(e => e.TrackingId == dto.TrackingId);
 
-        if (sentEmail != null && sentEmail.SentAt.HasValue)
+        if (sentEmail == null)
+            return Redirect(dto.Url);
+
+        // ✅ Add this condition
+        if (!string.Equals(sentEmail.ToEmail?.Trim(), Decode(dto.Email).Trim(), StringComparison.OrdinalIgnoreCase) ||
+            sentEmail.DataFileId != dto.DataFileId)
+        {
+            return Redirect(dto.Url);
+        }
+
+        if (sentEmail.SentAt.HasValue)
         {
             var timeSinceSent = DateTime.UtcNow - sentEmail.SentAt.Value;
             if (timeSinceSent.TotalSeconds < 20)
@@ -138,6 +148,7 @@ public class OpenTrackingController : ControllerBase
 
         return Redirect(dto.Url);
     }
+
 
     [HttpGet("logs/by-client-viewid")]
     public async Task<IActionResult> GetEmailTrackingLogsByClient([FromQuery] int clientId, [FromQuery] string zohoViewName)
