@@ -337,64 +337,69 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        
-        
-        
-        
+
+
+
+
         [HttpPost("generatepitch")]
         public async Task<IActionResult> GeneratePitch([FromBody] EnquiryRequest request)
         {
             if (string.IsNullOrWhiteSpace(request.Prompt) || string.IsNullOrWhiteSpace(request.ModelName))
-            {
                 return BadRequest(new { Message = "Prompt and ScrappedData are required." });
-            }
 
-            var result = await _pitchservice.GeneratePitchAsync(request);
-
-            if (!result.IsSuccess)
+            try
             {
-                return StatusCode(500, new { Message = "Failed to generate pitch", Error = result.Content });
+                var result = await _pitchservice.GeneratePitchAsync(request);
+
+                if (!result.IsSuccess)
+                    return StatusCode(500, new { Message = "Failed to generate pitch", Error = result.Content });
+
+                return Ok(new { Response = result });
             }
-
-            return Ok(new { Response = result });
-
+            catch (TaskCanceledException ex)
+            {
+                return StatusCode(408, new { Message = "Pitch generation took too long and was canceled.", Error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = "Internal server error.", Error = ex.Message });
+            }
         }
-
 
         // No Use SummarizeWithChatGPT
-        private async Task<string> SummarizeWithChatGPT(string text)
-        {
-            string apiKey = "YOUR_OPENAI_API_KEY";
-            string apiUrl = "https://api.openai.com/v1/chat/completions";
+        //private async Task<string> SummarizeWithChatGPT(string text)
+        //{
+        //    string apiKey = "YOUR_OPENAI_API_KEY";
+        //    string apiUrl = "https://api.openai.com/v1/chat/completions";
 
-            using (HttpClient client = new HttpClient())
-            {
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        //    using (HttpClient client = new HttpClient())
+        //    {
+        //        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
 
-                var requestBody = new
-                {
-                    model = "gpt-3.5-turbo",
-                    messages = new[]
-                    {
-                new { role = "system", content = "Summarize the following text " },
-                new { role = "user", content = text }
-            },
-                    max_tokens = 10000
-                };
+        //        var requestBody = new
+        //        {
+        //            model = "gpt-3.5-turbo",
+        //            messages = new[]
+        //            {
+        //        new { role = "system", content = "Summarize the following text " },
+        //        new { role = "user", content = text }
+        //    },
+        //            max_tokens = 10000
+        //        };
 
-                var response = await client.PostAsync(apiUrl, new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
+        //        var response = await client.PostAsync(apiUrl, new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
 
-                if (!response.IsSuccessStatusCode)
-                {
-                    throw new Exception("Failed to get a response from ChatGPT API.");
-                }
+        //        if (!response.IsSuccessStatusCode)
+        //        {
+        //            throw new Exception("Failed to get a response from ChatGPT API.");
+        //        }
 
-                var jsonResponse = await response.Content.ReadAsStringAsync();
-                dynamic result = JsonConvert.DeserializeObject(jsonResponse);
+        //        var jsonResponse = await response.Content.ReadAsStringAsync();
+        //        dynamic result = JsonConvert.DeserializeObject(jsonResponse);
 
-                return result.choices[0].message.content.ToString();
-            }
-        }
+        //        return result.choices[0].message.content.ToString();
+        //    }
+        //}
 
         [HttpPost("sendemail")] // Email Send Code
         public IActionResult SendEmail([FromBody] EmailRequest emailRequest)
