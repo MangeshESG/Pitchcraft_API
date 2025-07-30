@@ -77,6 +77,7 @@ public class OpenTrackingController : ControllerBase
         }
 
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
+        string browser = GetBrowserName(userAgent);
 
         var suspiciousAgents = new[] { "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy" };
 
@@ -89,8 +90,35 @@ public class OpenTrackingController : ControllerBase
 
         if (isSuspiciousAgent && !isTrustedBrowser)
         {
+            // Log the suspicious click for analysis
+            _context.EmailTrackingLogs.Add(new EmailTrackingLog
+            {
+                TrackingId = dto.TrackingId,
+                ContactId = dto.contactId,
+                Email = Decode(dto.Email),
+                EventType = "Click",
+                Timestamp = DateTime.UtcNow,
+                ClientId = dto.ClientId,
+                DataFileId = dto.DataFileId,
+                ZohoViewName = "BOT_DETECTED",
+                TargetUrl = Decode(dto.Url),
+                Full_Name = Decode(dto.FullName),
+                Location = Decode(dto.Location),
+                Company = Decode(dto.Company),
+                JobTitle = Decode(dto.JobTitle),
+                linkedin_URL = Decode(dto.linkedin_URL),
+                website = Decode(dto.website),
+                UserAgent = userAgent,
+                IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                IsBot = true,
+                Browser = browser
+            });
+
+            await _context.SaveChangesAsync();
+
             return Redirect(dto.Url);
         }
+
 
         if (dto.TrackingId == Guid.Empty)
         {
@@ -113,7 +141,7 @@ public class OpenTrackingController : ControllerBase
         if (sentEmail.SentAt.HasValue)
         {
             var timeSinceSent = DateTime.UtcNow - sentEmail.SentAt.Value;
-            if (timeSinceSent.TotalSeconds < 20)
+            if (timeSinceSent.TotalSeconds < 60)
             {
                 return Redirect(dto.Url);
             }
@@ -142,7 +170,12 @@ public class OpenTrackingController : ControllerBase
                 Company = Decode(dto.Company),
                 JobTitle = Decode(dto.JobTitle),
                 linkedin_URL = Decode(dto.linkedin_URL),
-                website = Decode(dto.website)
+                website = Decode(dto.website),
+                UserAgent = userAgent,
+                IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                IsBot = true,
+                Browser = browser
+
             });
 
             await _context.SaveChangesAsync();
@@ -244,6 +277,15 @@ public class OpenTrackingController : ControllerBase
 
         return Ok(count);
     }
+    private string GetBrowserName(string userAgent)
+    {
+        userAgent = userAgent.ToLower();
 
-
+        if (userAgent.Contains("edg/")) return "Edge";
+        if (userAgent.Contains("chrome/") && !userAgent.Contains("edg/")) return "Chrome";
+        if (userAgent.Contains("firefox/")) return "Firefox";
+        if (userAgent.Contains("safari/") && !userAgent.Contains("chrome/")) return "Safari";
+        if (userAgent.Contains("opera") || userAgent.Contains("opr/")) return "Opera";
+        return "Unknown";
+    }
 }
