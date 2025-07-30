@@ -26,7 +26,7 @@ public class EmailSchedulerService : BackgroundService
                 var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
                 var dueSteps = await context.SequenceSteps
-                    .Where(s => !s.TestIsSent)
+                    .Where(s => !s.IsSent)
                     .ToListAsync(stoppingToken);
 
                 Console.WriteLine($"🟡 Found {dueSteps.Count} pending step(s).");
