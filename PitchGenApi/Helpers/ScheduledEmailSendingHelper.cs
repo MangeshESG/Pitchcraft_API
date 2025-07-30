@@ -214,7 +214,7 @@ public class ScheduledEmailSendingHelper
         var dbStep = await context.SequenceSteps.FirstOrDefaultAsync(x => x.Id == step.Id, cancellationToken);
         if (dbStep != null)
         {
-            dbStep.IsSent = true;
+            dbStep.TestIsSent = true;
             Console.WriteLine($"🟢 Marked step ID {step.Id} as sent.");
         }
 
