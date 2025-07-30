@@ -1,7 +1,7 @@
 ﻿public class EmailTrackingLog
 {
     public int Id { get; set; }
-    public int ContactId { get; set; }
+    public int? ContactId { get; set; }
     public Guid TrackingId { get; set; }
     public string Email { get; set; }
     public string EventType { get; set; }
