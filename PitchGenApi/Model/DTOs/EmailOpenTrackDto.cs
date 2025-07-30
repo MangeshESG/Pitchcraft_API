@@ -9,6 +9,9 @@ public class EmailOpenTrackDto
     public Guid TrackingId { get; set; }
 
     [NoEncodedChars]
+    public int contactId { get; set; }
+
+    [NoEncodedChars]
     public int ClientId { get; set; }
 
     [NoEncodedChars]
