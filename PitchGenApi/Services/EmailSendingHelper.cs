@@ -16,6 +16,7 @@ public class EmailSendingHelper
 
     public async Task<bool> SendEmailUsingSmtp(
         int clientId,
+        int contactId,
         int dataFileId,
         string toEmail,
         string subject,
@@ -35,6 +36,7 @@ public class EmailSendingHelper
             _context.EmailLogs.Add(new EmailLog
             {
                 ClientId = clientId,
+                ContactId = contactId,
                 ToEmail = toEmail,
                 Subject = subject,
                 Body = body,
@@ -55,14 +57,14 @@ public class EmailSendingHelper
             {
                 Port = smtpCredential.Port,
                 Credentials = new NetworkCredential(smtpCredential.Username, smtpCredential.Password),
-                EnableSsl = true,
+                EnableSsl = smtpCredential.UseSsl,
             };
 
             // Send main email
             if (!string.IsNullOrWhiteSpace(toEmail))
             {
-                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, body, clientId, dataFileId, fullName, location, company, website, linkedin, jobtitle, trackingId);
-                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, fullName, location, company, website, linkedin, jobtitle, trackingId);
+                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, body, clientId,contactId, dataFileId, fullName, location, company, website, linkedin, jobtitle, trackingId);
+                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId,contactId, fullName, location, company, website, linkedin, jobtitle, trackingId);
 
                 using var toMessage = new MailMessage
                 {
@@ -78,6 +80,7 @@ public class EmailSendingHelper
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
+                    ContactId = contactId,
                     ToEmail = toEmail,
                     Subject = subject,
                     Body = bodyWithTracking,
@@ -116,6 +119,7 @@ public class EmailSendingHelper
             _context.EmailLogs.Add(new EmailLog
             {
                 ClientId = clientId,
+                ContactId = contactId,
                 ToEmail = toEmail,
                 Subject = subject,
                 Body = body,

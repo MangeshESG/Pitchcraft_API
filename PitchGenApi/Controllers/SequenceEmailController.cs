@@ -91,9 +91,9 @@ namespace PitchGenApi.Controllers
                         zohoviewName = dto.zohoviewName?.Trim() ?? string.Empty,
                         BccEmail = dto.BccEmail,
                         DataFileId = dto.DataFileId,
-                        TestIsSent = false,
+                        TestIsSent = true,
                         SmtpID = dto.SmtpID,
-                        IsSent = true
+                        IsSent = false
                     };
 
                     newSteps.Add(entity);
@@ -274,6 +274,7 @@ namespace PitchGenApi.Controllers
                 // 1) Send email
                 var success = await _emailHelper.SendEmailUsingSmtp(
                     dto.clientId,
+                    dto.contactid,
                     dto.DataFileId,
                     dto.ToEmail,
                     dto.Subject,
@@ -619,6 +620,7 @@ namespace PitchGenApi.Controllers
                 step.ScheduledTime = utcDateTime.TimeOfDay;
                 step.TimeZone = dto.TimeZone;
                 step.zohoviewName = dto.zohoviewName?.Trim() ?? string.Empty;
+                step.DataFileId = dto.DataFileId ?? step.DataFileId; // Keep existing if null
                 step.BccEmail = dto.BccEmail;
                 step.SmtpID = dto.SmtpID;
                 step.DataFileId = dto.DataFileId;

@@ -49,7 +49,6 @@ public class ScheduledEmailSendingHelper
         Console.WriteLine($"👥 Total contacts fetched: {contacts.Count}");
 
         var sentEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        string trackingId = Guid.NewGuid().ToString();
 
         foreach (var Contact in contacts)
         {
@@ -58,6 +57,7 @@ public class ScheduledEmailSendingHelper
 
             if (sentEmails.Contains(Contact.email))
                 continue;
+            string trackingId = Guid.NewGuid().ToString();
 
             bool alreadySent = await context.EmailLogs
                 .AnyAsync(x => x.StepId == step.Id && x.ToEmail == Contact.email, cancellationToken);
@@ -77,6 +77,7 @@ public class ScheduledEmailSendingHelper
                 Contact.email,
                 bodyWithTracking,
                 step.ClientId,
+                Contact.id,
                 step.DataFileId ?? 0,
                 Contact.full_name,
                 Contact.country_or_address,
@@ -91,6 +92,7 @@ public class ScheduledEmailSendingHelper
                 Contact.email,
                 step.ClientId,
                 step.DataFileId ?? 0,
+                Contact.id,
                 Contact.full_name,
                 Contact.country_or_address,
                 Contact.company_name,
@@ -107,7 +109,7 @@ public class ScheduledEmailSendingHelper
                 {
                     Port = smtpCredential.Port,
                     Credentials = new NetworkCredential(smtpCredential.Username, smtpCredential.Password),
-                    EnableSsl = true,
+                    EnableSsl = smtpCredential.UseSsl,
                 };
 
                 using (var toMessage = new MailMessage
@@ -173,6 +175,7 @@ public class ScheduledEmailSendingHelper
                 {
                     StepId = step.Id,
                     ToEmail = toEmail,
+                    ContactId = Contact.id,
                     Subject = subject,
                     Body = bodyWithTracking,
                     IsSuccess = true,
@@ -193,6 +196,7 @@ public class ScheduledEmailSendingHelper
                 {
                     StepId = step.Id,
                     ToEmail = toEmail,
+                    ContactId = Contact.id,
                     Subject = subject,
                     Body = bodyWithTracking,
                     IsSuccess = false,
@@ -210,7 +214,7 @@ public class ScheduledEmailSendingHelper
         var dbStep = await context.SequenceSteps.FirstOrDefaultAsync(x => x.Id == step.Id, cancellationToken);
         if (dbStep != null)
         {
-            dbStep.TestIsSent = true;
+            dbStep.IsSent = true;
             Console.WriteLine($"🟢 Marked step ID {step.Id} as sent.");
         }
 
