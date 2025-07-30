@@ -202,6 +202,7 @@ public class OpenTrackingController : ControllerBase
                 e.EventType,
                 e.Timestamp,
                 e.ClientId,
+                e.ContactId,
                 TargetUrl = e.TargetUrl ?? "",
                 ZohoViewName = e.ZohoViewName ?? "",
                 FullName = e.Full_Name ?? "",
