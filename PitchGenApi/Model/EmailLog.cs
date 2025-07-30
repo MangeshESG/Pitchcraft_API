@@ -1,7 +1,7 @@
 ﻿public class EmailLog
 {
     public int Id { get; set; }
-    public int ContactId { get; set; }
+    public int? ContactId { get; set; }
 
     public int StepId { get; set; } // SequenceStep ka reference
 
