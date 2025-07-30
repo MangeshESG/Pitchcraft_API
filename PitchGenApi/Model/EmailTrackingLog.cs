@@ -1,6 +1,7 @@
 ﻿public class EmailTrackingLog
 {
     public int Id { get; set; }
+    public int ContactId { get; set; }
     public Guid TrackingId { get; set; }
     public string Email { get; set; }
     public string EventType { get; set; }
@@ -16,4 +17,8 @@
     public string? JobTitle { get; set; }
     public string? linkedin_URL { get; set; }
     public string? website { get; set; }
+    public string? UserAgent { get; set; }     // ✅ new
+    public bool IsBot { get; set; }            // ✅ new
+    public string? IPAddress { get; set; }     // ✅ new
+    public string? Browser { get; set; }
 }
