@@ -18,7 +18,7 @@
     public string? linkedin_URL { get; set; }
     public string? website { get; set; }
     public string? UserAgent { get; set; }     // ✅ new
-    public bool IsBot { get; set; }            // ✅ new
+    public bool? IsBot { get; set; }            // ✅ new
     public string? IPAddress { get; set; }     // ✅ new
     public string? Browser { get; set; }
 }
