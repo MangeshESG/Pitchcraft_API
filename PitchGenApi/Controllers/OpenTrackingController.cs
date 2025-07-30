@@ -41,6 +41,7 @@ public class OpenTrackingController : ControllerBase
             {
                 TrackingId = dto.TrackingId,
                 Email = email,
+                ContactId = dto.contactId,
                 EventType = "Open",
                 Timestamp = DateTime.UtcNow,
                 ClientId = dto.ClientId,
@@ -128,6 +129,7 @@ public class OpenTrackingController : ControllerBase
             _context.EmailTrackingLogs.Add(new EmailTrackingLog
             {
                 TrackingId = dto.TrackingId,
+                ContactId = dto.contactId,
                 Email = Decode(dto.Email),
                 EventType = "Click",
                 Timestamp = DateTime.UtcNow,
