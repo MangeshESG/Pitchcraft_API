@@ -188,7 +188,27 @@ namespace PitchGenApi.Controllers
         }
 
 
+        [HttpPost("update-datafile")]
+        public async Task<IActionResult> UpdateDataFileById([FromQuery] int id, [FromQuery] string name, [FromQuery] string description, [FromQuery] string dataFileName)
+        {
+            if (id == 0)
+                return BadRequest("Invalid id");
 
+            var dataFile = await _context.data_files
+                .FirstOrDefaultAsync(d => d.id == id);
+
+            if (dataFile == null)
+                return NotFound("Data file not found");
+
+            dataFile.name = name;
+            dataFile.description = description;
+            dataFile.data_file_name = dataFileName;
+            dataFile.updated_at = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Data file updated successfully");
+        }
         [HttpPost("contacts/update-email")]
         public async Task<IActionResult> UpdateContactEmail([FromBody] ContactEmailUpdateDto request)
         {
@@ -360,6 +380,27 @@ namespace PitchGenApi.Controllers
                 .ToList();
 
             return Ok(contacts);
+        }
+
+        [HttpPost("update-segment")]
+        public async Task<IActionResult> UpdateSegmentById([FromQuery] int id, [FromQuery] string name, [FromQuery] string description)
+        {
+            if (id == 0)
+                return BadRequest("Invalid Segment Id");
+
+            var segment = await _context.segments
+                .FirstOrDefaultAsync(s => s.Id == id);
+
+            if (segment == null)
+                return NotFound("Segment not found");
+
+            segment.Name = name;
+            segment.Description = description;
+            segment.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Segment updated successfully");
         }
 
         [HttpPost("delete-segment")]
