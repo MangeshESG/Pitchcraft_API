@@ -265,21 +265,48 @@ namespace PitchGenApi.Controllers
         [HttpGet("getlogs")]
         public async Task<IActionResult> GetLogs([FromQuery] int clientId, [FromQuery] int dataFileId)
         {
-            // Step 1: Validate that the dataFile belongs to this client
+            // Step 1: Validate clientId + dataFileId match
             bool isValid = await _context.data_files
                 .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
 
             if (!isValid)
-            {
                 return BadRequest("Invalid clientId or dataFileId.");
-            }
 
-            // Step 2: Fetch EmailLogs directly using the model
-            var logs = await _context.EmailLogs
-                .Where(e => e.ClientId == clientId && e.DataFileId == dataFileId)
-                .OrderByDescending(e => e.SentAt)
-                .Take(1000)
-                .ToListAsync();
+            // Step 2: Fetch EmailLogs with Contact details (anonymous projection)
+            var logs = await (
+                from log in _context.EmailLogs
+                join contact in _context.contacts
+                on log.ContactId equals contact.id into contactGroup
+                from contact in contactGroup.DefaultIfEmpty() // left join (some ContactId might be null)
+                where log.ClientId == clientId && log.DataFileId == dataFileId
+                orderby log.SentAt descending
+                select new
+                {
+                    // Email log details
+                    log.Id,
+                    log.ContactId,
+                    log.ClientId,
+                    log.DataFileId,
+                    log.Subject,
+                    log.Body,
+                    log.SentAt,
+                    log.IsSuccess,
+                    log.ErrorMessage,
+                    log.ToEmail,
+                    log.process_name,
+
+                    // Contact details
+                    Name = contact.full_name,
+                    Email = contact.email,
+                    address = contact.country_or_address,
+                    Website = contact.website,
+                    Company = contact.company_name,
+                    JobTitle = contact.job_title,
+                    LinkedIn = contact.linkedin_url
+                }
+            )
+            .Take(1000)
+            .ToListAsync();
 
             return Ok(logs);
         }
