@@ -3,54 +3,53 @@ using System.ComponentModel.DataAnnotations;
 
 namespace PitchGenApi.Model
 {
-    /// <summary>
     /// Campaign entity class
-    /// </summary>
     public class Campaign
     {
         public int Id { get; set; }
         public string CampaignName { get; set; }
         public int PromptId { get; set; }
-        public string ZohoViewId { get; set; }
+        public string? ZohoViewId { get; set; }
+        public int? SegmentId { get; set; }      // Add this
         public int ClientId { get; set; }
+
+        // Navigation properties
+        public virtual Segment? Segment { get; set; }
     }
 
-    /// <summary>
     /// Model for creating a new Campaign
-    /// </summary>
     public class CampaignCreateModel
     {
-        [Required(ErrorMessage = "Campaign name is required")]
-        [StringLength(255, ErrorMessage = "Campaign name cannot exceed 255 characters")]
+        [Required]
         public string CampaignName { get; set; }
 
-        [Required(ErrorMessage = "Prompt ID is required")]
+        [Required]
         public int PromptId { get; set; }
 
-        [Required(ErrorMessage = "Zoho View ID is required")]
-        [StringLength(50, ErrorMessage = "Zoho View ID cannot exceed 50 characters")]
-        public string ZohoViewId { get; set; }
+        public string? ZohoViewId { get; set; }  // Make nullable
 
-        [Required(ErrorMessage = "Client ID is required")]
+        public int? SegmentId { get; set; }      // Add this
+
+        public string? Description { get; set; }   // ✅ Make nullable
+
+        [Required]
         public int ClientId { get; set; }
     }
 
-    /// <summary>
     /// Model for updating an existing Campaign
-    /// </summary>
     public class CampaignUpdateModel
     {
         [Required]
         public int Id { get; set; }
 
         [Required]
-        [StringLength(100)]
         public string CampaignName { get; set; }
 
         [Required]
         public int PromptId { get; set; }
 
-        [Required]
-        public string ZohoViewId { get; set; }
+        public string? ZohoViewId { get; set; }  // Make nullable
+
+        public int? SegmentId { get; set; }      // Add this
     }
 }
