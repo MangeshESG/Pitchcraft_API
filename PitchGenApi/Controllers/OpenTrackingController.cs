@@ -173,7 +173,7 @@ public class OpenTrackingController : ControllerBase
                 website = Decode(dto.website),
                 UserAgent = userAgent,
                 IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                IsBot = true,
+                IsBot = false,
                 Browser = browser
 
             });
