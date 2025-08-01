@@ -889,23 +889,49 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        /// <summary>
+
         /// Get campaigns by client ID
-        /// </summary>
+
         [HttpGet("campaigns/client/{clientId}")]
         public async Task<IActionResult> GetCampaignsByClientId(int clientId)
         {
             try
             {
+                // Add null check for context
+                if (_context == null)
+                {
+                    _logger.LogError("Database context is null");
+                    return StatusCode(500, new { Message = "Database connection error" });
+                }
+
+                // Check if Campaigns table exists and has data
+                var campaignsExist = await _context.Campaigns.AnyAsync();
+                if (!campaignsExist)
+                {
+                    _logger.LogWarning("No campaigns found in database");
+                    return Ok(new List<object>());
+                }
+
                 var campaigns = await _context.Campaigns
                     .Where(c => c.ClientId == clientId)
+                    .GroupJoin(_context.segments, // Use GroupJoin instead of Join
+                              c => c.SegmentId,
+                              s => s.Id,
+                              (c, segments) => new { Campaign = c, Segments = segments })
+                    .SelectMany(cs => cs.Segments.DefaultIfEmpty(),
+                               (cs, s) => new
+                               {
+                                   cs.Campaign.Id,
+                                   cs.Campaign.CampaignName,
+                                   cs.Campaign.PromptId,
+                                   cs.Campaign.ZohoViewId,
+                                   cs.Campaign.SegmentId,
+                                   cs.Campaign.ClientId,
+                                   SegmentName = s != null ? s.Name : null,
+                                   DataSource = s != null ? "Segment" : "DataFile"
+                               })
                     .OrderBy(c => c.CampaignName)
                     .ToListAsync();
-
-                if (campaigns == null || !campaigns.Any())
-                {
-                    return NotFound(new { Message = "No campaigns found for this client" });
-                }
 
                 return Ok(campaigns);
             }
@@ -916,9 +942,8 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        /// <summary>
         /// Get campaign by ID
-        /// </summary>
+
         [HttpGet("campaigns/{id}")]
         public async Task<IActionResult> GetCampaignById(int id)
         {
@@ -940,9 +965,9 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        /// <summary>
+
         /// Create a new campaign
-        /// </summary>
+
         [HttpPost("campaigns")]
         public async Task<IActionResult> CreateCampaign([FromBody] CampaignCreateModel model)
         {
@@ -954,11 +979,33 @@ namespace PitchGenApi.Controllers
                     return BadRequest(ModelState);
                 }
 
+                // Validate mutual exclusivity: either ZohoViewId OR SegmentId (not both, not neither)
+                if ((model.ZohoViewId == null && model.SegmentId == null) ||
+                    (model.ZohoViewId != null && model.SegmentId != null))
+                {
+                    return BadRequest(new { Message = "Campaign must have either ZohoViewId or SegmentId, but not both." });
+                }
+
                 // Verify that PromptId exists
                 var promptExists = await _context.Prompts.AnyAsync(p => p.Id == model.PromptId);
                 if (!promptExists)
                 {
                     return BadRequest(new { Message = "Invalid PromptId. The specified prompt does not exist." });
+                }
+
+                // If SegmentId is provided, validate it belongs to the same client
+                if (model.SegmentId.HasValue)
+                {
+                    var segment = await _context.segments.FindAsync(model.SegmentId.Value); // ✅ Using lowercase 'segments'
+                    if (segment == null)
+                    {
+                        return BadRequest(new { Message = "Invalid SegmentId. The specified segment does not exist." });
+                    }
+
+                    if (segment.ClientId != model.ClientId)
+                    {
+                        return BadRequest(new { Message = "Segment does not belong to the specified client." });
+                    }
                 }
 
                 // Create new campaign object
@@ -967,6 +1014,7 @@ namespace PitchGenApi.Controllers
                     CampaignName = model.CampaignName,
                     PromptId = model.PromptId,
                     ZohoViewId = model.ZohoViewId,
+                    SegmentId = model.SegmentId,
                     ClientId = model.ClientId
                 };
 
@@ -985,10 +1033,8 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new { Message = "An error occurred while creating the campaign", Error = ex.Message });
             }
         }
-
-        /// <summary>
         /// Update an existing campaign
-        /// </summary>
+
         [HttpPost("updatecampaign")]
         public async Task<IActionResult> UpdateCampaign([FromBody] CampaignUpdateModel model)
         {
@@ -998,6 +1044,13 @@ namespace PitchGenApi.Controllers
                 if (!ModelState.IsValid || model.Id <= 0)
                 {
                     return BadRequest(new { Message = "Invalid data or missing campaign ID" });
+                }
+
+                // Validate mutual exclusivity: either ZohoViewId OR SegmentId (not both, not neither)
+                if ((model.ZohoViewId == null && model.SegmentId == null) ||
+                    (model.ZohoViewId != null && model.SegmentId != null))
+                {
+                    return BadRequest(new { Message = "Campaign must have either ZohoViewId or SegmentId, but not both." });
                 }
 
                 // Find the campaign
@@ -1017,10 +1070,26 @@ namespace PitchGenApi.Controllers
                     }
                 }
 
+                // If SegmentId is provided, validate it belongs to the same client
+                if (model.SegmentId.HasValue)
+                {
+                    var segment = await _context.segments.FindAsync(model.SegmentId.Value); // ✅ Using lowercase 'segments'
+                    if (segment == null)
+                    {
+                        return BadRequest(new { Message = "Invalid SegmentId. The specified segment does not exist." });
+                    }
+
+                    if (segment.ClientId != campaign.ClientId)
+                    {
+                        return BadRequest(new { Message = "Segment does not belong to the campaign's client." });
+                    }
+                }
+
                 // Update campaign properties
                 campaign.CampaignName = model.CampaignName;
                 campaign.PromptId = model.PromptId;
                 campaign.ZohoViewId = model.ZohoViewId;
+                campaign.SegmentId = model.SegmentId;
 
                 // Update in database
                 _context.Campaigns.Update(campaign);
@@ -1034,11 +1103,8 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new { Message = "An error occurred while updating the campaign", Error = ex.Message });
             }
         }
-
-
-        /// <summary>
         /// Delete a campaign
-        /// </summary>
+
         [HttpPost("deletecampaign/{id}")]
         public async Task<IActionResult> DeleteCampaign(int id)
         {
