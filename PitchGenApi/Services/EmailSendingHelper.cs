@@ -105,7 +105,6 @@ public class EmailSendingHelper
                 };
 
                 // Add a visible recipient for compatibility
-                bccMessage.To.Add(new MailAddress("pitch.craft@virtual-employees.co.uk", toEmail)); // 👈 shows only email ID in To
                 bccMessage.Bcc.Add(BccEmail);
 
                 await smtpClient.SendMailAsync(bccMessage);
