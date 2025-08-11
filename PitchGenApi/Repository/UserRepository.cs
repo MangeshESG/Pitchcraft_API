@@ -39,6 +39,12 @@ public class UserRepository : IUserRepository
     {
         return await _context.tbl_clientdetails.FirstOrDefaultAsync(u => u.UserName == username);
     }
+    public async Task<ClientDetails?> GetUserByUsernameEmailAsync(string username)
+{
+    return await _context.ClientDetails
+        .FirstOrDefaultAsync(u => u.Username == username);
+}
+
 
     public async Task<tbl_clientdetails> AddUserAsync(tbl_clientdetails user)
     {

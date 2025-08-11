@@ -16,6 +16,14 @@ builder.Services.Configure<OpenAISettings>(
     builder.Configuration.GetSection("OpenAI"));
 
 builder.Services.AddControllers();
+builder.Services.AddDistributedMemoryCache(); // Required for session
+builder.Services.AddSession(options =>
+{
+    options.IdleTimeout = TimeSpan.FromMinutes(15); // session expiry time
+    options.Cookie.HttpOnly = true;
+    options.Cookie.IsEssential = true;
+});
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -91,6 +99,7 @@ builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddScoped<ContactRepository>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
+builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddHttpClient<ZohoService>(client =>
 {
@@ -108,6 +117,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("MyCorsPolicy");
+app.UseSession();
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();

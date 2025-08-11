@@ -77,18 +77,41 @@ public class OpenTrackingController : ControllerBase
         }
 
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
-        string browser = GetBrowserName(userAgent);
+        string browser = EmailTrackingHelper.GetBrowserName(userAgent);
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
 
-        var suspiciousAgents = new[] { "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy" };
+        // Basic bot keywords
+        var suspiciousAgents = new[] {
+    "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy",
+    "crawler", "spider", "httpclient", "python", "node", "go-http-client", "postman"
+};
 
+        // Trusted browser identifiers
         bool isTrustedBrowser = userAgent.Contains("chrome") ||
                                 userAgent.Contains("firefox") ||
                                 userAgent.Contains("safari") ||
                                 userAgent.Contains("edge");
 
+        // Check if User-Agent contains suspicious keywords
         bool isSuspiciousAgent = suspiciousAgents.Any(agent => userAgent.Contains(agent));
 
-        if (isSuspiciousAgent && !isTrustedBrowser)
+        // Additional bot detection via headers (Postman, curl, scripts)
+        bool isToolHeaderDetected = Request.Headers.Any(h =>
+            h.Key.ToLower().Contains("postman") ||
+            h.Key.ToLower().Contains("insomnia") ||
+            h.Key.ToLower().Contains("httpclient") ||
+            h.Value.ToString().ToLower().Contains("postman") ||
+            h.Value.ToString().ToLower().Contains("curl")
+        );
+
+        // (Optional) Check for internal/test IPs or known proxies
+        bool isSuspiciousIp = ip.StartsWith("127.") || ip.StartsWith("192.168.") || ip.StartsWith("::1");
+
+        // Final bot detection flag
+        bool isBot = (isSuspiciousAgent && !isTrustedBrowser) || isToolHeaderDetected || isSuspiciousIp;
+
+
+        if (isBot)
         {
             // Log the suspicious click for analysis
             _context.EmailTrackingLogs.Add(new EmailTrackingLog
@@ -278,15 +301,15 @@ public class OpenTrackingController : ControllerBase
 
         return Ok(count);
     }
-    private string GetBrowserName(string userAgent)
-    {
-        userAgent = userAgent.ToLower();
+    //public string GetBrowserName(string userAgent)
+    //{
+    //    userAgent = userAgent.ToLower();
 
-        if (userAgent.Contains("edg/")) return "Edge";
-        if (userAgent.Contains("chrome/") && !userAgent.Contains("edg/")) return "Chrome";
-        if (userAgent.Contains("firefox/")) return "Firefox";
-        if (userAgent.Contains("safari/") && !userAgent.Contains("chrome/")) return "Safari";
-        if (userAgent.Contains("opera") || userAgent.Contains("opr/")) return "Opera";
-        return "Unknown";
-    }
+    //    if (userAgent.Contains("edg/")) return "Edge";
+    //    if (userAgent.Contains("chrome/") && !userAgent.Contains("edg/")) return "Chrome";
+    //    if (userAgent.Contains("firefox/")) return "Firefox";
+    //    if (userAgent.Contains("safari/") && !userAgent.Contains("chrome/")) return "Safari";
+    //    if (userAgent.Contains("opera") || userAgent.Contains("opr/")) return "Opera";
+    //    return "Unknown";
+    //}
 }
