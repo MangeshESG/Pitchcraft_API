@@ -113,6 +113,21 @@ namespace PitchGenApi.Helpers
             using var smtp = CreateSmtpClient();
             await smtp.SendMailAsync(message);
         }
+
+        public static async Task TrustOtpEmail(string toEmail, string otp)
+        {
+            var fromAddress = new MailAddress(FromEmail, FromName);
+            var toAddress = new MailAddress(toEmail);
+            using var message = new MailMessage(fromAddress, toAddress)
+            {
+                Subject = "login otp trust device" ,
+                Body = $"this is your otp {otp} for login" ,
+                IsBodyHtml = false
+            };
+
+            using var smtp = CreateSmtpClient();
+            await smtp.SendMailAsync(message);
+        }
     }
 
     public static class OtpGenerator

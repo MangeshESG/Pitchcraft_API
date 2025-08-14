@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Helpers;
@@ -31,27 +32,51 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpPost("login")]
-        public async Task<IActionResult> Login([FromForm] string username, [FromForm] string password)
+        public async Task<IActionResult> Login([FromBody] LoginRequestDTO dto)
         {
-            var user = await _userRepository.GetUserByUsernameEmailAsync(username);
-            if (user == null || !VerifyPassword(password, user.PasswordHash))
+            var user = await _userRepository.GetUser(dto.username);
+
+            if (user == null || !VerifyPassword(dto.password, user.PasswordHash))
             {
                 return Unauthorized(new { Message = "Invalid credentials" });
             }
 
-            var token = _jwtService.GeneratenewToken(username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
+            // ✅ Agar trustednumber match karta hai to direct token return karo
+            if (user.TrustDiviceNumber != null && user.TrustDiviceNumber == dto.trustednumber && user.TrustExpiry > DateTime.Now)
+            {
+                var tokenDirect = _jwtService.GeneratenewToken(dto.username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
+                return Ok(new { Token = tokenDirect });
+            }
 
+            // ✅ Yaha se OTP flow chalega
+            string otp = OtpGenerator.GenerateSecureOtp();
+
+            if (user.TrustDiviceNumber == null || user.TrustDiviceNumber != dto.trustednumber)
+            {
+                var trusteddiviceotp = RegisterEmailSender.TrustOtpEmail(user.Email, otp);
+            }
+
+            var otpEntity = new EmailOtpVerification
+            {
+                Email = user.Email,
+                OTP = otp,
+                username = dto.username,
+                IsVerified = false,
+                OtpType = "login verify",
+                CreatedAt = DateTime.Now,
+                ExpiresAt = DateTime.Now.AddMinutes(10)
+            };
+
+            _context.EmailOtpVerifications.Add(otpEntity);
+            _context.SaveChanges();
             return Ok(new
             {
-                Token = token,
-                //ClientID = user.ClientID,
-                //Isadmin = user.IsAdmin,
-                //IsDemoAccount = user.IsDemoAccount,
-                //FirstName = user.FirstName,
-                //LastName = user.LastName,
-                //CompanyName = user.CompanyName,
+                success = true,
+                message = "OTP sent successfully"
             });
+
         }
+
         private bool VerifyPassword(string password, string storedPasswordHash)
         {
             using (var sha256 = SHA256.Create())
@@ -62,6 +87,56 @@ namespace PitchGenApi.Controllers
 
                 return hashOfInput == storedPasswordHash;
             }
+        }
+
+        [HttpPost("verify_trust_otp")]
+        public async Task<IActionResult> TrustedDivice([FromQuery] string? username, [FromQuery] string otp, [FromQuery] bool trustthisdivice)
+        {
+            var user = await _userRepository.GetUser(username);
+
+            var otpDetails = await _userRepository.GetOtpDetails(otp, username);
+
+
+            if (string.IsNullOrEmpty(otp) ||
+                user == null ||
+                otpDetails == null ||
+                otpDetails.OTP != otp ||
+                otpDetails.ExpiresAt < DateTime.Now ||
+                otpDetails.IsVerified)
+            {
+                return BadRequest("Invalid OTP, try again");
+            }
+
+
+            otpDetails.IsVerified = true;
+            _context.SaveChanges();
+
+            if (trustthisdivice)
+            {
+                Random rnd = new Random();
+                int r = rnd.Next(100000, 999999);
+                DateTime expiry = DateTime.Now.AddDays(30);
+
+                user.TrustDiviceNumber = r;
+                user.TrustExpiry = expiry;
+
+                await _userRepository.Update(user);
+
+                //return Ok(new { message = "Device trusted for 30 days", code = r });
+            }
+
+            var token = _jwtService.GeneratenewToken(user.Username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
+            return Ok(new
+            {
+                Token = token,
+                trustenumber = user.TrustDiviceNumber,
+                //ClientID = user.ClientID,
+                //Isadmin = user.IsAdmin,
+                //IsDemoAccount = user.IsDemoAccount,
+                //FirstName = user.FirstName,
+                //LastName = user.LastName,
+                //CompanyName = user.CompanyName,
+            });
         }
 
         // Step 1: Register Request → Generate OTP → Send Email
@@ -80,31 +155,39 @@ namespace PitchGenApi.Controllers
             var otpEntity = new EmailOtpVerification
             {
                 Email = request.Email,
+                username = request.Username,
                 OTP = otp,
                 IsVerified = false,
                 CreatedAt = DateTime.Now,
+                OtpType = "registration",
                 ExpiresAt = DateTime.Now.AddMinutes(10)
             };
             _context.EmailOtpVerifications.Add(otpEntity);
+
+            // Save Registration Details as Temp Data (10 minutes)
+            var tempRegister = new TempRegisterData
+            {
+                Email = request.Email,
+                JsonData = JsonConvert.SerializeObject(request),
+                CreatedAt = DateTime.Now,
+                ExpiresAt = DateTime.Now.AddMinutes(10)
+            };
+            _context.TempRegisterData.Add(tempRegister);
+
             _context.SaveChanges();
 
-            // Send OTP
+            // Send OTP Email
             var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-
-            // Get browser user-agent
             var userAgent = Request.Headers["User-Agent"].ToString();
             var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
 
-            // Send OTP email
             RegisterEmailSender.SendOtpEmail(request.Email, otp, request.FirstName, ipAddress, browserName);
-            // Temporarily store registration details in TempData or in-memory (you can use Redis for production)
-            HttpContext.Session.SetString(request.Email, JsonConvert.SerializeObject(request));
 
             return Ok("OTP sent to your email.");
         }
 
         // Step 2: Verify OTP and Save ClientDetails
-        [HttpPost("verify-otp")]
+        [HttpPost("registration-verify-otp")]
         public IActionResult VerifyOtp([FromBody] VerifyOtpRequest request)
         {
             var otpRecord = _context.EmailOtpVerifications
@@ -119,12 +202,14 @@ namespace PitchGenApi.Controllers
             otpRecord.IsVerified = true;
             _context.SaveChanges();
 
-            // Retrieve stored registration data
-            var storedDataJson = HttpContext.Session.GetString(request.Email);
-            if (storedDataJson == null)
-                return BadRequest("Session expired. Please register again.");
+            // 🔍 Get temporary registration data from DB
+            var tempData = _context.TempRegisterData
+                .FirstOrDefault(t => t.Email == request.Email && t.ExpiresAt > DateTime.Now);
 
-            var requestData = JsonConvert.DeserializeObject<RegisterRequest>(storedDataJson);
+            if (tempData == null)
+                return BadRequest("Registration data expired. Please register again.");
+
+            var requestData = JsonConvert.DeserializeObject<RegisterRequest>(tempData.JsonData);
 
             var client = new ClientDetails
             {
@@ -139,12 +224,16 @@ namespace PitchGenApi.Controllers
             };
 
             _context.ClientDetails.Add(client);
+
+            // 🧹 Optionally, cleanup temp data
+            _context.TempRegisterData.Remove(tempData);
+
             _context.SaveChanges();
 
             return Ok("Registration complete.");
         }
 
-        [HttpPost("send-otp")]
+        [HttpPost("restpass_send-otp")]
         public async Task<IActionResult> SendOtp([FromQuery] string email)
         {
             if (string.IsNullOrWhiteSpace(email))

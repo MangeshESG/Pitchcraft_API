@@ -13,6 +13,8 @@ namespace PitchGenApi.Model
         public string PasswordHash { get; set; }
         public string CompanyName { get; set; }
         public string JobTitle { get; set; }
+        public int? TrustDiviceNumber { get; set; }
+        public DateTime? TrustExpiry { get; set; }
         public DateTime CreatedAt { get; set; }
     }
 }

@@ -42,7 +42,7 @@ public static class EmailTrackingHelper
             var encodedJob = WebUtility.UrlEncode(jobtitle ?? "");
             var encodedTrackingId = WebUtility.UrlEncode(trackingId);
 
-            var trackingUrl = $"https://app.pitchkraft.ai/track/click?trackingId={encodedTrackingId}&email={encodedEmail}&url={encodedUrl}&clientId={clientId}&contactId={contactId}&DataFileId={DataFileId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}";
+            var trackingUrl = $"https://localhost:7216/track/click?trackingId={encodedTrackingId}&email={encodedEmail}&url={encodedUrl}&clientId={clientId}&contactId={contactId}&DataFileId={DataFileId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}";
             link.SetAttributeValue("href", trackingUrl);
         }
 

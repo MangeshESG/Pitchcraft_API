@@ -37,6 +37,7 @@ namespace PitchGenApi.Repository
                 Email = email,
                 OTP = otp,
                 IsVerified = false,
+                OtpType ="reset password",
                 CreatedAt = DateTime.UtcNow,
                 ExpiresAt = expiry
             };

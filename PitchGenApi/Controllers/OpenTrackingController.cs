@@ -82,9 +82,9 @@ public class OpenTrackingController : ControllerBase
 
         // Basic bot keywords
         var suspiciousAgents = new[] {
-    "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy",
-    "crawler", "spider", "httpclient", "python", "node", "go-http-client", "postman"
-};
+        "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy",
+        "crawler", "spider", "httpclient", "python", "node", "go-http-client", "postman"
+    };
 
         // Trusted browser identifiers
         bool isTrustedBrowser = userAgent.Contains("chrome") ||
@@ -95,7 +95,7 @@ public class OpenTrackingController : ControllerBase
         // Check if User-Agent contains suspicious keywords
         bool isSuspiciousAgent = suspiciousAgents.Any(agent => userAgent.Contains(agent));
 
-        // Additional bot detection via headers (Postman, curl, scripts)
+        // Additional bot detection via headers
         bool isToolHeaderDetected = Request.Headers.Any(h =>
             h.Key.ToLower().Contains("postman") ||
             h.Key.ToLower().Contains("insomnia") ||
@@ -104,16 +104,14 @@ public class OpenTrackingController : ControllerBase
             h.Value.ToString().ToLower().Contains("curl")
         );
 
-        // (Optional) Check for internal/test IPs or known proxies
-        bool isSuspiciousIp = ip.StartsWith("127.") || ip.StartsWith("192.168.") || ip.StartsWith("::1");
+        // Internal/test IPs or known proxies
+        bool isSuspiciousIp = ip.StartsWith("127.") || ip.StartsWith("192.168.");
 
         // Final bot detection flag
         bool isBot = (isSuspiciousAgent && !isTrustedBrowser) || isToolHeaderDetected || isSuspiciousIp;
 
-
         if (isBot)
         {
-            // Log the suspicious click for analysis
             _context.EmailTrackingLogs.Add(new EmailTrackingLog
             {
                 TrackingId = dto.TrackingId,
@@ -132,29 +130,22 @@ public class OpenTrackingController : ControllerBase
                 linkedin_URL = Decode(dto.linkedin_URL),
                 website = Decode(dto.website),
                 UserAgent = userAgent,
-                IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                IPAddress = ip,
                 IsBot = true,
                 Browser = browser
             });
 
             await _context.SaveChangesAsync();
-
             return Redirect(dto.Url);
         }
 
-
-        if (dto.TrackingId == Guid.Empty)
-        {
-            return Redirect(dto.Url);
-        }
-
+        // Email log validation
         var sentEmail = await _context.EmailLogs
             .FirstOrDefaultAsync(e => e.TrackingId == dto.TrackingId);
 
         if (sentEmail == null)
             return Redirect(dto.Url);
 
-        // ✅ Add this condition
         if (!string.Equals(sentEmail.ToEmail?.Trim(), Decode(dto.Email).Trim(), StringComparison.OrdinalIgnoreCase) ||
             sentEmail.DataFileId != dto.DataFileId)
         {
@@ -170,40 +161,60 @@ public class OpenTrackingController : ControllerBase
             }
         }
 
-        bool alreadyClicked = await _context.EmailTrackingLogs.AnyAsync(x =>
+        // -------------------------
+        // 🚀 New Rules Implementation
+        // -------------------------
+
+        // 1️⃣ Permanent skip if same TrackingId + URL already clicked before
+        bool urlAlreadyLogged = await _context.EmailTrackingLogs.AnyAsync(x =>
             x.TrackingId == dto.TrackingId &&
             x.TargetUrl == dto.Url &&
             x.EventType == "Click");
 
-        if (!alreadyClicked)
+        if (urlAlreadyLogged)
         {
-            _context.EmailTrackingLogs.Add(new EmailTrackingLog
-            {
-                TrackingId = dto.TrackingId,
-                ContactId = dto.contactId,
-                Email = Decode(dto.Email),
-                EventType = "Click",
-                Timestamp = DateTime.UtcNow,
-                ClientId = dto.ClientId,
-                DataFileId = dto.DataFileId,
-                ZohoViewName = "from pitch craft",
-                TargetUrl = Decode(dto.Url),
-                Full_Name = Decode(dto.FullName),
-                Location = Decode(dto.Location),
-                Company = Decode(dto.Company),
-                JobTitle = Decode(dto.JobTitle),
-                linkedin_URL = Decode(dto.linkedin_URL),
-                website = Decode(dto.website),
-                UserAgent = userAgent,
-                IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                IsBot = true,
-                Browser = browser
-
-            });
-
-            await _context.SaveChangesAsync();
+            return Redirect(dto.Url);
         }
 
+        // 2️⃣ Get last click for this TrackingId (any URL) to apply 2 min gap
+        var lastClick = await _context.EmailTrackingLogs
+            .Where(x => x.TrackingId == dto.TrackingId && x.EventType == "Click")
+            .OrderByDescending(x => x.Timestamp)
+            .FirstOrDefaultAsync();
+
+        bool canLogClick = lastClick == null ||
+                           (DateTime.UtcNow - lastClick.Timestamp).TotalMinutes >= 2;
+
+        if (!canLogClick)
+        {
+            return Redirect(dto.Url);
+        }
+
+        // 3️⃣ Log click
+        _context.EmailTrackingLogs.Add(new EmailTrackingLog
+        {
+            TrackingId = dto.TrackingId,
+            ContactId = dto.contactId,
+            Email = Decode(dto.Email),
+            EventType = "Click",
+            Timestamp = DateTime.UtcNow,
+            ClientId = dto.ClientId,
+            DataFileId = dto.DataFileId,
+            ZohoViewName = "from pitch craft",
+            TargetUrl = Decode(dto.Url),
+            Full_Name = Decode(dto.FullName),
+            Location = Decode(dto.Location),
+            Company = Decode(dto.Company),
+            JobTitle = Decode(dto.JobTitle),
+            linkedin_URL = Decode(dto.linkedin_URL),
+            website = Decode(dto.website),
+            UserAgent = userAgent,
+            IPAddress = ip,
+            IsBot = false,
+            Browser = browser
+        });
+
+        await _context.SaveChangesAsync();
         return Redirect(dto.Url);
     }
 

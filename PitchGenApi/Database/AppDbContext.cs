@@ -30,6 +30,7 @@ namespace PitchGenApi.Database
         public DbSet<SegmentContact> segmentContacts { get; set; }
         public DbSet<ClientDetails> ClientDetails { get; set; }
         public DbSet<EmailOtpVerification> EmailOtpVerifications { get; set; }
+        public DbSet<TempRegisterData> TempRegisterData { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

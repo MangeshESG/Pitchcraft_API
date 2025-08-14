@@ -7,7 +7,9 @@ namespace PitchGenApi.Interfaces
         Task<IEnumerable<tbl_clientdetails>> GetAllUsersAsync();
         Task<tbl_clientdetails> GetUserByIdAsync(int id);
         Task<tbl_clientdetails> GetUserByUsernameAsync(string userName);
-        Task<ClientDetails> GetUserByUsernameEmailAsync(string userName);
+        Task<ClientDetails> GetUser(string? username);
+        Task Update(ClientDetails user);
+        Task<EmailOtpVerification?> GetOtpDetails(string otp, string? username);
         Task<tbl_clientdetails> AddUserAsync(tbl_clientdetails user);
         Task<tbl_clientdetails> UpdateUserAsync(tbl_clientdetails user);
         Task<bool> DeleteUserAsync(int id);
