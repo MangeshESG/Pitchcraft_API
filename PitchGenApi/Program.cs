@@ -132,15 +132,13 @@ builder.Services.AddCors(options =>
 
     {
 
-        policy.WithOrigins("http://localhost:3000")
+        policy.WithOrigins(
+                "http://localhost:3000",
+                "https://test.pitchkraft.ai"
+            )
+        .AllowAnyHeader()
+        .AllowAnyMethod();
 
-              .AllowAnyMethod()
-
-              .AllowAnyHeader()
-
-              .AllowCredentials()
-
-              .WithMethods("GET", "POST", "PUT", "DELETE", "OPTIONS");
 
     });
 
@@ -163,6 +161,8 @@ builder.Services.AddScoped<ContactRepository>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
 
 builder.Services.AddSingleton<JwtService>();
+
+builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 
 builder.Services.AddHttpClient<ZohoService>(client =>
 
