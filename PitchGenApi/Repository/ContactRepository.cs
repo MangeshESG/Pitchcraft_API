@@ -1,5 +1,6 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
+using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
 
@@ -23,6 +24,7 @@ public class ContactRepository
 
         return await query.ToListAsync();
     }
+
     public async Task<ContactWithNextDto> GetContactWithNextAsync(int dataFileId, int? contactId = null)
     {
         Contact currentContact;
@@ -55,5 +57,18 @@ public class ContactRepository
             NextContactId = nextContactId
         };
     }
+    public async Task<List<Contact>?> GetContactBySegment(int? SegmentId)
+    {
+        if (!SegmentId.HasValue)
+            return null;
+
+        return await _context.segmentContacts
+               .Where(sc => sc.SegmentId == SegmentId.Value)
+               .Include(sc => sc.Contact)
+               .Select(sc => sc.Contact)
+               .ToListAsync();
+    }
+
+
 }
 

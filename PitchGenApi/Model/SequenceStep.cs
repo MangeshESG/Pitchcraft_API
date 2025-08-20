@@ -1,5 +1,4 @@
-﻿
-using PitchGenApi.Model;
+﻿using PitchGenApi.Model;
 
 public class SequenceStep
 {
@@ -7,7 +6,7 @@ public class SequenceStep
     public int ClientId { get; set; }
     public string Title { get; set; }
     public DateTime CreatedAt { get; set; }
-    public bool TestIsSent  { get; set; }
+    public bool TestIsSent { get; set; }
 
     // Separate columns for date and time
     public DateTime ScheduledDate { get; set; }      // Store date part
@@ -16,6 +15,7 @@ public class SequenceStep
     public string TimeZone { get; set; }
     public string zohoviewName { get; set; }
     public int? DataFileId { get; set; }
+    public int? SegmentId { get; set; }
 
     public int SmtpID { get; set; }
     public string? BccEmail { get; set; }

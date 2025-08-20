@@ -398,16 +398,12 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("segment/{segmentId}/contacts")]
-        public IActionResult GetContactsBySegmentId(int segmentId)
+        public async Task<IActionResult> GetContactsBySegmentId(int segmentId)
         {
-            var contacts = _context.segmentContacts
-                .Where(sc => sc.SegmentId == segmentId)
-                .Include(sc => sc.Contact)
-                .Select(sc => sc.Contact)
-                .ToList();
-
+            var contacts = await _repository.GetContactBySegment(segmentId);
             return Ok(contacts);
         }
+
 
         [HttpPost("update-segment")]
         public async Task<IActionResult> UpdateSegmentById([FromQuery] int id, [FromQuery] string name, [FromQuery] string description)
