@@ -91,6 +91,7 @@ namespace PitchGenApi.Controllers
                         zohoviewName = dto.zohoviewName?.Trim() ?? string.Empty,
                         BccEmail = dto.BccEmail,
                         DataFileId = dto.DataFileId,
+                        SegmentId = dto.SegmentId,
                         TestIsSent = false,
                         SmtpID = dto.SmtpID,
                         IsSent = true
@@ -113,7 +114,6 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new { message = "An unexpected error occurred.", detail = ex.Message });
             }
         }
-
 
 
         // Step 3: Save SMTP credentials for the logged-in client
