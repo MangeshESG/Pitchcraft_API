@@ -91,6 +91,7 @@ namespace PitchGenApi.Controllers
                         zohoviewName = dto.zohoviewName?.Trim() ?? string.Empty,
                         BccEmail = dto.BccEmail,
                         DataFileId = dto.DataFileId,
+                        SegmentId = dto.SegmentId,
                         TestIsSent = false,
                         SmtpID = dto.SmtpID,
                         IsSent = true

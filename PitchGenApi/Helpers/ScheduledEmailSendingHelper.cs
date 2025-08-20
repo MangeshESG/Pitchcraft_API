@@ -3,6 +3,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Services;
 using System.Net.Mail;
 using System.Net;
+using PitchGenApi.Models;
 
 public class ScheduledEmailSendingHelper
 {
@@ -25,9 +26,11 @@ public class ScheduledEmailSendingHelper
         if (step == null || step.TimeZone == null || step.DataFileId == null)
         {
             Console.WriteLine("⚠️ Step, TimeZone or DataFileId is null — skipping.");
-            return;
         }
-
+        if (step == null || step.TimeZone == null || step.SegmentId == null)
+        {
+            Console.WriteLine("⚠️ Step, TimeZone or Segmentid is null — skipping.");
+        }
         var scheduledUtc = step.ScheduledDate + step.ScheduledTime;
         if (scheduledUtc > DateTime.UtcNow || step.SmtpID == 0)
         {
@@ -45,8 +48,26 @@ public class ScheduledEmailSendingHelper
         }
 
         Console.WriteLine($"📂 Fetching contacts for DataFileId: {step.DataFileId}");
-        var contacts = await _contactRepository.GetContactsAsync(step.DataFileId);
+        List<Contact> contacts;
+
+        if (step.DataFileId.HasValue)
+        {
+            Console.WriteLine($"📂 Fetching contacts for DataFileId: {step.DataFileId}");
+            contacts = await _contactRepository.GetContactsAsync(step.DataFileId);
+        }
+        else if (step.SegmentId.HasValue)
+        {
+            Console.WriteLine($"📂 Fetching contacts for SegmentId: {step.SegmentId}");
+            contacts = await _contactRepository.GetContactBySegment(step.SegmentId);
+        }
+        else
+        {
+            Console.WriteLine("⚠️ Both DataFileId and SegmentId are null — skipping contacts fetch.");
+            return;
+        }
+
         Console.WriteLine($"👥 Total contacts fetched: {contacts.Count}");
+
 
         var sentEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
