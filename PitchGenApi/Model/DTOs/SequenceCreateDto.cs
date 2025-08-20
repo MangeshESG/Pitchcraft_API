@@ -21,6 +21,7 @@ public class SequenceCreateDto
     [Required]
     public List<StepDto> Steps { get; set; }
     public int? DataFileId { get; set; }
+    public int? SegmentId { get; set; }
 
 
     public class StepDto
