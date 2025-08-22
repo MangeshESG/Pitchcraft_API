@@ -52,12 +52,8 @@ namespace PitchGenApi.Controllers
             {
                 return BadRequest(new { message = $"Invalid TimeZone ID: {dto.TimeZone}" });
             }
-            catch (Exception)
-            {
-                return BadRequest(new { message = "Error processing TimeZone." });
-            }
 
-            //  Check if the provided SmtpID is valid for this ClientId
+            // Check if the provided SmtpID is valid for this ClientId
             var smtpExists = await _context.SmtpCredentials
                 .AnyAsync(s => s.Id == dto.SmtpID && s.ClientId == ClientId);
 
@@ -69,16 +65,15 @@ namespace PitchGenApi.Controllers
                 });
             }
 
-            // Time for creation
-            var now = DateTime.Now;
+            var now = DateTime.UtcNow;
             var newSteps = new List<SequenceStep>();
 
             try
             {
                 foreach (var step in dto.Steps)
                 {
-                    var localDateTime = step.ScheduledDate.Date + step.ScheduledTime;
-                    var utcDateTime = TimeZoneInfo.ConvertTimeToUtc(localDateTime, clientTimeZone);
+                    // Your frontend sends UTC time, so use it directly
+                    var utcDateTime = step.ScheduledDate.Date + step.ScheduledTime;
 
                     var entity = new SequenceStep
                     {
@@ -90,11 +85,11 @@ namespace PitchGenApi.Controllers
                         TimeZone = dto.TimeZone,
                         zohoviewName = dto.zohoviewName?.Trim() ?? string.Empty,
                         BccEmail = dto.BccEmail,
-                        DataFileId = dto.DataFileId,
-                        SegmentId = dto.SegmentId,
+                        DataFileId = dto.SegmentId.HasValue ? null : dto.DataFileId, 
+                        SegmentId = dto.DataFileId.HasValue ? null : dto.SegmentId,  
                         TestIsSent = false,
                         SmtpID = dto.SmtpID,
-                        IsSent = true
+                        IsSent = false
                     };
 
                     newSteps.Add(entity);
@@ -107,14 +102,13 @@ namespace PitchGenApi.Controllers
             }
             catch (DbUpdateException dbEx)
             {
-                return StatusCode(500, new { message = "Database error occurred.", detail = dbEx.Message });
+                return StatusCode(500, new { message = "Database error occurred.", detail = dbEx.InnerException?.Message ?? dbEx.Message });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = "An unexpected error occurred.", detail = ex.Message });
             }
         }
-
 
         // Step 3: Save SMTP credentials for the logged-in client
         [HttpPost("save-smtp")]
@@ -546,20 +540,52 @@ namespace PitchGenApi.Controllers
                 if (steps == null || steps.Count == 0)
                     return NotFound(new { message = "No valid sequence steps found for this client." });
 
-                var result = steps.Select(s => new
+                var result = steps.Select(s =>
                 {
-                    s.Id,
-                    s.ClientId,
-                    s.Title,
-                    s.BccEmail,
-                    s.ScheduledDate,
-                    s.ScheduledTime,
-                    s.TimeZone,
-                    s.SmtpID,
-                    s.zohoviewName,
-                    s.IsSent,
-                    s.TestIsSent,
-                    s.DataFileId
+                    // Combine the stored UTC date and time
+                    var utcDateTime = s.ScheduledDate.Date + s.ScheduledTime;
+
+                    // Default values for display
+                    string displayDate = s.ScheduledDate.ToString("dd MMM yyyy");
+                    string displayTime = s.ScheduledTime.ToString(@"hh\:mm\:ss");
+
+                    try
+                    {
+                        // Try to convert back to client's timezone for display
+                        if (!string.IsNullOrEmpty(s.TimeZone))
+                        {
+                            TimeZoneInfo clientTimeZone = TimeZoneInfo.FindSystemTimeZoneById(s.TimeZone);
+                            var localDateTime = TimeZoneInfo.ConvertTimeFromUtc(utcDateTime, clientTimeZone);
+
+                            displayDate = localDateTime.ToString("dd MMM yyyy");
+                            displayTime = localDateTime.ToString("HH:mm:ss");
+                        }
+                    }
+                    catch (TimeZoneNotFoundException)
+                    {
+                        // If timezone conversion fails, use UTC values
+                        // Log this error in production
+                    }
+
+                    return new
+                    {
+                        s.Id,
+                        s.ClientId,
+                        s.Title,
+                        s.BccEmail,
+                        // Return the display dates/times (in user's timezone)
+                        ScheduledDate = displayDate,  // Now returns "21 May 2025" format
+                        ScheduledTime = displayTime,
+                        s.TimeZone,
+                        s.SmtpID,
+                        s.zohoviewName,
+                        s.IsSent,
+                        s.TestIsSent,
+                        s.DataFileId,
+                        s.SegmentId,
+                        // Optionally include UTC times for debugging
+                        UtcScheduledDateTime = utcDateTime.ToString("dd MMM yyyy HH:mm:ss") + " UTC"
+                    };
                 });
 
                 return Ok(result);
@@ -569,7 +595,6 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new { message = "An unexpected error occurred.", detail = ex.Message });
             }
         }
-
         //[HttpGet("get-sequence")]
         //public async Task<IActionResult> GetSequenceSteps([FromQuery] string ClientId)
         //{
