@@ -209,25 +209,24 @@ namespace PitchGenApi.Controllers
 
             return Ok("Data file updated successfully");
         }
+
+
+
         [HttpPost("contacts/update-email")]
         public async Task<IActionResult> UpdateContactEmail([FromBody] ContactEmailUpdateDto request)
         {
-            if (request.ClientId <= 0 || request.DataFileId <= 0 || request.ContactId <= 0)
-                return BadRequest("ClientId, DataFileId, and ContactId are required.");
+            if (request.ClientId <= 0 || request.ContactId <= 0)
+                return BadRequest("ClientId and ContactId are required.");
 
-            var dataFile = await _context.data_files
-                .FirstOrDefaultAsync(df => df.id == request.DataFileId && df.client_id == request.ClientId);
-
-            if (dataFile == null)
-                return NotFound("Data file not found for this client.");
-
+            // First, verify the contact belongs to this client
             var contact = await _context.contacts
-                .FirstOrDefaultAsync(c => c.id == request.ContactId && c.DataFileId == request.DataFileId);
+                .Include(c => c.data_file)  // ✅ Changed from DataFile to data_file
+                .FirstOrDefaultAsync(c => c.id == request.ContactId && c.data_file.client_id == request.ClientId);
 
             if (contact == null)
-                return NotFound("Contact not found for this data file.");
+                return NotFound("Contact not found for this client.");
 
-            // ✅ null ya empty string dono skip honge
+            // Update only if values are provided
             if (!string.IsNullOrWhiteSpace(request.EmailSubject))
                 contact.email_subject = request.EmailSubject;
 
@@ -245,6 +244,9 @@ namespace PitchGenApi.Controllers
                 contactId = contact.id
             });
         }
+
+
+
 
         [HttpGet("datafile-byclientid")]
         public async Task<IActionResult> GetDataFilesByClientId(int clientId)

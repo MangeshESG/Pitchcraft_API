@@ -25,6 +25,6 @@ namespace PitchGenApi.Models
 
         public DateTime? email_sent_at { get; set; } // Nullable to allow for unset values
 
-        public DataFile data_file { get; set; } // Navigation
+        public DataFile? data_file { get; set; } // Navigation
     }
 }
