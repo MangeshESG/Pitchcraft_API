@@ -23,18 +23,23 @@ public class ScheduledEmailSendingHelper
         using var scope = _serviceProvider.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-        if (step == null || step.TimeZone == null || step.DataFileId == null)
+        if (step == null || step.TimeZone == null)
         {
-            Console.WriteLine("⚠️ Step, TimeZone or DataFileId is null — skipping.");
+            Console.WriteLine("⚠️ Step or TimeZone is null — skipping.");
+            return; // ADD THIS RETURN
         }
-        if (step == null || step.TimeZone == null || step.SegmentId == null)
+
+        if ((!step.DataFileId.HasValue || step.DataFileId.Value <= 0) &&
+            (!step.SegmentId.HasValue || step.SegmentId.Value <= 0))
         {
-            Console.WriteLine("⚠️ Step, TimeZone or Segmentid is null — skipping.");
+            Console.WriteLine("⚠️ Both DataFileId and SegmentId are invalid — skipping.");
+            return;
         }
+
         var scheduledUtc = step.ScheduledDate + step.ScheduledTime;
         if (scheduledUtc > DateTime.UtcNow || step.SmtpID == 0)
         {
-            Console.WriteLine("⏳ Step not due yet or invalid SMTP ID — skipping.");
+            Console.WriteLine($"⏳ Step not due yet (scheduled: {scheduledUtc:yyyy-MM-dd HH:mm:ss} UTC, now: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC) or invalid SMTP ID — skipping.");
             return;
         }
 
@@ -47,22 +52,21 @@ public class ScheduledEmailSendingHelper
             return;
         }
 
-        Console.WriteLine($"📂 Fetching contacts for DataFileId: {step.DataFileId}");
         List<Contact> contacts;
 
-        if (step.DataFileId.HasValue)
+        if (step.DataFileId.HasValue && step.DataFileId.Value > 0)
         {
             Console.WriteLine($"📂 Fetching contacts for DataFileId: {step.DataFileId}");
-            contacts = await _contactRepository.GetContactsAsync(step.DataFileId);
+            contacts = await _contactRepository.GetContactsAsync(step.DataFileId.Value); // Use .Value
         }
-        else if (step.SegmentId.HasValue)
+        else if (step.SegmentId.HasValue && step.SegmentId.Value > 0)
         {
             Console.WriteLine($"📂 Fetching contacts for SegmentId: {step.SegmentId}");
-            contacts = await _contactRepository.GetContactBySegment(step.SegmentId);
+            contacts = await _contactRepository.GetContactBySegment(step.SegmentId.Value); // Use .Value
         }
         else
         {
-            Console.WriteLine("⚠️ Both DataFileId and SegmentId are null — skipping contacts fetch.");
+            Console.WriteLine("⚠️ Both DataFileId and SegmentId are invalid — skipping contacts fetch.");
             return;
         }
 

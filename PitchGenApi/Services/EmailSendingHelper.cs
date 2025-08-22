@@ -89,7 +89,7 @@ public class EmailSendingHelper
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
                     TrackingId = Guid.Parse(trackingId),
-                    process_name = "Singel"
+                    process_name = "Single"
                 });
             }
 
@@ -128,7 +128,7 @@ public class EmailSendingHelper
                 zohoViewName = "from pitch craft",
                 DataFileId= dataFileId,
                 SentAt = DateTime.UtcNow,
-                process_name = "Singel"
+                process_name = "Single"
             });
 
             await _context.SaveChangesAsync();
