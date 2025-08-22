@@ -10,6 +10,7 @@
     public string? TargetUrl { get; set; }
     public string? ZohoViewName { get; set; }
     public int? DataFileId { get; set; }
+    public int? SegmentId { get; set; }
 
     public string? Full_Name { get; set; }
     public string? Location { get; set; }

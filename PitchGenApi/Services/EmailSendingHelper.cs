@@ -17,7 +17,8 @@ public class EmailSendingHelper
     public async Task<bool> SendEmailUsingSmtp(
         int clientId,
         int contactId,
-        int dataFileId,
+        int? dataFileId,
+        int? SegmentId,
         string toEmail,
         string subject,
         string body,
@@ -37,6 +38,8 @@ public class EmailSendingHelper
             {
                 ClientId = clientId,
                 ContactId = contactId,
+                DataFileId = dataFileId,
+                SegmentId = SegmentId,
                 ToEmail = toEmail,
                 Subject = subject,
                 Body = body,
@@ -63,8 +66,8 @@ public class EmailSendingHelper
             // Send main email
             if (!string.IsNullOrWhiteSpace(toEmail))
             {
-                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, body, clientId,contactId, dataFileId, fullName, location, company, website, linkedin, jobtitle, trackingId);
-                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId,contactId, fullName, location, company, website, linkedin, jobtitle, trackingId);
+                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, body, clientId,contactId, dataFileId, SegmentId, fullName, location, company, website, linkedin, jobtitle, trackingId);
+                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullName, location, company, website, linkedin, jobtitle, trackingId);
 
                 using var toMessage = new MailMessage
                 {
@@ -86,6 +89,7 @@ public class EmailSendingHelper
                     Body = bodyWithTracking,
                     zohoViewName = "from pitch craft",
                     DataFileId = dataFileId,
+                    SegmentId = SegmentId,
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
                     TrackingId = Guid.Parse(trackingId),
@@ -127,6 +131,7 @@ public class EmailSendingHelper
                 ErrorMessage = ex.Message,
                 zohoViewName = "from pitch craft",
                 DataFileId= dataFileId,
+                SegmentId = SegmentId,
                 SentAt = DateTime.UtcNow,
                 process_name = "Single"
             });
