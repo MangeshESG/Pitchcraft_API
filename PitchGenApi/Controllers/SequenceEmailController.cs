@@ -89,7 +89,7 @@ namespace PitchGenApi.Controllers
                         SegmentId = dto.DataFileId.HasValue ? null : dto.SegmentId,  
                         TestIsSent = false,
                         SmtpID = dto.SmtpID,
-                        IsSent = false
+                        IsSent = true
                     };
 
                     newSteps.Add(entity);
@@ -269,7 +269,8 @@ namespace PitchGenApi.Controllers
                 var success = await _emailHelper.SendEmailUsingSmtp(
                     dto.clientId,
                     dto.contactid,
-                    dto.DataFileId,
+                    dto.DataFileId ?? 0,
+                    dto.SegmentId ?? 0,
                     dto.ToEmail,
                     dto.Subject,
                     dto.Body,

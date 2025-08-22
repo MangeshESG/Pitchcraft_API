@@ -16,6 +16,7 @@
     public string? ErrorMessage { get; set; }
     public string? zohoViewName { get; set; }
     public int? DataFileId { get; set; }
+    public int? SegmentId { get; set; }
 
 
     public DateTime? SentAt { get; set; }

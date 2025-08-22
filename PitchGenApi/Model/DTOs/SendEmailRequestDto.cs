@@ -4,7 +4,8 @@
     {
         public int clientId { get; set; }
         public int contactid { get; set; }
-        public int DataFileId { get; set; }
+        public int? DataFileId { get; set; }
+        public int? SegmentId { get; set; }
         public string ToEmail { get; set; }
         public string Subject { get; set; }
         public string Body { get; set; }

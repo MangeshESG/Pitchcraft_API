@@ -18,6 +18,9 @@ public class EmailOpenTrackDto
     public string? ZohoViewName { get; set; }
     [NoEncodedChars]
     public int? DataFileId { get; set; }
+    
+    [NoEncodedChars]
+    public int? SegmentId { get; set; }
 
     [NoEncodedChars]
     public string? FullName { get; set; }

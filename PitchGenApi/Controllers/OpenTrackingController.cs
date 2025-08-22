@@ -47,6 +47,7 @@ public class OpenTrackingController : ControllerBase
                 ClientId = dto.ClientId,
                 ZohoViewName = "from pitch craft",
                 DataFileId = dto.DataFileId,
+                SegmentId = dto.SegmentId,
                 Full_Name = fullName,
                 Location = location,
                 Company = company,
@@ -68,13 +69,15 @@ public class OpenTrackingController : ControllerBase
         string Decode(string input) => string.IsNullOrWhiteSpace(input) ? "" : Uri.UnescapeDataString(input);
 
         if (string.IsNullOrWhiteSpace(dto.Email) ||
-            string.IsNullOrWhiteSpace(dto.Url) ||
-            dto.TrackingId == Guid.Empty ||
-            dto.ClientId == 0 ||
-            dto.DataFileId == 0)
+        string.IsNullOrWhiteSpace(dto.Url) ||
+        dto.TrackingId == Guid.Empty ||
+        dto.ClientId == 0 ||
+        (dto.DataFileId == 0 && (dto.SegmentId == null || dto.SegmentId == 0)))
         {
+            // Fail condition
             return Redirect(dto.Url);
         }
+
 
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
         string browser = GetBrowserName(userAgent);
@@ -132,11 +135,19 @@ public class OpenTrackingController : ControllerBase
             return Redirect(dto.Url);
 
         // ✅ Add this condition
-        if (!string.Equals(sentEmail.ToEmail?.Trim(), Decode(dto.Email).Trim(), StringComparison.OrdinalIgnoreCase) ||
-            sentEmail.DataFileId != dto.DataFileId)
+        bool isEmailMatch = string.Equals(
+         sentEmail.ToEmail?.Trim(),
+         Decode(dto.Email).Trim(),
+         StringComparison.OrdinalIgnoreCase);
+
+        bool isFileMatch = sentEmail.DataFileId == dto.DataFileId;
+        bool isSegmentMatch = sentEmail.SegmentId == dto.SegmentId; // <- yaha segment match bhi daal diya
+
+        if (!(isEmailMatch && (isFileMatch || isSegmentMatch)))
         {
             return Redirect(dto.Url);
         }
+
 
         if (sentEmail.SentAt.HasValue)
         {
@@ -163,6 +174,7 @@ public class OpenTrackingController : ControllerBase
                 Timestamp = DateTime.UtcNow,
                 ClientId = dto.ClientId,
                 DataFileId = dto.DataFileId,
+                SegmentId = dto.SegmentId,
                 ZohoViewName = "from pitch craft",
                 TargetUrl = Decode(dto.Url),
                 Full_Name = Decode(dto.FullName),
