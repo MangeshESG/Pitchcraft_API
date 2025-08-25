@@ -290,6 +290,32 @@ public class OpenTrackingController : ControllerBase
 
         return Ok(count);
     }
+
+    [HttpGet("tracking/segment")]
+    public IActionResult GetSegmentTracking(int segmentId, int clientId)
+    {
+        var result = _context.EmailTrackingLogs
+            .Where(x => x.SegmentId == segmentId && x.ClientId == clientId)
+            .ToList();
+
+        if (result.Any())
+            return Ok(result);
+        else
+            return NotFound("No data found for the given segmentId and clientId.");
+    }
+
+    [HttpGet("log/segment")]
+    public IActionResult GetSegmntLog(int segmentId, int clientId)
+    {
+        var result = _context.EmailLogs
+            .Where(x => x.SegmentId == segmentId && x.ClientId == clientId)
+            .ToList();
+
+        if (result.Any())
+            return Ok(result);
+        else
+            return NotFound("No data found for the given segmentId and clientId.");
+    }
     private string GetBrowserName(string userAgent)
     {
         userAgent = userAgent.ToLower();
