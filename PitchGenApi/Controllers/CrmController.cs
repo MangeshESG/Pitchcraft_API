@@ -57,6 +57,11 @@ namespace PitchGenApi.Controllers
                     country_or_address = c.countryOrAddress,
                     email_subject = c.emailSubject,
                     email_body = c.emailBody,
+                    CompanyTelephone = c.CompanyTelephone,
+                    CompanyEmployeeCount = c.CompanyEmployeeCount,
+                    CompanyIndustry = c.CompanyIndustry,
+                    CompanyLinkedInURL = c.CompanyLinkedInURL,
+                    CompanyEventLink = c.CompanyEventLink,
                     created_at = DateTime.UtcNow,
                     updated_at = null
                 }).ToList();
@@ -176,7 +181,12 @@ namespace PitchGenApi.Controllers
                     c.email_body,
                     c.created_at,
                     c.updated_at,
-                    c.email_sent_at
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    c.CompanyEventLink
                 })
                 .ToListAsync();
 

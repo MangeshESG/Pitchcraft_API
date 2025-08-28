@@ -11,5 +11,10 @@
         public string? countryOrAddress { get; set; }
         public string? emailSubject { get; set; }
         public string? emailBody { get; set; }
+        public string? CompanyTelephone { get; set; }
+        public string? CompanyEmployeeCount { get; set; }
+        public string? CompanyIndustry { get; set; }
+        public string? CompanyLinkedInURL { get; set; }
+        public string? CompanyEventLink { get; set; }
     }
 }
