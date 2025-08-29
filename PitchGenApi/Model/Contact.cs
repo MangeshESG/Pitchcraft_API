@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Microsoft.Extensions.Logging;
+using System;
 using System.ComponentModel.DataAnnotations.Schema;
 using PitchGenApi.Model;
 
@@ -23,7 +24,11 @@ namespace PitchGenApi.Models
 
         public DateTime created_at { get; set; }
         public DateTime? updated_at { get; set; }
-
+        public string? CompanyTelephone { get; set; }
+        public string? CompanyEmployeeCount { get; set; }
+        public string? CompanyIndustry { get; set; }
+        public string? CompanyLinkedInURL { get; set; }
+        public string? CompanyEventLink { get; set; }
         public DateTime? email_sent_at { get; set; } // Nullable to allow for unset values
 
         public DataFile? data_file { get; set; } // Navigation
