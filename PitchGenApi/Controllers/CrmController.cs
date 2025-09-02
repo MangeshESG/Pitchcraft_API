@@ -485,5 +485,125 @@ namespace PitchGenApi.Controllers
             }
         }
 
+
+        [HttpGet("get-tone-settings")]
+        public async Task<IActionResult> GetToneSettings([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+                return BadRequest("Invalid clientId");
+
+            try
+            {
+                var settings = await _context.ToneSettings
+                    .FirstOrDefaultAsync(ts => ts.ClientId == clientId);
+
+                if (settings == null)
+                {
+                    // Return default settings if none exist
+                    return Ok(new ToneSettingsDto
+                    {
+                        Language = "English",
+                        SubjectTemplate = "",
+                        Emojis = "None",
+                        Tone = "Professional",
+                        ChattyLevel = "Medium",
+                        CreativityLevel = "Medium",
+                        ReasoningLevel = "Medium",
+                        DateGreeting = "No",
+                        DateFarewell = "No"
+                    });
+                }
+
+                return Ok(new ToneSettingsDto
+                {
+                    Language = settings.Language,
+                    SubjectTemplate = settings.SubjectTemplate,
+                    Emojis = settings.Emojis,
+                    Tone = settings.Tone,
+                    ChattyLevel = settings.ChattyLevel,
+                    CreativityLevel = settings.CreativityLevel,
+                    ReasoningLevel = settings.ReasoningLevel,
+                    DateGreeting = settings.DateGreeting,
+                    DateFarewell = settings.DateFarewell
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Internal server error", error = ex.Message });
+            }
+        }
+
+        [HttpPost("save-tone-settings")]
+        public async Task<IActionResult> SaveToneSettings([FromQuery] int clientId, [FromBody] ToneSettingsDto dto)
+        {
+            if (clientId <= 0)
+                return BadRequest("Invalid clientId");
+
+            if (dto == null)
+                return BadRequest("Settings data is required");
+
+            try
+            {
+                var existingSettings = await _context.ToneSettings
+                    .FirstOrDefaultAsync(ts => ts.ClientId == clientId);
+
+                if (existingSettings != null)
+                {
+                    // Update existing settings
+                    existingSettings.Language = dto.Language ?? "English";
+                    existingSettings.SubjectTemplate = dto.SubjectTemplate ?? "";
+                    existingSettings.Emojis = dto.Emojis ?? "None";
+                    existingSettings.Tone = dto.Tone ?? "Professional";
+                    existingSettings.ChattyLevel = dto.ChattyLevel ?? "Medium";
+                    existingSettings.CreativityLevel = dto.CreativityLevel ?? "Medium";
+                    existingSettings.ReasoningLevel = dto.ReasoningLevel ?? "Medium";
+                    existingSettings.DateGreeting = dto.DateGreeting ?? "No";
+                    existingSettings.DateFarewell = dto.DateFarewell ?? "No";
+                    existingSettings.UpdatedAt = DateTime.UtcNow;
+
+                    await _context.SaveChangesAsync();
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Settings updated successfully",
+                        settingsId = existingSettings.Id
+                    });
+                }
+                else
+                {
+                    // Create new settings
+                    var newSettings = new ToneSettings
+                    {
+                        ClientId = clientId,
+                        Language = dto.Language ?? "English",
+                        SubjectTemplate = dto.SubjectTemplate ?? "",
+                        Emojis = dto.Emojis ?? "None",
+                        Tone = dto.Tone ?? "Professional",
+                        ChattyLevel = dto.ChattyLevel ?? "Medium",
+                        CreativityLevel = dto.CreativityLevel ?? "Medium",
+                        ReasoningLevel = dto.ReasoningLevel ?? "Medium",
+                        DateGreeting = dto.DateGreeting ?? "No",
+                        DateFarewell = dto.DateFarewell ?? "No",
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    _context.ToneSettings.Add(newSettings);
+                    await _context.SaveChangesAsync();
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Settings created successfully",
+                        settingsId = newSettings.Id
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Internal server error", error = ex.Message });
+            }
+        }
+
     }
 }

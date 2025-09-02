@@ -29,6 +29,9 @@ namespace PitchGenApi.Database
         public DbSet<Segment> segments { get; set; }
         public DbSet<SegmentContact> segmentContacts { get; set; }
 
+        public DbSet<ToneSettings> ToneSettings { get; set; }
+
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
