@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -99,6 +99,12 @@ builder.Services.AddHttpClient<ZohoService>(client =>
     // Remove the line below if you're managing headers per request
     // client.DefaultRequestHeaders.Add("Accept", "application/json");
 });
+
+builder.Services.AddControllers();
+
+// ✅ Register CampaignPromptService and HttpClient
+builder.Services.AddHttpClient<CampaignPromptService>();
+
 var app = builder.Build();
 
 if (app.Environment.IsDevelopment())
