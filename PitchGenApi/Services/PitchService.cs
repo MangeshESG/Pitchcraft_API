@@ -46,15 +46,15 @@ namespace PitchGenApi.Services
             if (rate == null)
             {
                 // Default to "gpt-4o-mini" if the model is not found
-                rate = await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == "gpt-4o-mini");
+                rate = await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == "gpt-5");
 
                 if (rate == null)
                 {
                     
-                    return new PitchResult { Content = "Model not found, and fallback 'gpt-4o-mini' is missing.", IsSuccess = false };
+                    return new PitchResult { Content = "Model not found, and fallback 'gpt-5' is missing.", IsSuccess = false };
                 }
 
-                request.ModelName = "gpt-4o-mini";
+                request.ModelName = "gpt-5";
 
             }
 
