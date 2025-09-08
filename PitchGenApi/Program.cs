@@ -104,6 +104,8 @@ builder.Services.AddControllers();
 
 // ✅ Register CampaignPromptService and HttpClient
 builder.Services.AddHttpClient<CampaignPromptService>();
+builder.Services.AddHttpClient<WebSearchService>(); // ✅ Add this line
+
 
 var app = builder.Build();
 

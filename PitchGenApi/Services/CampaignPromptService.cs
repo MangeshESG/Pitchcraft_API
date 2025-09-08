@@ -5,7 +5,6 @@ using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using PitchGenApi.Model;
 using PitchGenApi.Models;
-using static PitchGenApi.Model.ChatGptResponse;
 
 namespace PitchGenApi.Services
 {
@@ -14,180 +13,188 @@ namespace PitchGenApi.Services
         private readonly HttpClient _httpClient;
         private readonly string _apiKey;
 
+        // Store sessions (chat history per user)
         private static Dictionary<string, CampaignSession> _sessions = new();
 
         public CampaignPromptService(HttpClient httpClient, IOptions<OpenAISettings> options)
         {
             _httpClient = httpClient;
             _apiKey = options.Value.ApiKey;
+            _httpClient.Timeout = TimeSpan.FromMinutes(5); // allow up to 5 min
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
         }
 
-        // ✅ Add missing method from controller
-        public async Task<string> StartCampaignAsync(string userId, string systemPrompt, string model = "gpt-4o-mini")
+        // ✅ Start campaign
+        public async Task<object> StartCampaignAsync(string userId, string systemPrompt, string model)
         {
             if (_sessions.ContainsKey(userId))
                 _sessions.Remove(userId);
 
-            // Reset + add system instruction (your Master Prompt)
             _sessions[userId] = new CampaignSession
             {
                 UserId = userId,
                 Messages = new List<Dictionary<string, string>>
-        {
-            new Dictionary<string,string>
-            {
-                { "role", "system" },
-                { "content", systemPrompt }
-            }
-        }
+                {
+                    new Dictionary<string,string>
+                    {
+                        { "role", "system" },
+                        { "content", systemPrompt }
+                    }
+                }
             };
 
-            // Kick-off: Ask first question ("What does vendor_company do?")
+            return await SendToGptAsync(_sessions[userId].Messages, model, userId);
+        }
+
+        // ✅ Continue chat
+        public async Task<object> CampaignChatAsync(string userId, string userMessage, string model)
+        {
+            if (!_sessions.ContainsKey(userId))
+                return new { assistantText = "⚠️ No active campaign. Start a campaign first." };
+
+            var session = _sessions[userId];
+            session.Messages.Add(new Dictionary<string, string>
+            {
+                { "role", "user" },
+                { "content", userMessage }
+            });
+
+            return await SendToGptAsync(session.Messages, model, userId);
+        }
+
+        // ✅ Send to GPT and capture assistant + tool calls
+        private async Task<object> SendToGptAsync(List<Dictionary<string, string>> messages, string model, string userId)
+        {
+            var inputMessages = messages.Select(m => new
+            {
+                role = m["role"],
+                content = m["content"]
+            }).ToList();
+
             var requestData = new
             {
-                model,
-                messages = _sessions[userId].Messages,
-                temperature = 0.7,
-                max_completion_tokens = 300
+                model = model,
+                input = inputMessages,
+                reasoning = new { effort = "medium" },
+                tools = new object[] { new { type = "web_search" } },
+                tool_choice = "auto",
+                max_output_tokens = 15000,
+                temperature = 1.0
             };
 
             var response = await _httpClient.PostAsync(
-                "https://api.openai.com/v1/chat/completions",
+                "https://api.openai.com/v1/responses",
                 new StringContent(JsonConvert.SerializeObject(requestData), Encoding.UTF8, "application/json")
             );
 
-            var result = JsonConvert.DeserializeObject<ChatCompletionResponse>(
-                await response.Content.ReadAsStringAsync()
-            );
+            var jsonResponse = await response.Content.ReadAsStringAsync();
 
-            var aiResponse = result?.Choices?.FirstOrDefault()?.Message?.Content ??
-                             "No response (check Master Prompt formatting).";
+            if (!response.IsSuccessStatusCode)
+            {
+                return new
+                {
+                    assistantText = $"API Error: {response.StatusCode}",
+                    rawResponse = jsonResponse
+                };
+            }
 
-            // Save first question into session history
-            _sessions[userId].Messages.Add(new Dictionary<string, string>
+            dynamic result = JsonConvert.DeserializeObject<dynamic>(jsonResponse);
+
+            // Extract optional assistant text (if a "message" was returned)
+            string aiResponse = null;
+            if (result.output != null)
+            {
+                foreach (var o in result.output)
+                {
+                    if (o.type != null && o.type.ToString() == "message")
+                    {
+                        foreach (var c in o.content)
+                        {
+                            if (c.type != null && c.type.ToString() == "output_text")
+                            {
+                                aiResponse = c.text?.ToString();
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ✅ Save assistant reply to history
+            if (!string.IsNullOrWhiteSpace(userId) && _sessions.ContainsKey(userId))
+            {
+                _sessions[userId].Messages.Add(new Dictionary<string, string>
+        {
+            { "role", "assistant" },
+            { "content", aiResponse ?? "[No text response]" }
+        });
+            }
+
+            // ✅ Final structured response with ALL raw data
+            return new
+            {
+                assistantText = aiResponse ?? "No natural language response returned.",
+                fullResponse = result,        // full object graph (tool calls, sources, reasoning, etc.)
+                rawJson = jsonResponse        // original JSON (safe to forward to frontend)
+            };
+        }
+    }
+
+    // ✅ Models for parsing web search tool responses
+    public class WebSearchService
     {
-        { "role", "assistant" },
-        { "content", aiResponse }
-    });
-
-            return aiResponse;
-        }
-        // Continue Q&A
-        public async Task<string> CampaignChatAsync(string userId, string userMessage, string model = "gpt-4o-mini")
+        public class WebSearchResponse
         {
-            if (!_sessions.ContainsKey(userId))
-                return "No active campaign. Start first.";
-
-            var session = _sessions[userId];
-            session.Messages.Add(new Dictionary<string, string> { { "role", "user" }, { "content", userMessage } });
-
-            var requestData = new
-            {
-                model,
-                messages = session.Messages,
-                temperature = 0.7,
-                max_completion_tokens = 500
-            };
-
-            var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions",
-                new StringContent(JsonConvert.SerializeObject(requestData), Encoding.UTF8, "application/json"));
-
-            var result = JsonConvert.DeserializeObject<ChatCompletionResponse>(await response.Content.ReadAsStringAsync());
-
-            var aiResponse = result?.Choices?.FirstOrDefault()?.Message?.Content ?? "No response";
-            session.Messages.Add(new Dictionary<string, string> { { "role", "assistant" }, { "content", aiResponse } });
-
-            if (aiResponse.Contains("Campaign Master Prompt"))
-                session.CampaignPrompt = aiResponse;
-
-            return aiResponse;
+            [JsonProperty("output")]
+            public List<OutputItem> Output { get; set; }
         }
 
-        // ✅ Keep only one GenerateSampleEmailAsync - now uses request.InstructionMessage
-        public async Task<string> GenerateSampleEmailAsync(string userId, Contact contact, string instructionMessage, string model = "gpt-4o-mini")
+        public class OutputItem
         {
-            if (!_sessions.ContainsKey(userId) || string.IsNullOrWhiteSpace(_sessions[userId].CampaignPrompt))
-                return "No Campaign Prompt found. Build campaign prompt first.";
+            [JsonProperty("content")]
+            public List<OutputContent> Content { get; set; }
 
-            var campaignPrompt = _sessions[userId].CampaignPrompt;
+            [JsonProperty("type")]
+            public string Type { get; set; }
 
-            var userMessage = $@"
-Using this Campaign Prompt:
-{campaignPrompt}
+            [JsonProperty("status")]
+            public string Status { get; set; }
 
-{instructionMessage}
-
-Contact record provided:
-- FullName: {contact.full_name}
-- CompanyName: {contact.company_name}
-- JobTitle: {contact.job_title}
-- Email: {contact.email}
-- Country: {contact.country_or_address}
-";
-
-            var requestData = new
-            {
-                model,
-                messages = new object[]
-                {
-                new { role = "system", content = "You are an expert email generator." },
-                new { role = "user", content = userMessage }
-                },
-                temperature = 0.7,
-                max_completion_tokens = 400
-            };
-
-            var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions",
-                new StringContent(JsonConvert.SerializeObject(requestData), Encoding.UTF8, "application/json"));
-
-            var result = JsonConvert.DeserializeObject<ChatCompletionResponse>(await response.Content.ReadAsStringAsync());
-
-            var emailDraft = result?.Choices?.FirstOrDefault()?.Message?.Content ?? "No draft generated";
-            _sessions[userId].DraftEmail = emailDraft;
-
-            return emailDraft;
+            [JsonProperty("action")]
+            public SearchAction Action { get; set; }
         }
 
-        public async Task<string> RefinePromptWithFeedbackAsync(string userId, string feedback, string model = "gpt-4o-mini")
+        public class OutputContent
         {
-            if (!_sessions.ContainsKey(userId) || string.IsNullOrWhiteSpace(_sessions[userId].CampaignPrompt))
-                return "No Campaign Prompt to refine.";
+            [JsonProperty("type")]
+            public string Type { get; set; }
 
-            var currentPrompt = _sessions[userId].CampaignPrompt;
-            var userMessage = $"Here is the current Campaign Prompt:\n{currentPrompt}\nUser feedback: {feedback}";
-
-            var requestData = new
-            {
-                model,
-                messages = new object[]
-                {
-                new { role = "system", content = "You refine campaign prompts based on feedback. Keep {{FullName}}, {{CompanyName}} placeholders." },
-                new { role = "user", content = userMessage }
-                },
-                temperature = 0.7,
-                max_completion_tokens = 400
-            };
-
-            var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions",
-                new StringContent(JsonConvert.SerializeObject(requestData), Encoding.UTF8, "application/json"));
-
-            var result = JsonConvert.DeserializeObject<ChatCompletionResponse>(await response.Content.ReadAsStringAsync());
-
-            var refinedPrompt = result?.Choices?.FirstOrDefault()?.Message?.Content ?? currentPrompt;
-            _sessions[userId].CampaignPrompt = refinedPrompt;
-
-            return refinedPrompt;
+            [JsonProperty("text")]
+            public string Text { get; set; }
         }
 
-        public string ApproveCampaign(string userId)
+        public class SearchAction
         {
-            if (!_sessions.ContainsKey(userId)) return "No campaign.";
+            [JsonProperty("query")]
+            public string Query { get; set; }
 
-            var session = _sessions[userId];
-            session.IsApproved = true;
-            return session.CampaignPrompt ?? "";
+            [JsonProperty("domains")]
+            public List<string> Domains { get; set; }
+
+            [JsonProperty("sources")]
+            public List<WebSource> Sources { get; set; }
+        }
+
+        public class WebSource
+        {
+            [JsonProperty("url")]
+            public string Url { get; set; }
+
+            [JsonProperty("title")]
+            public string Title { get; set; }
+
+            [JsonProperty("snippet")]
+            public string Snippet { get; set; }
         }
     }
 }
