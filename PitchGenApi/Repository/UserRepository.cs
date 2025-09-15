@@ -39,6 +39,41 @@ public class UserRepository : IUserRepository
     {
         return await _context.tbl_clientdetails.FirstOrDefaultAsync(u => u.UserName == username);
     }
+    public async Task<ClientDetails?> GetUser(string? username)
+    {
+        if (string.IsNullOrWhiteSpace(username))
+            return null;
+
+        username = username.Trim();
+
+        return await _context.ClientDetails
+            .FirstOrDefaultAsync(u =>
+                u.Email == username || u.Username == username);
+    }
+
+    public async Task Update(ClientDetails user)
+    {
+        _context.ClientDetails.Update(user);
+        await _context.SaveChangesAsync();
+    }
+    public async Task<EmailOtpVerification?> GetOtpDetails(string otp, string? username)
+    {
+        if (string.IsNullOrWhiteSpace(otp) || string.IsNullOrWhiteSpace(username))
+            return null;
+
+        username = username.Trim();
+        otp = otp.Trim();
+
+        return await _context.EmailOtpVerifications
+            .FirstOrDefaultAsync(u =>
+                u.OTP == otp &&
+                (u.Email == username || u.username == username));
+    }
+
+
+
+
+
 
     public async Task<tbl_clientdetails> AddUserAsync(tbl_clientdetails user)
     {

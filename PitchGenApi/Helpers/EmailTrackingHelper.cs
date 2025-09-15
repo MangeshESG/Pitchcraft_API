@@ -49,4 +49,16 @@ public static class EmailTrackingHelper
 
         return doc.DocumentNode.OuterHtml;
     }
+    public static string GetBrowserName(string userAgent)
+    {
+        userAgent = userAgent.ToLower();
+
+        if (userAgent.Contains("edg/")) return "Edge";
+        if (userAgent.Contains("chrome/") && !userAgent.Contains("edg/")) return "Chrome";
+        if (userAgent.Contains("firefox/")) return "Firefox";
+        if (userAgent.Contains("safari/") && !userAgent.Contains("chrome/")) return "Safari";
+        if (userAgent.Contains("opera") || userAgent.Contains("opr/")) return "Opera";
+
+        return "Unknown";
+    }
 }

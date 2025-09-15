@@ -96,7 +96,8 @@ public class OpenTrackingController : ControllerBase
         }
 
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
-        string browser = GetBrowserName(userAgent);
+        string browser = EmailTrackingHelper.GetBrowserName(userAgent);
+        var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
 
         // Enhanced bot detection patterns
         var suspiciousAgents = new[] {
@@ -105,11 +106,13 @@ public class OpenTrackingController : ControllerBase
             "fetch", "python", "java", "ruby", "perl", "wget", "scanner", "monitor"
         };
 
+        // Trusted browser identifiers
         bool isTrustedBrowser = userAgent.Contains("chrome") ||
                                 userAgent.Contains("firefox") ||
                                 userAgent.Contains("safari") ||
                                 userAgent.Contains("edge");
 
+        // Check if User-Agent contains suspicious keywords
         bool isSuspiciousAgent = suspiciousAgents.Any(agent => userAgent.Contains(agent));
 
         // Additional bot detection checks
@@ -166,7 +169,7 @@ public class OpenTrackingController : ControllerBase
             x.EventType == "Click" &&
             x.IsBot.HasValue && !x.IsBot.Value);
 
-        if (!alreadyClicked)
+        if (urlAlreadyLogged)
         {
             _context.EmailTrackingLogs.Add(new EmailTrackingLog
             {
@@ -192,9 +195,7 @@ public class OpenTrackingController : ControllerBase
                 Browser = browser
             });
 
-            await _context.SaveChangesAsync();
-        }
-
+        await _context.SaveChangesAsync();
         return Redirect(dto.Url);
     }
 
