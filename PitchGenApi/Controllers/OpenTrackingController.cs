@@ -20,7 +20,22 @@ public class OpenTrackingController : ControllerBase
         if (string.IsNullOrWhiteSpace(dto.Email) || dto.ClientId == 0 || dto.TrackingId == Guid.Empty)
             return BadRequest("Missing required parameters.");
 
-        // Helper method to decode URL-encoded values
+        // Bot detection for opens
+        var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
+        var suspiciousAgents = new[] {
+            "googleimageproxy", "thunderbird", "yahoo", "bot", "crawler",
+            "preview", "proxy", "scanner", "monitor"
+        };
+
+        bool isSuspiciousAgent = suspiciousAgents.Any(agent => userAgent.Contains(agent));
+        if (isSuspiciousAgent)
+        {
+            // Return pixel but don't log
+            byte[] botPixelBytes = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
+            return File(botPixelBytes, "image/png");
+        }
+
+        // Rest of your existing code...
         string Decode(string input) => string.IsNullOrWhiteSpace(input) ? "" : Uri.UnescapeDataString(input);
 
         var email = Decode(dto.Email);
@@ -53,7 +68,10 @@ public class OpenTrackingController : ControllerBase
                 Company = company,
                 JobTitle = jobTitle,
                 linkedin_URL = linkedin,
-                website = website
+                website = website,
+                UserAgent = userAgent,
+                IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+                IsBot = false
             });
 
             await _context.SaveChangesAsync();
@@ -69,20 +87,23 @@ public class OpenTrackingController : ControllerBase
         string Decode(string input) => string.IsNullOrWhiteSpace(input) ? "" : Uri.UnescapeDataString(input);
 
         if (string.IsNullOrWhiteSpace(dto.Email) ||
-        string.IsNullOrWhiteSpace(dto.Url) ||
-        dto.TrackingId == Guid.Empty ||
-        dto.ClientId == 0 ||
-        (dto.DataFileId == 0 && (dto.SegmentId == null || dto.SegmentId == 0)))
+            string.IsNullOrWhiteSpace(dto.Url) ||
+            dto.TrackingId == Guid.Empty ||
+            dto.ClientId == 0 ||
+            (dto.DataFileId == 0 && (dto.SegmentId == null || dto.SegmentId == 0)))
         {
-            // Fail condition
             return Redirect(dto.Url);
         }
-
 
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
         string browser = GetBrowserName(userAgent);
 
-        var suspiciousAgents = new[] { "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy" };
+        // Enhanced bot detection patterns
+        var suspiciousAgents = new[] {
+            "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy",
+            "spider", "crawler", "scraper", "headless", "phantom", "selenium", "puppeteer",
+            "fetch", "python", "java", "ruby", "perl", "wget", "scanner", "monitor"
+        };
 
         bool isTrustedBrowser = userAgent.Contains("chrome") ||
                                 userAgent.Contains("firefox") ||
@@ -91,77 +112,59 @@ public class OpenTrackingController : ControllerBase
 
         bool isSuspiciousAgent = suspiciousAgents.Any(agent => userAgent.Contains(agent));
 
-        if (isSuspiciousAgent && !isTrustedBrowser)
+        // Additional bot detection checks
+        bool hasNoReferer = string.IsNullOrEmpty(Request.Headers["Referer"].ToString());
+        bool hasNoAcceptLanguage = string.IsNullOrEmpty(Request.Headers["Accept-Language"].ToString());
+        bool isAutomatedPattern = userAgent.Length < 30 || userAgent.Contains("http://") || userAgent.Contains("https://");
+
+        // Check if it's likely a bot
+        if ((isSuspiciousAgent && !isTrustedBrowser) ||
+            (hasNoReferer && hasNoAcceptLanguage) ||
+            isAutomatedPattern ||
+            string.IsNullOrWhiteSpace(userAgent))
         {
-            // Log the suspicious click for analysis
-            _context.EmailTrackingLogs.Add(new EmailTrackingLog
-            {
-                TrackingId = dto.TrackingId,
-                ContactId = dto.contactId,
-                Email = Decode(dto.Email),
-                EventType = "Click",
-                Timestamp = DateTime.UtcNow,
-                ClientId = dto.ClientId,
-                DataFileId = dto.DataFileId,
-                ZohoViewName = "BOT_DETECTED",
-                TargetUrl = Decode(dto.Url),
-                Full_Name = Decode(dto.FullName),
-                Location = Decode(dto.Location),
-                Company = Decode(dto.Company),
-                JobTitle = Decode(dto.JobTitle),
-                linkedin_URL = Decode(dto.linkedin_URL),
-                website = Decode(dto.website),
-                UserAgent = userAgent,
-                IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                IsBot = true,
-                Browser = browser
-            });
-
-            await _context.SaveChangesAsync();
-
+            // Don't log bot clicks as real clicks
             return Redirect(dto.Url);
         }
 
-
-        if (dto.TrackingId == Guid.Empty)
-        {
-            return Redirect(dto.Url);
-        }
-
+        // Check timing - if click happened too quickly after email sent
         var sentEmail = await _context.EmailLogs
             .FirstOrDefaultAsync(e => e.TrackingId == dto.TrackingId);
 
         if (sentEmail == null)
             return Redirect(dto.Url);
 
-        // ✅ Add this condition
+        // Check for rapid clicks (less than 5 seconds after sending)
+        if (sentEmail.SentAt.HasValue)
+        {
+            var timeSinceSent = DateTime.UtcNow - sentEmail.SentAt.Value;
+            if (timeSinceSent.TotalSeconds < 5)
+            {
+                // Too fast to be human
+                return Redirect(dto.Url);
+            }
+        }
+
+        // Verify email matches
         bool isEmailMatch = string.Equals(
-         sentEmail.ToEmail?.Trim(),
-         Decode(dto.Email).Trim(),
-         StringComparison.OrdinalIgnoreCase);
+            sentEmail.ToEmail?.Trim(),
+            Decode(dto.Email).Trim(),
+            StringComparison.OrdinalIgnoreCase);
 
         bool isFileMatch = sentEmail.DataFileId == dto.DataFileId;
-        bool isSegmentMatch = sentEmail.SegmentId == dto.SegmentId; // <- yaha segment match bhi daal diya
+        bool isSegmentMatch = sentEmail.SegmentId == dto.SegmentId;
 
         if (!(isEmailMatch && (isFileMatch || isSegmentMatch)))
         {
             return Redirect(dto.Url);
         }
 
-
-        if (sentEmail.SentAt.HasValue)
-        {
-            var timeSinceSent = DateTime.UtcNow - sentEmail.SentAt.Value;
-            if (timeSinceSent.TotalSeconds < 60)
-            {
-                return Redirect(dto.Url);
-            }
-        }
-
+        // Check for duplicate clicks - Fixed the bool? issue
         bool alreadyClicked = await _context.EmailTrackingLogs.AnyAsync(x =>
             x.TrackingId == dto.TrackingId &&
             x.TargetUrl == dto.Url &&
-            x.EventType == "Click");
+            x.EventType == "Click" &&
+            x.IsBot.HasValue && !x.IsBot.Value);
 
         if (!alreadyClicked)
         {
@@ -187,7 +190,6 @@ public class OpenTrackingController : ControllerBase
                 IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
                 IsBot = false,
                 Browser = browser
-
             });
 
             await _context.SaveChangesAsync();
@@ -196,16 +198,15 @@ public class OpenTrackingController : ControllerBase
         return Redirect(dto.Url);
     }
 
-
     [HttpGet("logs/by-client-viewid")]
     public async Task<IActionResult> GetEmailTrackingLogsByClient([FromQuery] int clientId, [FromQuery] string zohoViewName)
     {
         if (clientId <= 0)
             return BadRequest("ClientId is required and must be greater than 0.");
 
-        // 1. Fetch Email Tracking Logs
+        // 1. Fetch Email Tracking Logs - excluding bot clicks
         var logs = await _context.EmailTrackingLogs
-            .Where(e => e.ClientId == clientId)
+            .Where(e => e.ClientId == clientId && (!e.IsBot.HasValue || !e.IsBot.Value))
             .OrderByDescending(e => e.Timestamp)
             .Select(e => new
             {
@@ -252,7 +253,7 @@ public class OpenTrackingController : ControllerBase
             return BadRequest("ClientId is required and must be greater than 0.");
 
         var logs = await _context.EmailTrackingLogs
-            .Where(e => e.ClientId == clientId)
+            .Where(e => e.ClientId == clientId && (!e.IsBot.HasValue || !e.IsBot.Value))
             .OrderByDescending(e => e.Timestamp)
             .Select(e => new
             {
@@ -287,7 +288,6 @@ public class OpenTrackingController : ControllerBase
             .Where(e => e.IsSuccess == true &&
                         e.ClientId == parsedClientId &&
                         e.zohoViewName == ZohoViewName)
-
             .CountAsync();
 
         return Ok(count);
@@ -297,7 +297,7 @@ public class OpenTrackingController : ControllerBase
     public IActionResult GetSegmentTracking(int segmentId, int clientId)
     {
         var result = _context.EmailTrackingLogs
-            .Where(x => x.SegmentId == segmentId && x.ClientId == clientId)
+            .Where(x => x.SegmentId == segmentId && x.ClientId == clientId && (!x.IsBot.HasValue || !x.IsBot.Value))
             .ToList();
 
         if (result.Any())
@@ -318,10 +318,16 @@ public class OpenTrackingController : ControllerBase
         else
             return NotFound("No data found for the given segmentId and clientId.");
     }
+
     private string GetBrowserName(string userAgent)
     {
         userAgent = userAgent.ToLower();
 
+        if (string.IsNullOrWhiteSpace(userAgent) || userAgent.Length < 30)
+            return "Bot/Unknown";
+
+        if (userAgent.Contains("bot") || userAgent.Contains("crawler") || userAgent.Contains("spider"))
+            return "Bot";
         if (userAgent.Contains("edg/")) return "Edge";
         if (userAgent.Contains("chrome/") && !userAgent.Contains("edg/")) return "Chrome";
         if (userAgent.Contains("firefox/")) return "Firefox";

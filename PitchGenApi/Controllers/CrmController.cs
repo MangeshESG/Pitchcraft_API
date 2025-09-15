@@ -345,6 +345,78 @@ namespace PitchGenApi.Controllers
             return Ok(logs);
         }
 
+        [HttpGet("getlogs-by-segment")]
+        public async Task<IActionResult> GetLogsBySegment([FromQuery] int clientId, [FromQuery] int segmentId)
+        {
+            // Step 1: Validate segmentId belongs to clientId
+            bool isValid = await _context.segments
+                .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
+
+            if (!isValid)
+                return BadRequest("Invalid clientId or segmentId.");
+
+            // Step 2: Use a join approach
+            var logs = await (
+                from log in _context.EmailLogs
+                join sc in _context.segmentContacts on log.ContactId equals sc.ContactId
+                join contact in _context.contacts on log.ContactId equals contact.id into contactGroup
+                from contact in contactGroup.DefaultIfEmpty()
+                where sc.SegmentId == segmentId && log.ClientId == clientId
+                orderby log.SentAt descending
+                select new
+                {
+                    // Email log details
+                    log.Id,
+                    log.ContactId,
+                    log.ClientId,
+                    log.DataFileId,
+                    log.Subject,
+                    log.Body,
+                    log.SentAt,
+                    log.IsSuccess,
+                    log.ErrorMessage,
+                    log.ToEmail,
+                    log.process_name,
+
+                    // Contact details
+                    Name = contact.full_name,
+                    Email = contact.email,
+                    Address = contact.country_or_address,
+                    Website = contact.website,
+                    Company = contact.company_name,
+                    JobTitle = contact.job_title,
+                    LinkedIn = contact.linkedin_url
+                }
+            )
+            .Take(1000)
+            .ToListAsync();
+
+            return Ok(logs);
+        }
+
+        [HttpGet("gettrackinglogs-by-segment")]
+        public async Task<IActionResult> GetTrackingLogsBySegment([FromQuery] int clientId, [FromQuery] int segmentId)
+        {
+            // Step 1: Validate segmentId belongs to clientId
+            bool isValid = await _context.segments
+                .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
+
+            if (!isValid)
+                return BadRequest("Invalid clientId or segmentId.");
+
+            // Step 2: Use a join approach
+            var logs = await (
+                from log in _context.EmailTrackingLogs
+                join sc in _context.segmentContacts on log.ContactId equals sc.ContactId
+                where sc.SegmentId == segmentId && log.ClientId == clientId
+                orderby log.Timestamp descending
+                select log
+            )
+            .Take(1000)
+            .ToListAsync();
+
+            return Ok(logs);
+        }
         [HttpPost("Creat-Segments")]
         public async Task<IActionResult> CreateSegment([FromQuery] int ClientId, [FromBody] CreateSegmentDto dto)
         {
