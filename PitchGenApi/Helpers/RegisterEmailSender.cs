@@ -1,5 +1,7 @@
 ﻿using System.Net;
 using System.Net.Mail;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
 
 namespace PitchGenApi.Helpers
 {
@@ -8,6 +10,15 @@ namespace PitchGenApi.Helpers
         private const string FromEmail = "pitchcraft@dataji.co";
         private const string FromName = "PitchGen";
         private const string FromPassword = "z7d&73W2f"; // Consider using secrets manager/env vars
+
+        // Static constructor runs once when the type is first used.
+        // It sets the global certificate validation callback to always accept the server certificate.
+        // WARNING: This disables SSL certificate validation globally and is insecure for production.
+        static RegisterEmailSender()
+        {
+            ServicePointManager.ServerCertificateValidationCallback =
+                (sender, certificate, chain, sslPolicyErrors) => true;
+        }
 
         private static SmtpClient CreateSmtpClient()
         {
@@ -96,6 +107,7 @@ namespace PitchGenApi.Helpers
 
             using var smtp = CreateSmtpClient();
             smtp.Send(message);
+
         }
 
         public static async Task SendEmailAsync(string toEmail, string subject, string body)
@@ -120,8 +132,8 @@ namespace PitchGenApi.Helpers
             var toAddress = new MailAddress(toEmail);
             using var message = new MailMessage(fromAddress, toAddress)
             {
-                Subject = "login otp trust device" ,
-                Body = $"this is your otp {otp} for login" ,
+                Subject = "login otp trust device",
+                Body = $"this is your otp {otp} for login",
                 IsBodyHtml = false
             };
 

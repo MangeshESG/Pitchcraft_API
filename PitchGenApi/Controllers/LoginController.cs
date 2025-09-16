@@ -211,6 +211,7 @@ namespace PitchGenApi.Controllers
 
             var requestData = JsonConvert.DeserializeObject<RegisterRequest>(tempData.JsonData);
 
+            // After deserializing tempData
             var client = new ClientDetails
             {
                 FirstName = requestData.FirstName,
@@ -224,11 +225,21 @@ namespace PitchGenApi.Controllers
             };
 
             _context.ClientDetails.Add(client);
+            _context.SaveChanges(); // Save client to get generated ID
 
-            // 🧹 Optionally, cleanup temp data
+            // 🎁 Give 100 free credits
+            var userCredits = new UserCredits
+            {
+                ClientId = client.Id,
+                Credits = 100,
+                CreatedAt = DateTime.Now
+            };
+            _context.UserCredits.Add(userCredits);
+
+            // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);
+            _context.SaveChanges(); // Save everything
 
-            _context.SaveChanges();
 
             return Ok("Registration complete.");
         }
