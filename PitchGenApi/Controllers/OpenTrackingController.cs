@@ -83,120 +83,209 @@ public class OpenTrackingController : ControllerBase
 
     [HttpGet("click")]
     public async Task<IActionResult> TrackClick([FromQuery] EmailOpenTrackDto dto)
+
     {
+
         string Decode(string input) => string.IsNullOrWhiteSpace(input) ? "" : Uri.UnescapeDataString(input);
 
         if (string.IsNullOrWhiteSpace(dto.Email) ||
+
             string.IsNullOrWhiteSpace(dto.Url) ||
+
             dto.TrackingId == Guid.Empty ||
+
             dto.ClientId == 0 ||
+
             (dto.DataFileId == 0 && (dto.SegmentId == null || dto.SegmentId == 0)))
+
         {
+
             return Redirect(dto.Url);
+
         }
 
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
-        string browser = EmailTrackingHelper.GetBrowserName(userAgent);
+
+        string browser = GetBrowserName(userAgent);
+
         var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "";
 
         // Enhanced bot detection patterns
+
         var suspiciousAgents = new[] {
-            "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy",
-            "spider", "crawler", "scraper", "headless", "phantom", "selenium", "puppeteer",
-            "fetch", "python", "java", "ruby", "perl", "wget", "scanner", "monitor"
-        };
+
+        "googleimageproxy", "thunderbird", "yahoo", "curl", "bot", "preview", "proxy",
+
+        "spider", "crawler", "scraper", "headless", "phantom", "selenium", "puppeteer",
+
+        "fetch", "python", "java", "ruby", "perl", "wget", "scanner", "monitor"
+
+    };
 
         // Trusted browser identifiers
+
         bool isTrustedBrowser = userAgent.Contains("chrome") ||
+
                                 userAgent.Contains("firefox") ||
+
                                 userAgent.Contains("safari") ||
+
                                 userAgent.Contains("edge");
 
         // Check if User-Agent contains suspicious keywords
+
         bool isSuspiciousAgent = suspiciousAgents.Any(agent => userAgent.Contains(agent));
 
         // Additional bot detection checks
+
         bool hasNoReferer = string.IsNullOrEmpty(Request.Headers["Referer"].ToString());
+
         bool hasNoAcceptLanguage = string.IsNullOrEmpty(Request.Headers["Accept-Language"].ToString());
+
         bool isAutomatedPattern = userAgent.Length < 30 || userAgent.Contains("http://") || userAgent.Contains("https://");
 
         // Check if it's likely a bot
+
         if ((isSuspiciousAgent && !isTrustedBrowser) ||
+
             (hasNoReferer && hasNoAcceptLanguage) ||
+
             isAutomatedPattern ||
+
             string.IsNullOrWhiteSpace(userAgent))
+
         {
+
             // Don't log bot clicks as real clicks
+
             return Redirect(dto.Url);
+
         }
 
         // Check timing - if click happened too quickly after email sent
+
         var sentEmail = await _context.EmailLogs
+
             .FirstOrDefaultAsync(e => e.TrackingId == dto.TrackingId);
 
         if (sentEmail == null)
+
             return Redirect(dto.Url);
 
         // Check for rapid clicks (less than 5 seconds after sending)
+
         if (sentEmail.SentAt.HasValue)
+
         {
+
             var timeSinceSent = DateTime.UtcNow - sentEmail.SentAt.Value;
+
             if (timeSinceSent.TotalSeconds < 5)
+
             {
+
                 // Too fast to be human
+
                 return Redirect(dto.Url);
+
             }
+
         }
 
         // Verify email matches
+
         bool isEmailMatch = string.Equals(
+
             sentEmail.ToEmail?.Trim(),
+
             Decode(dto.Email).Trim(),
+
             StringComparison.OrdinalIgnoreCase);
 
         bool isFileMatch = sentEmail.DataFileId == dto.DataFileId;
+
         bool isSegmentMatch = sentEmail.SegmentId == dto.SegmentId;
 
         if (!(isEmailMatch && (isFileMatch || isSegmentMatch)))
+
         {
+
             return Redirect(dto.Url);
+
         }
 
         // Check for duplicate clicks - Fixed the bool? issue
+
         bool alreadyClicked = await _context.EmailTrackingLogs.AnyAsync(x =>
+
             x.TrackingId == dto.TrackingId &&
+
             x.TargetUrl == dto.Url &&
+
             x.EventType == "Click" &&
+
             x.IsBot.HasValue && !x.IsBot.Value);
 
-        if (urlAlreadyLogged)
+        // Only log if NOT already clicked
+
+        if (!alreadyClicked)
+
         {
+
             _context.EmailTrackingLogs.Add(new EmailTrackingLog
+
             {
+
                 TrackingId = dto.TrackingId,
+
                 ContactId = dto.contactId,
+
                 Email = Decode(dto.Email),
+
                 EventType = "Click",
+
                 Timestamp = DateTime.UtcNow,
+
                 ClientId = dto.ClientId,
+
                 DataFileId = dto.DataFileId,
+
                 SegmentId = dto.SegmentId,
+
                 ZohoViewName = "from pitch craft",
+
                 TargetUrl = Decode(dto.Url),
+
                 Full_Name = Decode(dto.FullName),
+
                 Location = Decode(dto.Location),
+
                 Company = Decode(dto.Company),
+
                 JobTitle = Decode(dto.JobTitle),
+
                 linkedin_URL = Decode(dto.linkedin_URL),
+
                 website = Decode(dto.website),
+
                 UserAgent = userAgent,
+
                 IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+
                 IsBot = false,
+
                 Browser = browser
+
             });
 
-        await _context.SaveChangesAsync();
+            await _context.SaveChangesAsync();
+
+        }
+
+        // Always redirect to the URL
+
         return Redirect(dto.Url);
+
     }
 
     [HttpGet("logs/by-client-viewid")]

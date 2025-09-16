@@ -5,15 +5,15 @@ namespace PitchGenApi.Helpers
 {
     public class RegisterEmailSender
     {
-        private const string FromEmail = "aamirskdev24@gmail.com";
+        private const string FromEmail = "pitchcraft@dataji.co";
         private const string FromName = "PitchGen";
-        private const string FromPassword = "kjhm hbch mtgu zond"; // Consider using secrets manager/env vars
+        private const string FromPassword = "z7d&73W2f"; // Consider using secrets manager/env vars
 
         private static SmtpClient CreateSmtpClient()
         {
             return new SmtpClient
             {
-                Host = "smtp.gmail.com",
+                Host = "213.171.222.69",
                 Port = 587,
                 EnableSsl = true,
                 Credentials = new NetworkCredential(FromEmail, FromPassword)
