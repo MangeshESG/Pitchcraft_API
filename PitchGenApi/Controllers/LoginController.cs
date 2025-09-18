@@ -45,7 +45,10 @@ namespace PitchGenApi.Controllers
             if (user.TrustDiviceNumber != null && user.TrustDiviceNumber == dto.trustednumber && user.TrustExpiry > DateTime.Now)
             {
                 var tokenDirect = _jwtService.GeneratenewToken(dto.username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
-                return Ok(new { Token = tokenDirect });
+                return Ok(new 
+                { Token = tokenDirect ,
+                  user.IsAdmin
+                });
             }
 
             // ✅ Yaha se OTP flow chalega
@@ -128,6 +131,7 @@ namespace PitchGenApi.Controllers
             var token = _jwtService.GeneratenewToken(user.Username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
             return Ok(new
             {
+                user.IsAdmin,
                 Token = token,
                 trustenumber = user.TrustDiviceNumber,
                 //ClientID = user.ClientID,
