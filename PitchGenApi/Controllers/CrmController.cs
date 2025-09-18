@@ -228,15 +228,22 @@ namespace PitchGenApi.Controllers
             if (request.ClientId <= 0 || request.ContactId <= 0)
                 return BadRequest("ClientId and ContactId are required.");
 
-            // First, verify the contact belongs to this client
+            // Step 1: Check client credits
+            var userCredits = await _context.UserCredits
+                .FirstOrDefaultAsync(uc => uc.ClientId == request.ClientId);
+
+            if (userCredits == null || userCredits.Credits <= 0)
+                return BadRequest("Not enough credits to perform this action.");
+
+            // Step 2: Verify the contact belongs to this client
             var contact = await _context.contacts
-                .Include(c => c.data_file)  // ✅ Changed from DataFile to data_file
+                .Include(c => c.data_file)
                 .FirstOrDefaultAsync(c => c.id == request.ContactId && c.data_file.client_id == request.ClientId);
 
             if (contact == null)
                 return NotFound("Contact not found for this client.");
 
-            // Update only if values are provided
+            // Step 3: Update only if values are provided
             if (!string.IsNullOrWhiteSpace(request.EmailSubject))
                 contact.email_subject = request.EmailSubject;
 
@@ -245,13 +252,18 @@ namespace PitchGenApi.Controllers
 
             contact.updated_at = DateTime.UtcNow;
 
+            // Step 4: Deduct 1 credit
+            userCredits.Credits -= 1;
+
             await _context.SaveChangesAsync();
 
+            // Step 5: Return response with remaining credits
             return Ok(new
             {
                 success = true,
-                message = "Contact email subject/body updated successfully.",
-                contactId = contact.id
+                message = "Contact email subject/body updated successfully. 1 credit deducted.",
+                contactId = contact.id,
+                remainingCredits = userCredits.Credits
             });
         }
 
