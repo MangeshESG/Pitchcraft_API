@@ -20,47 +20,90 @@ namespace PitchGenApi.Services
         {
             _httpClient = httpClient;
             _apiKey = options.Value.ApiKey;
-            _httpClient.Timeout = TimeSpan.FromMinutes(5); // allow up to 5 min
+            _httpClient.Timeout = TimeSpan.FromMinutes(5);
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
         }
 
-        // ✅ Start campaign
-        public async Task<object> StartCampaignAsync(string userId, string systemPrompt, string model)
+        // ✅ Single method to handle both start and continue
+        public async Task<object> ProcessChatAsync(string userId, string message, string systemPrompt, string model)
         {
-            if (_sessions.ContainsKey(userId))
-                _sessions.Remove(userId);
-
-            _sessions[userId] = new CampaignSession
+            // Check if this is a new conversation or continuing existing one
+            if (!_sessions.ContainsKey(userId))
             {
-                UserId = userId,
-                Messages = new List<Dictionary<string, string>>
+                // New conversation - initialize with system prompt
+                if (string.IsNullOrWhiteSpace(systemPrompt))
                 {
-                    new Dictionary<string,string>
+                    return new
                     {
-                        { "role", "system" },
-                        { "content", systemPrompt }
-                    }
+                        assistantText = "⚠️ System prompt is required for starting a new campaign.",
+                        requiresSystemPrompt = true
+                    };
                 }
-            };
+
+                _sessions[userId] = new CampaignSession
+                {
+                    UserId = userId,
+                    Messages = new List<Dictionary<string, string>>
+                    {
+                        new Dictionary<string, string>
+                        {
+                            { "role", "system" },
+                            { "content", systemPrompt }
+                        }
+                    }
+                };
+
+                // If message is provided with system prompt, add it
+                if (!string.IsNullOrWhiteSpace(message))
+                {
+                    _sessions[userId].Messages.Add(new Dictionary<string, string>
+                    {
+                        { "role", "user" },
+                        { "content", message }
+                    });
+                }
+            }
+            else
+            {
+                // Continuing existing conversation
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    return new
+                    {
+                        assistantText = "⚠️ Message is required for continuing the conversation."
+                    };
+                }
+
+                _sessions[userId].Messages.Add(new Dictionary<string, string>
+                {
+                    { "role", "user" },
+                    { "content", message }
+                });
+            }
 
             return await SendToGptAsync(_sessions[userId].Messages, model, userId);
         }
 
-        // ✅ Continue chat
-        public async Task<object> CampaignChatAsync(string userId, string userMessage, string model)
+        // ✅ Get chat history
+        public object GetChatHistory(string userId)
         {
             if (!_sessions.ContainsKey(userId))
-                return new { assistantText = "⚠️ No active campaign. Start a campaign first." };
+                return null;
 
-            var session = _sessions[userId];
-            session.Messages.Add(new Dictionary<string, string>
+            return new
             {
-                { "role", "user" },
-                { "content", userMessage }
-            });
+                userId = userId,
+                messages = _sessions[userId].Messages,
+                messageCount = _sessions[userId].Messages.Count
+            };
+        }
 
-            return await SendToGptAsync(session.Messages, model, userId);
+        // ✅ Clear chat history
+        public void ClearChatHistory(string userId)
+        {
+            if (_sessions.ContainsKey(userId))
+                _sessions.Remove(userId);
         }
 
         // ✅ Send to GPT and capture assistant + tool calls
@@ -95,7 +138,8 @@ namespace PitchGenApi.Services
                 return new
                 {
                     assistantText = $"API Error: {response.StatusCode}",
-                    rawResponse = jsonResponse
+                    rawResponse = jsonResponse,
+                    error = true
                 };
             }
 
@@ -121,27 +165,32 @@ namespace PitchGenApi.Services
             }
 
             // ✅ Save assistant reply to history
-            if (!string.IsNullOrWhiteSpace(userId) && _sessions.ContainsKey(userId))
+            if (!string.IsNullOrWhiteSpace(aiResponse) && _sessions.ContainsKey(userId))
             {
                 _sessions[userId].Messages.Add(new Dictionary<string, string>
-        {
-            { "role", "assistant" },
-            { "content", aiResponse ?? "[No text response]" }
-        });
+                {
+                    { "role", "assistant" },
+                    { "content", aiResponse }
+                });
             }
 
             // ✅ Final structured response with ALL raw data
             return new
             {
                 assistantText = aiResponse ?? "No natural language response returned.",
-                fullResponse = result,        // full object graph (tool calls, sources, reasoning, etc.)
-                rawJson = jsonResponse        // original JSON (safe to forward to frontend)
+                fullResponse = result,
+                rawJson = jsonResponse,
+                sessionActive = true,
+                messageCount = _sessions[userId]?.Messages.Count ?? 0
             };
         }
     }
 
-    // ✅ Models for parsing web search tool responses
-    public class WebSearchService
+    // Keep existing WebSearchService class as is...
+
+
+// ✅ Models for parsing web search tool responses
+public class WebSearchService
     {
         public class WebSearchResponse
         {
