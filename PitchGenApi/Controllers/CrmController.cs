@@ -569,6 +569,31 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpGet("user_credit")]
+        public async Task<IActionResult> GetCredit([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+            {
+                return BadRequest("clientId is required");
+            }
+
+            try
+            {
+                var credit = await _context.UserCredits.FirstOrDefaultAsync(cr => cr.ClientId == clientId);
+
+                if (credit == null)
+                {
+                    return NotFound($"No credit found for client with ID {clientId}");
+                }
+
+                return Ok(credit.Credits);
+            }
+            catch (Exception ex)
+            {
+                // Log the exception or handle it based on your requirements
+                return StatusCode(500, $"Internal server error: {ex.Message}");
+            }
+        }
 
         [HttpGet("get-tone-settings")]
         public async Task<IActionResult> GetToneSettings([FromQuery] int clientId)
