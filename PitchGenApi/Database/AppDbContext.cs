@@ -34,6 +34,7 @@ namespace PitchGenApi.Database
 
         public DbSet<ToneSettings> ToneSettings { get; set; }
         public DbSet<UserCredits> UserCredits { get; set; }
+        public DbSet<Subscriptions> subscriptions { get; set; }
 
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
