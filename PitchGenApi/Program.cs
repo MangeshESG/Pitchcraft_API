@@ -19,6 +19,7 @@ using Microsoft.OpenApi.Models;
 using PitchGenApi.Services;
 
 using PitchGenApi.Model;
+using PitchGenApi;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -178,7 +179,7 @@ builder.Services.AddHttpClient<ZohoService>(client =>
 
 });
 
-builder.Services.AddHttpClient<PlaneServices>();
+builder.Services.AddHttpClient<ZohoSubscriptionService>();
 
 builder.Services.AddControllers();
 

@@ -4,23 +4,26 @@
 
     public class ZohoSubscriptionRequest
     {
-        [JsonProperty("customer_id")]
-        public string CustomerId { get; set; }
+        public string customer_id { get; set; }
+        public Customer customer { get; set; }
+        public Plan plan { get; set; }
+        public List<PaymentGateway> payment_gateways { get; set; }
+    }
 
-        [JsonProperty("plan")]
-        public Plan Plan { get; set; }
-
-        [JsonProperty("auto_collect")]
-        public bool AutoCollect { get; set; } = false;
+    public class Customer
+    {
+        public string email { get; set; }
     }
 
     public class Plan
     {
-        [JsonProperty("plan_code")]
-        public string PlanCode { get; set; }
+        public string plan_code { get; set; }
+        public int quantity { get; set; }
+    }
 
-        [JsonProperty("quantity")]
-        public int Quantity { get; set; }
+    public class PaymentGateway
+    {
+        public string payment_gateway { get; set; }
     }
 
 }
