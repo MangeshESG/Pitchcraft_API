@@ -1,4 +1,9 @@
-﻿using Newtonsoft.Json;
+﻿using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using PitchGenApi.Database;
+using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models.DTOs;
 using PitchGenApi.Services;
@@ -13,15 +18,17 @@ namespace PitchGenApi
     {
         private readonly IConfiguration _configuration;
         private readonly HttpClient _httpClient;
+        private readonly AppDbContext _Context;
 
-        public ZohoSubscriptionService(IConfiguration configuration, HttpClient httpClient)
+        public ZohoSubscriptionService(IConfiguration configuration, HttpClient httpClient, AppDbContext appDbContext)
         {
             _configuration = configuration;
             _httpClient = httpClient;
+            _Context = appDbContext;
         }
 
 
-        public async Task<ZohoHostedPageResponse.HostedPage> CreateNewSubscriptionAsync(ZohoSubscriptionRequest requestModel)
+        public async Task<ZohoHostedPageResponse.HostedPage> CreateNewSubscriptionAsync(ZohoSubscriptionRequest requestModel, int clientId)
         {
             var refreshToken = _configuration["Zoho:RefreshToken"];
             var accessToken = await RefreshToken(refreshToken);
@@ -41,13 +48,27 @@ namespace PitchGenApi
 
             var responseContent = await response.Content.ReadAsStringAsync();
 
-            // Deserialize into strongly typed object
             var hostedPageResponse = JsonSerializer.Deserialize<ZohoHostedPageResponse>(responseContent);
+
+            var entity = new Subscription
+            {
+                ClientId = clientId,
+                CustomerId = requestModel.customer_id,
+                PlanCode = requestModel.plan.plan_code,
+                CustomerName = requestModel.customer.display_name,
+                Email = requestModel.customer.email,
+                Quantity = requestModel.plan.quantity,
+                Payment_Gateway = requestModel.payment_gateways.FirstOrDefault()?.payment_gateway,
+                Createdat = DateTime.UtcNow
+            };
+
+            _Context.Subscription.Add(entity);
+            await _Context.SaveChangesAsync();
 
             return hostedPageResponse.hostedpage;
         }
 
-        public async Task<string> CreateCustomerAsync(ZohoCustomerRequest customer)
+        public async Task<string> CreateCustomerAsync(ZohoCustomerRequest customer, int clientId)
         {
             var refreshToken = _configuration["Zoho:RefreshToken"];
             var accessToken = await RefreshToken(refreshToken);
@@ -70,14 +91,31 @@ namespace PitchGenApi
             var response = await _httpClient.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
 
-            if (!response.IsSuccessStatusCode)
+            var customerData = JsonSerializer.Deserialize<ZohoCustomerResponse>(responseContent);
+            if (customerData.Customer != null)
             {
-                throw new Exception($"Zoho API Error: {response.StatusCode} - {responseContent}");
+                var entity = new ZohoCustomer
+                {
+                    ClientId = clientId,
+                    CustomerId = customerData.Customer.CustomerId,
+                    ContactId = customerData.Customer.ContactId,
+                    PrimaryContactPersonId = customerData.Customer.PrimaryContactPersonId,
+                    DisplayName = customerData.Customer.DisplayName,
+                    ContactName = customerData.Customer.ContactName,
+                    FirstName = customerData.Customer.FirstName,
+                    LastName = customerData.Customer.LastName,
+                    Email = customerData.Customer.Email,
+                    Mobile = customerData.Customer.Mobile,
+                    Status = customerData.Customer.Status,
+                    Createdat = DateTime.UtcNow
+                };
+                _Context.ZohoCustomer.Add(entity);
+                await _Context.SaveChangesAsync();
+                return customerData.Customer.CustomerId;
             }
 
-            return responseContent; // ya phir strongly typed object return karna ho toh deserialize karo
+            return null;
         }
-
 
         public async Task<string> RefreshToken(string refreshToken)
         {

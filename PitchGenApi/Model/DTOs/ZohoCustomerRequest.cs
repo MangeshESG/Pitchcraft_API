@@ -20,7 +20,6 @@ public class ZohoCustomerRequest
     [JsonProperty("billing_address")]
     public Address BillingAddress { get; set; }
 
-
     [JsonProperty("currency_code")]
     public string CurrencyCode { get; set; }
 }

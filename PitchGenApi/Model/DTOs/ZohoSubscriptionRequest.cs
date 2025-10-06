@@ -12,6 +12,7 @@
 
     public class Customer
     {
+        public string display_name { get; set; }
         public string email { get; set; }
     }
 

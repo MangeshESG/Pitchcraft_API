@@ -34,7 +34,8 @@ namespace PitchGenApi.Database
 
         public DbSet<ToneSettings> ToneSettings { get; set; }
         public DbSet<UserCredits> UserCredits { get; set; }
-        public DbSet<Subscriptions> subscriptions { get; set; }
+        public DbSet<ZohoCustomer> ZohoCustomer { get; set; }
+        public DbSet<Subscription> Subscription { get; set; }
 
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)

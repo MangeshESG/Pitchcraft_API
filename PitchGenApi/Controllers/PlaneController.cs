@@ -20,25 +20,34 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("create-customer")]
-        public async Task<IActionResult> CreateCustomer([FromBody] ZohoCustomerRequest customer)
+        public async Task<IActionResult> CreateCustomer([FromQuery] int ClinteId, [FromBody] ZohoCustomerRequest customer)
         {
             try
             {
-                var result = await _zohoSubscriptionService.CreateCustomerAsync(customer);
-                return Content(result, "application/json");
+                var result = await _zohoSubscriptionService.CreateCustomerAsync(customer, ClinteId);
+
+                if (string.IsNullOrEmpty(result))
+                {
+                    return BadRequest(new { message = "Something went wrong" });
+                }
+                else
+                {
+                    return Ok(new { customer_id = result });
+                }
             }
             catch (Exception ex)
             {
+                // Optionally log the exception
                 return BadRequest(new { error = ex.Message });
             }
         }
 
         [HttpPost("new-subscription")]
-        public async Task<IActionResult> CreateNewSubscription([FromBody] ZohoSubscriptionRequest requestModel)
+        public async Task<IActionResult> CreateNewSubscription([FromQuery] int clientId, [FromBody] ZohoSubscriptionRequest requestModel)
         {
             try
             {
-                var result = await _zohoSubscriptionService.CreateNewSubscriptionAsync(requestModel);
+                var result = await _zohoSubscriptionService.CreateNewSubscriptionAsync(requestModel, clientId);
                 return Ok(result);
             }
             catch (Exception ex)
