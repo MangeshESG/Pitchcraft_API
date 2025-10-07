@@ -4,6 +4,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Services;
 using System.Text;
+using System.Text.Json;
 
 namespace PitchGenApi.Controllers
 {
@@ -12,10 +13,12 @@ namespace PitchGenApi.Controllers
     public class PlaneController : ControllerBase
     {
         private readonly ZohoSubscriptionService _zohoSubscriptionService;
+        private readonly IConfiguration _configuration;
 
-        public PlaneController(ZohoSubscriptionService zohoSubscriptionService)
+        public PlaneController(ZohoSubscriptionService zohoSubscriptionService, IConfiguration configuration)
         {
             _zohoSubscriptionService = zohoSubscriptionService;
+            _configuration = configuration;
         }
 
 
@@ -24,7 +27,7 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                var result = await _zohoSubscriptionService.CreateCustomerAsync(customer, ClinteId);
+                var result = await _zohoSubscriptionService.CreateCustomer(customer, ClinteId);
 
                 if (string.IsNullOrEmpty(result))
                 {
@@ -47,7 +50,20 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                var result = await _zohoSubscriptionService.CreateNewSubscriptionAsync(requestModel, clientId);
+                var result = await _zohoSubscriptionService.CreateNewSubscription(requestModel, clientId);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+        [HttpGet("get-Customers")]
+        public async Task<IActionResult> GetCustomers([FromQuery] int clientId)
+        {
+            try
+            {
+                var result = await _zohoSubscriptionService.GetCustomers(clientId);
                 return Ok(result);
             }
             catch (Exception ex)
@@ -56,5 +72,18 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpPost("payment-webhook")]
+        public async Task<IActionResult> PaymentWebhook([FromBody] JsonElement payload)
+        {
+            // ✅ Step 1: Verify Secret Header
+            if (!Request.Headers.TryGetValue("X-Zoho-Auth-Token", out var token) || token != _configuration["Zoho:WebhookSecret"])
+                return Unauthorized(new { message = "Invalid or missing Zoho secret" });
+
+            // ✅ Step 2: Process Payload
+            Console.WriteLine("Zoho Webhook received: " + payload.GetRawText());
+            // ... handle payment success/failure logic here ...
+
+            return Ok(new { message = "Processed successfully" });
+        }
     }
 }

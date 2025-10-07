@@ -28,7 +28,7 @@ namespace PitchGenApi
         }
 
 
-        public async Task<ZohoHostedPageResponse.HostedPage> CreateNewSubscriptionAsync(ZohoSubscriptionRequest requestModel, int clientId)
+        public async Task<ZohoHostedPageResponse.HostedPage> CreateNewSubscription(ZohoSubscriptionRequest requestModel, int clientId)
         {
             var refreshToken = _configuration["Zoho:RefreshToken"];
             var accessToken = await RefreshToken(refreshToken);
@@ -68,7 +68,7 @@ namespace PitchGenApi
             return hostedPageResponse.hostedpage;
         }
 
-        public async Task<string> CreateCustomerAsync(ZohoCustomerRequest customer, int clientId)
+        public async Task<string> CreateCustomer(ZohoCustomerRequest customer, int clientId)
         {
             var refreshToken = _configuration["Zoho:RefreshToken"];
             var accessToken = await RefreshToken(refreshToken);
@@ -164,5 +164,21 @@ namespace PitchGenApi
             }
             return string.Empty;
         }
+
+        public async Task<object> GetCustomers(int clientId)
+        {
+            var customer = await _Context.ZohoCustomer
+                .Where(c => c.ClientId == clientId)
+                .Select(c => new{ 
+                        c.CustomerId, 
+                        c.ClientId,
+                        c.ContactName,
+                        c.Email
+                })
+                .FirstOrDefaultAsync();
+
+            return customer;
+        }
+
     }
 }
