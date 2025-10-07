@@ -31,6 +31,8 @@ namespace PitchGenApi.Database
 
         public DbSet<ToneSettings> ToneSettings { get; set; }
 
+        public DbSet<CampaignTemplate> CampaignTemplates { get; set; }
+        public DbSet<CampaignConversation> CampaignConversations { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -51,6 +53,35 @@ namespace PitchGenApi.Database
             // ✅ Composite primary key for SegmentContact
             modelBuilder.Entity<SegmentContact>()
                 .HasKey(sc => new { sc.SegmentId, sc.ContactId });
+
+
+            modelBuilder.Entity<CampaignTemplate>()
+               .HasIndex(c => c.ClientId)
+               .HasDatabaseName("IX_CampaignTemplate_ClientId");
+
+            modelBuilder.Entity<CampaignTemplate>()
+                .HasIndex(c => new { c.ClientId, c.TemplateName })
+                .HasDatabaseName("IX_CampaignTemplate_ClientId_TemplateName");
+
+            modelBuilder.Entity<CampaignTemplate>()
+                .Property(c => c.PlaceholderValues)
+                .HasColumnType("nvarchar(max)");
+
+            // Configure relationship between CampaignTemplate and CampaignConversation
+            modelBuilder.Entity<CampaignTemplate>()
+                .HasOne(t => t.Conversation)
+                .WithOne(c => c.CampaignTemplate)
+                .HasForeignKey<CampaignConversation>(c => c.CampaignTemplateId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<CampaignConversation>()
+                .HasIndex(c => c.ClientId)
+                .HasDatabaseName("IX_CampaignConversation_ClientId");
+
+            modelBuilder.Entity<CampaignConversation>()
+                .Property(c => c.ConversationData)
+                .HasColumnType("nvarchar(max)");
+
 
             base.OnModelCreating(modelBuilder);
         }

@@ -124,20 +124,15 @@ namespace PitchGenApi.Controllers
                     return NotFound("Data file not found for the given client.");
                 }
 
-                // Step 2: Get related contacts
-                var contactsToDelete = _context.contacts
-                    .Where(c => c.DataFileId == dataFileId);
+                // Step 2: Delete related contacts in bulk (fast)
+                int deletedContacts = await _context.Database.ExecuteSqlInterpolatedAsync(
+                    $"DELETE FROM contacts WHERE DataFileId = {dataFileId}");
 
-                int deletedContacts = await contactsToDelete.CountAsync();
-
-                // Step 3: Delete contacts
-                _context.contacts.RemoveRange(contactsToDelete);
-
-                // Step 4: Delete data file
+                // Step 3: Delete the data file
                 _context.data_files.Remove(dataFile);
-
                 await _context.SaveChangesAsync();
 
+                // Step 4: Return result
                 return Ok(new
                 {
                     Message = $"Deleted {deletedContacts} contacts and data file ID {dataFileId} successfully."
@@ -149,8 +144,7 @@ namespace PitchGenApi.Controllers
             }
         }
 
-      
-        
+
         [HttpGet("contacts/by-client-datafile")]
         public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId)
         {

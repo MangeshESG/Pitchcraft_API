@@ -1,5 +1,6 @@
 ﻿using System.Net.Http;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
@@ -115,16 +116,38 @@ namespace PitchGenApi.Services
                 content = m["content"]
             }).ToList();
 
-            var requestData = new
+            // Build request data dynamically based on model
+            dynamic requestData;
+
+            // Only include reasoning parameter for GPT-5 models
+            if (model.StartsWith("gpt-5"))
             {
-                model = model,
-                input = inputMessages,
-                reasoning = new { effort = "medium" },
-                tools = new object[] { new { type = "web_search" } },
-                tool_choice = "auto",
-                max_output_tokens = 15000,
-                temperature = 1.0
-            };
+                requestData = new
+                {
+                    model = model,
+                    input = inputMessages,
+                    reasoning = new { effort = "medium" },
+                    tools = new object[] { new { type = "web_search" } },
+                    tool_choice = "auto",
+                    max_output_tokens = 15000,
+                    temperature = 1.0
+                };
+            }
+            else
+            {
+                // For GPT-4 models, use standard parameters
+                requestData = new
+                {
+                    model = model,
+                    input = inputMessages, // MUST use 'input' not 'messages'
+                    tools = new object[] { new { type = "web_search" } },
+                    tool_choice = "auto",
+                    max_output_tokens = 15000,
+                    temperature = 1.0
+                };
+            }
+
+            
 
             var response = await _httpClient.PostAsync(
                 "https://api.openai.com/v1/responses",
@@ -145,7 +168,7 @@ namespace PitchGenApi.Services
 
             dynamic result = JsonConvert.DeserializeObject<dynamic>(jsonResponse);
 
-            // Extract optional assistant text (if a "message" was returned)
+            // Extract assistant text
             string aiResponse = null;
             if (result.output != null)
             {
@@ -164,29 +187,69 @@ namespace PitchGenApi.Services
                 }
             }
 
-            // ✅ Save assistant reply to history
+            // Check for completion markers
+            if (!string.IsNullOrWhiteSpace(aiResponse))
+            {
+                // Look for the specific completion pattern
+                bool hasPlaceholderSection = aiResponse.Contains("==PLACEHOLDER_VALUES_START==")
+                                           && aiResponse.Contains("==PLACEHOLDER_VALUES_END==");
+                bool hasCompletionJson = aiResponse.Contains("\"status\"")
+                                       && aiResponse.Contains("\"complete\"");
+
+                if (hasPlaceholderSection && hasCompletionJson)
+                {
+                    Console.WriteLine("Completion markers detected!");
+
+                    // Clear the session
+                    ClearChatHistory(userId);
+
+                    // Return completion response
+                    return new
+                    {
+                        isComplete = true,
+                        assistantText = aiResponse,
+                        fullResponse = result,
+                        sessionActive = false,
+                        messageCount = 0
+                    };
+                }
+            }
+
+            // Save assistant reply to history
             if (!string.IsNullOrWhiteSpace(aiResponse) && _sessions.ContainsKey(userId))
             {
                 _sessions[userId].Messages.Add(new Dictionary<string, string>
-                {
-                    { "role", "assistant" },
-                    { "content", aiResponse }
-                });
+        {
+            { "role", "assistant" },
+            { "content", aiResponse }
+        });
             }
 
-            // ✅ Final structured response with ALL raw data
+            // Return non-complete response
             return new
             {
-                assistantText = aiResponse ?? "No natural language response returned.",
+                isComplete = false,
+                assistantText = aiResponse ?? "I'm sorry, I encountered an issue. Please try again.",
                 fullResponse = result,
-                rawJson = jsonResponse,
                 sessionActive = true,
-                messageCount = _sessions[userId]?.Messages.Count ?? 0
+                messageCount = _sessions.ContainsKey(userId) ? _sessions[userId].Messages.Count : 0
             };
         }
+        public class CompletionResponse
+        {
+            [JsonProperty("status")]
+            public string Status { get; set; }
+
+            [JsonProperty("final_prompt")]
+            public string FinalPrompt { get; set; }
+        }
+
+        // In your CampaignPromptService or a constants file
+
     }
 
     // Keep existing WebSearchService class as is...
+
 
 
 // ✅ Models for parsing web search tool responses
@@ -245,5 +308,8 @@ public class WebSearchService
             [JsonProperty("snippet")]
             public string Snippet { get; set; }
         }
+
+
+
     }
 }
