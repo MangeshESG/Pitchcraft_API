@@ -179,8 +179,6 @@ builder.Services.AddHttpClient<ZohoService>(client =>
 
 });
 
-builder.Services.AddHttpClient<ZohoSubscriptionService>();
-
 builder.Services.AddControllers();
 
 // ✅ Register CampaignPromptService and HttpClient

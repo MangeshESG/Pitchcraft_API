@@ -17,31 +17,31 @@ public class ZohoCustomerRequest
     [JsonProperty("mobile")]
     public string Mobile { get; set; }
 
-    [JsonProperty("billing_address")]
-    public Address BillingAddress { get; set; }
+    //[JsonProperty("billing_address")]
+    //public Address BillingAddress { get; set; }
 
-    [JsonProperty("currency_code")]
-    public string CurrencyCode { get; set; }
+    //[JsonProperty("currency_code")]
+    //public string CurrencyCode { get; set; }
 }
 
-public class Address
-{
+//public class Address
+//{
 
-    [JsonProperty("street")]
-    public string Street { get; set; }
+//    [JsonProperty("street")]
+//    public string Street { get; set; }
 
-    [JsonProperty("city")]
-    public string City { get; set; }
+//    [JsonProperty("city")]
+//    public string City { get; set; }
 
-    [JsonProperty("state")]
-    public string State { get; set; }
+//    [JsonProperty("state")]
+//    public string State { get; set; }
 
-    [JsonProperty("zip")]
-    public string Zip { get; set; }
+//    [JsonProperty("zip")]
+//    public string Zip { get; set; }
 
-    [JsonProperty("country")]
-    public string Country { get; set; }
+//    [JsonProperty("country")]
+//    public string Country { get; set; }
 
-    [JsonProperty("state_code")]
-    public string StateCode { get; set; }
-}
+//    [JsonProperty("state_code")]
+//    public string StateCode { get; set; }
+//}

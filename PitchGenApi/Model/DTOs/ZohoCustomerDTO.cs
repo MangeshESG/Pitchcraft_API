@@ -4,50 +4,26 @@ namespace PitchGenApi.Model.DTOs
 {
     public class ZohoCustomerDTO
     {
-        [JsonPropertyName("id")]
-        public int Id { get; set; }
-
-        [JsonPropertyName("customer_id")]
-        public string CustomerId { get; set; }
-
-        [JsonPropertyName("contact_id")]
-        public string ContactId { get; set; }
-
-        [JsonPropertyName("primary_contactperson_id")]
-        public string PrimaryContactPersonId { get; set; }
-
-        [JsonPropertyName("display_name")]
-        public string DisplayName { get; set; }
-
-        [JsonPropertyName("contact_name")]
-        public string ContactName { get; set; }
-
-        [JsonPropertyName("first_name")]
-        public string FirstName { get; set; }
-
-        [JsonPropertyName("last_name")]
-        public string LastName { get; set; }
-
-        [JsonPropertyName("email")]
-        public string Email { get; set; }
-
-        [JsonPropertyName("mobile")]
-        public string Mobile { get; set; }
-
-        [JsonPropertyName("status")]
-        public string Status { get; set; }
+        public int id { get; set; }
+        public string customer_id { get; set; }
+        public string contact_id { get; set; }
+        public string primary_contactperson_id { get; set; }
+        public string display_name { get; set; }
+        public string contact_name { get; set; }
+        public string first_name { get; set; }
+        public string last_name { get; set; }
+        public string email { get; set; }
+        public string mobile { get; set; }
+        public string status { get; set; }
 
     }
 
     public class ZohoCustomerResponse
     {
-        [JsonPropertyName("code")]
-        public int Code { get; set; }
+        public int code { get; set; }
 
-        [JsonPropertyName("message")]
-        public string Message { get; set; }
+        public string message { get; set; }
 
-        [JsonPropertyName("customer")]
-        public ZohoCustomerDTO Customer { get; set; }
+        public ZohoCustomerDTO customer { get; set; }
     }
 }

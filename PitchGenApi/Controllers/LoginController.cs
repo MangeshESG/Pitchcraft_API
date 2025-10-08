@@ -22,13 +22,15 @@ namespace PitchGenApi.Controllers
         private readonly IUserRepository _userRepository;
         private readonly JwtService _jwtService;
         private readonly IResetPassworde _resetPassword;
+        private readonly ZohoService _zohoService;
 
-        public LoginController(AppDbContext context, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword)
+        public LoginController(AppDbContext context, ZohoService zohoService, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword)
         {
             _context = context;
             _userRepository = userRepository;
             _jwtService = jwtService;
             _resetPassword = resetPassword;
+            _zohoService = zohoService;
         }
 
         [HttpPost("login")]
@@ -153,7 +155,7 @@ namespace PitchGenApi.Controllers
             }
 
             // Generate OTP
-            string otp = OtpGenerator.GenerateSecureOtp();  // default 6-character
+            string otp = OtpGenerator.GenerateSecureOtp();
 
             // Save OTP
             var otpEntity = new EmailOtpVerification
@@ -192,7 +194,7 @@ namespace PitchGenApi.Controllers
 
         // Step 2: Verify OTP and Save ClientDetails
         [HttpPost("registration-verify-otp")]
-        public IActionResult VerifyOtp([FromBody] VerifyOtpRequest request)
+        public async Task<IActionResult> VerifyOtp([FromBody] VerifyOtpRequest request)
         {
             var otpRecord = _context.EmailOtpVerifications
                 .FirstOrDefault(o => o.Email == request.Email && o.OTP == request.Otp);
@@ -208,7 +210,7 @@ namespace PitchGenApi.Controllers
 
             // 🔍 Get temporary registration data from DB
             var tempData = _context.TempRegisterData
-                .FirstOrDefault(t => t.Email == request.Email && t.ExpiresAt > DateTime.Now);
+                .FirstOrDefault(t => t.Email == request.Email /*&& t.ExpiresAt > DateTime.Now*/);
 
             if (tempData == null)
                 return BadRequest("Registration data expired. Please register again.");
@@ -225,13 +227,24 @@ namespace PitchGenApi.Controllers
                 PasswordHash = PasswordHasher.HashPassword(requestData.Password),
                 CompanyName = requestData.CompanyName,
                 JobTitle = requestData.JobTitle,
+                MobileNumber = requestData.MobileNumber,
                 CreatedAt = DateTime.Now
             };
 
             _context.ClientDetails.Add(client);
             _context.SaveChanges(); // Save client to get generated ID
 
-            // 🎁 Give 100 free credits
+            var Zohocustomer = new ZohoCustomerRequest
+            {
+                DisplayName = requestData.FirstName,
+                FirstName = requestData.FirstName,
+                LastName = requestData.LastName,
+                Email = requestData.Email,
+                Mobile = requestData.MobileNumber
+            };
+
+            var customer = await _zohoService.CreateCustomer(Zohocustomer, client.Id);
+
             var userCredits = new UserCredits
             {
                 ClientId = client.Id,
