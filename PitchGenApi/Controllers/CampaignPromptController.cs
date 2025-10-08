@@ -64,11 +64,11 @@ namespace PitchGenApi.Controllers
                 {
                     ClientId = request.ClientId,
                     TemplateName = request.TemplateName,
-                    SystemPrompt = request.SystemPrompt,
-                    MasterPrompt = request.MasterPrompt,
-                    PreviewText = request.PreviewText,
-                    FinalPrompt = request.FinalPrompt,
-                    FinalPreviewText = request.FinalPreviewText,
+                    AIInstructions = request.SystemPrompt, // Changed
+                    PlaceholderListInfo = request.MasterPrompt, // Changed
+                    MasterBlueprintUnpopulated = request.PreviewText, // Changed
+                    PlaceholderListWithValue = request.FinalPrompt, // Changed
+                    CampaignBlueprint = request.FinalPreviewText, // Changed
                     PlaceholderValues = JsonSerializer.Serialize(request.PlaceholderValues),
                     SelectedModel = request.SelectedModel,
                     CreatedAt = DateTime.UtcNow
@@ -174,11 +174,11 @@ namespace PitchGenApi.Controllers
                     template.Id,
                     template.ClientId,
                     template.TemplateName,
-                    template.SystemPrompt,
-                    template.MasterPrompt,
-                    template.PreviewText,
-                    template.FinalPrompt,
-                    template.FinalPreviewText,
+                    template.AIInstructions, // Changed from SystemPrompt
+                    template.PlaceholderListInfo, // Changed from MasterPrompt
+                    template.MasterBlueprintUnpopulated, // Changed from PreviewText
+                    template.PlaceholderListWithValue, // Changed from FinalPrompt
+                    template.CampaignBlueprint, // Changed from FinalPreviewText
                     PlaceholderValues = placeholderValues,
                     template.SelectedModel,
                     template.CreatedAt,
@@ -191,6 +191,7 @@ namespace PitchGenApi.Controllers
                     }
                 };
 
+
                 return Ok(result);
             }
             catch (Exception ex)
@@ -200,7 +201,8 @@ namespace PitchGenApi.Controllers
         }
 
         // Update campaign template
-        [HttpPut("template/update")]
+        // Change from [HttpPut] to [HttpPost]
+        [HttpPost("template/update")]
         public async Task<IActionResult> UpdateCampaignTemplate([FromBody] UpdateCampaignTemplateRequest request)
         {
             try
@@ -211,12 +213,19 @@ namespace PitchGenApi.Controllers
                 if (template == null)
                     return NotFound(new { Message = "Template not found" });
 
-                // Update fields
+                // Update fields with new property names
                 template.TemplateName = request.TemplateName;
-                template.SystemPrompt = request.SystemPrompt;
-                template.MasterPrompt = request.MasterPrompt;
-                template.PreviewText = request.PreviewText;
-                template.FinalPreviewText = request.FinalPreviewText;
+                template.AIInstructions = request.AIInstructions;
+                template.PlaceholderListInfo = request.PlaceholderListInfo;
+                template.MasterBlueprintUnpopulated = request.MasterBlueprintUnpopulated;
+
+                // Only update these if provided
+                if (!string.IsNullOrEmpty(request.PlaceholderListWithValue))
+                    template.PlaceholderListWithValue = request.PlaceholderListWithValue;
+
+                if (!string.IsNullOrEmpty(request.CampaignBlueprint))
+                    template.CampaignBlueprint = request.CampaignBlueprint;
+
                 template.SelectedModel = request.SelectedModel;
 
                 // Update placeholder values if provided
