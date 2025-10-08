@@ -4,31 +4,28 @@ using System.ComponentModel.DataAnnotations;
 
 namespace PitchGenApi.Models
 {
+    // In your Models folder, update CampaignTemplate.cs
     public class CampaignTemplate
     {
-        [Key]
         public int Id { get; set; }
-
-        [Required]
         public string ClientId { get; set; }
-
-        [Required]
         public string TemplateName { get; set; }
 
-        public string SystemPrompt { get; set; }
-        public string MasterPrompt { get; set; }
-        public string PreviewText { get; set; }
-        public string FinalPrompt { get; set; }
-        public string FinalPreviewText { get; set; }
-        public string PlaceholderValues { get; set; } // JSON string
+        // Updated column names
+        public string AIInstructions { get; set; } // Previously SystemPrompt
+        public string PlaceholderListInfo { get; set; } // Previously MasterPrompt
+        public string MasterBlueprintUnpopulated { get; set; } // Previously PreviewText
+        public string PlaceholderListWithValue { get; set; } // Previously FinalPrompt
+        public string CampaignBlueprint { get; set; } // Previously FinalPreviewText
+
+        public string PlaceholderValues { get; set; }
         public string SelectedModel { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
 
         // Navigation property
-        public virtual CampaignConversation Conversation { get; set; }
+        public CampaignConversation Conversation { get; set; }
     }
-
     public class CampaignConversation
     {
         [Key]
