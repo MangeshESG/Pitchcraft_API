@@ -47,9 +47,10 @@ namespace PitchGenApi.Controllers
             if (user.TrustDiviceNumber != null && user.TrustDiviceNumber == dto.trustednumber && user.TrustExpiry > DateTime.Now)
             {
                 var tokenDirect = _jwtService.GeneratenewToken(dto.username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
-                return Ok(new 
-                { Token = tokenDirect ,
-                  user.IsAdmin
+                return Ok(new
+                {
+                    Token = tokenDirect,
+                    user.IsAdmin
                 });
             }
 
@@ -240,7 +241,17 @@ namespace PitchGenApi.Controllers
                 FirstName = requestData.FirstName,
                 LastName = requestData.LastName,
                 Email = requestData.Email,
-                Mobile = requestData.MobileNumber
+                Mobile = requestData.MobileNumber,
+                CurrencyCode = requestData.CurrencyCode, // Example value; replace as needed
+                BillingAddress = new Address
+                {
+                    Street = requestData.Street,
+                    City = requestData.City,
+                    State = requestData.State,
+                    Zip = requestData.Zip,
+                    Country = requestData.Country,
+                    StateCode = requestData.StateCode
+                }
             };
 
             var customer = await _zohoService.CreateCustomer(Zohocustomer, client.Id);
