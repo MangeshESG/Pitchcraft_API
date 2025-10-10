@@ -1,10 +1,10 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Services;
+using PitchGenApi.Model;
 using System.Text;
-using System.Text.Json;
+using System.Security.Cryptography;
 
 namespace PitchGenApi.Controllers
 {
@@ -14,11 +14,14 @@ namespace PitchGenApi.Controllers
     {
         private readonly ZohoService _zohoService;
         private readonly IConfiguration _configuration;
+        private readonly AppDbContext _context;
+        private const string ZohoSecretKey = "ijdfhumsjjjewkss447dom-0MKODFOOE9MFC"; // Set this same key in Zoho dashboard
 
-        public PlaneController(ZohoService zohoService, IConfiguration configuration)
+        public PlaneController(ZohoService zohoService, IConfiguration configuration, AppDbContext context)
         {
             _zohoService = zohoService;
             _configuration = configuration;
+            _context = context;
         }
 
         [HttpPost("new-subscription")]
@@ -48,18 +51,49 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        [HttpPost("payment-webhook")]
-        public async Task<IActionResult> PaymentWebhook([FromBody] JsonElement payload)
+        [HttpPost("receive")]
+        public async Task<IActionResult> ReceivePaymentWebhook()
         {
-            // ✅ Step 1: Verify Secret Header
-            if (!Request.Headers.TryGetValue("X-Zoho-Auth-Token", out var token) || token != _configuration["Zoho:WebhookSecret"])
-                return Unauthorized(new { message = "Invalid or missing Zoho secret" });
+            try
+            {
+                // 🔹 Step 1: Read raw request body
+                using var reader = new StreamReader(Request.Body, Encoding.UTF8);
+                string rawBody = await reader.ReadToEndAsync();
 
-            // ✅ Step 2: Process Payload
-            Console.WriteLine("Zoho Webhook received: " + payload.GetRawText());
-            // ... handle payment success/failure logic here ...
+                // 🔹 Step 2: Verify Zoho signature
+                if (!Request.Headers.TryGetValue("X-Zoho-Signature", out var signatureHeader))
+                {
+                    return BadRequest(new { message = "Missing X-Zoho-Signature header" });
+                }
 
-            return Ok(new { message = "Processed successfully" });
+                using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(ZohoSecretKey));
+                byte[] hashBytes = hmac.ComputeHash(Encoding.UTF8.GetBytes(rawBody));
+                string computedSignature = Convert.ToBase64String(hashBytes);
+
+                if (computedSignature != signatureHeader)
+                {
+                    return BadRequest(new { message = "Invalid signature" });
+                }
+
+                // 🔹 Step 3: Save full payload to DB
+                await _context.WebhookLogs.AddAsync(new WebhookLogs
+                {
+                    EventName = "Zoho Payment Webhook",
+                    JsonData = rawBody,
+                    CreatedAt = DateTime.UtcNow
+                });
+                await _context.SaveChangesAsync();
+
+                // 🔹 Step 4: Return success to Zoho
+                return Ok(new { message = "Webhook received and verified successfully" });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Webhook error: {ex.Message}");
+                return BadRequest(new { message = "Error processing webhook" });
+            }
         }
     }
+
 }
+

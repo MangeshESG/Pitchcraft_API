@@ -36,6 +36,7 @@ namespace PitchGenApi.Database
         public DbSet<UserCredits> UserCredits { get; set; }
         public DbSet<ZohoCustomer> ZohoCustomer { get; set; }
         public DbSet<Subscription> Subscription { get; set; }
+        public DbSet<WebhookLogs> WebhookLogs { get; set; }
 
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)

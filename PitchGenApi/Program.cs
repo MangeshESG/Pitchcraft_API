@@ -1,224 +1,152 @@
 ﻿using Microsoft.EntityFrameworkCore;
-
 using PitchGenApi.Database;
-
 using PitchGenApi.Interfaces;
-
 using Microsoft.AspNetCore.Authentication.JwtBearer;
-
 using Microsoft.IdentityModel.Tokens;
-
 using System.Text;
-
 using PitchGenApi.Services;
-
 using PitchGenApi.Repository;
-
 using Microsoft.OpenApi.Models;
-
-using PitchGenApi.Services;
-
 using PitchGenApi.Model;
 using PitchGenApi;
+using PitchGenApi.Middleware;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.Configure<OpenAISettings>(
+// ===== Serilog =====
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.File("logs/error-.txt", rollingInterval: RollingInterval.Day)
+    .CreateLogger();
 
-    builder.Configuration.GetSection("OpenAI"));
+builder.Host.UseSerilog();
+
+// ===== Configurations =====
+builder.Services.Configure<OpenAISettings>(
+    builder.Configuration.GetSection("OpenAI")
+);
 
 builder.Services.AddControllers();
-
 builder.Services.AddEndpointsApiExplorer();
-
 builder.Services.AddSwaggerGen(options =>
-
 {
-
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "PitchGen API", Version = "v1" });
 
-    // JWT token support in Swagger
-
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
-
     {
-
-        Description = "JWT Authorization header using the Bearer scheme. Example: \"Bearer {token}\"",
-
+        Description = "JWT Authorization header using the Bearer scheme. Example: 'Bearer {token}'",
         Name = "Authorization",
-
         In = ParameterLocation.Header,
-
         Type = SecuritySchemeType.ApiKey,
-
         Scheme = "Bearer"
-
     });
 
     options.AddSecurityRequirement(new OpenApiSecurityRequirement
-
     {
-
         {
-
             new OpenApiSecurityScheme
-
             {
-
                 Reference = new OpenApiReference
-
                 {
-
                     Type = ReferenceType.SecurityScheme,
-
                     Id = "Bearer"
-
                 }
-
             },
-
             new string[] {}
-
         }
-
     });
-
 });
 
-builder.Services.AddHttpClient();
-
+// ===== DbContext =====
 builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"))
+);
 
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
-
-builder.Services.AddDbContext<AppDbContext>(options =>
-
-    options.UseSqlServer(builder.Configuration.GetConnectionString("UATConnection")));
-
+// ===== JWT Auth =====
 var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]);
-
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-
     .AddJwtBearer(options =>
-
     {
-
         options.TokenValidationParameters = new TokenValidationParameters
-
         {
-
             ValidateIssuer = true,
-
             ValidateAudience = true,
-
             ValidateLifetime = true,
-
             ValidateIssuerSigningKey = true,
-
             ValidIssuer = builder.Configuration["Jwt:Issuer"],
-
             ValidAudience = builder.Configuration["Jwt:Audience"],
-
             IssuerSigningKey = new SymmetricSecurityKey(key)
-
         };
-
     });
 
+// ===== CORS =====
 builder.Services.AddCors(options =>
-
 {
-
     options.AddPolicy("MyCorsPolicy", policy =>
-
     {
-
         policy.WithOrigins(
                 "http://localhost:3000",
                 "http://test.pitchkraft.ai"
             )
-        .AllowAnyHeader()
-        .AllowAnyMethod();
-
-
+            .AllowAnyHeader()
+            .AllowAnyMethod();
     });
-
 });
 
-builder.Services.AddAuthorization();
-
+// ===== Dependencies =====
 builder.Services.AddScoped<IUserRepository, UserRepository>();
-
 builder.Services.AddScoped<IPromptRepository, PromptRepository>();
-
 builder.Services.AddScoped<IPitchService, PitchService>();
-
 builder.Services.AddScoped<EmailSendingHelper>();
-
 builder.Services.AddHostedService<EmailSchedulerService>();
-
 builder.Services.AddScoped<ContactRepository>();
-
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
-
 builder.Services.AddSingleton<JwtService>();
-
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
-
 builder.Services.AddHttpClient<ZohoService>(client =>
-
 {
-
     client.BaseAddress = new Uri("https://www.zohoapis.com/");
-
     client.Timeout = TimeSpan.FromSeconds(30);
-
-    // Remove the line below if you're managing headers per request
-
-    // client.DefaultRequestHeaders.Add("Accept", "application/json");
-
 });
-
-builder.Services.AddControllers();
-
-// ✅ Register CampaignPromptService and HttpClient
 builder.Services.AddHttpClient<CampaignPromptService>();
-builder.Services.AddHttpClient<WebSearchService>(); // ✅ Add this line
-
+builder.Services.AddHttpClient<WebSearchService>();
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
+// ===== Global Exception Middleware =====
+app.UseMiddleware<GlobalExceptionMiddleware>();
 
+// ===== Swagger (must be first before static) =====
+app.UseSwagger();
+app.UseSwaggerUI(c =>
 {
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "PitchGen API v1");
+    c.RoutePrefix = "swagger"; // accessible at /swagger
+});
 
-    app.UseSwagger();
-
-    app.UseSwaggerUI();
-
-}
-
-
-
+// ===== CORS + Auth =====
 app.UseCors("MyCorsPolicy");
-
 app.UseHttpsRedirection();
-
 app.UseAuthentication();
-
 app.UseAuthorization();
 
-// ? Serve React build first
-
+// ===== React static files AFTER Swagger =====
 app.UseDefaultFiles();
-
 app.UseStaticFiles();
 
-
-
-// ? Map API controllers
-
+// ===== API routes =====
 app.MapControllers();
 
-app.Run();
+// ===== (Optional) fallback only for React, not for Swagger =====
+app.MapFallback(context =>
+{
+    if (context.Request.Path.StartsWithSegments("/swagger"))
+    {
+        context.Response.StatusCode = 404;
+        return Task.CompletedTask;
+    }
+    context.Response.Redirect("/");
+    return Task.CompletedTask;
+});
 
+app.Run();
