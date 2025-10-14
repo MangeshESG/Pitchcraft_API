@@ -228,33 +228,12 @@ namespace PitchGenApi.Controllers
                 PasswordHash = PasswordHasher.HashPassword(requestData.Password),
                 CompanyName = requestData.CompanyName,
                 JobTitle = requestData.JobTitle,
-                MobileNumber = requestData.MobileNumber,
                 CreatedAt = DateTime.Now
             };
 
             _context.ClientDetails.Add(client);
             _context.SaveChanges(); // Save client to get generated ID
 
-            var Zohocustomer = new ZohoCustomerRequest
-            {
-                DisplayName = requestData.FirstName,
-                FirstName = requestData.FirstName,
-                LastName = requestData.LastName,
-                Email = requestData.Email,
-                Mobile = requestData.MobileNumber,
-                CurrencyCode = requestData.CurrencyCode, // Example value; replace as needed
-                BillingAddress = new Address
-                {
-                    Street = requestData.Street,
-                    City = requestData.City,
-                    State = requestData.State,
-                    Zip = requestData.Zip,
-                    Country = requestData.Country,
-                    StateCode = requestData.StateCode
-                }
-            };
-
-            var customer = await _zohoService.CreateCustomer(Zohocustomer, client.Id);
 
             var userCredits = new UserCredits
             {
