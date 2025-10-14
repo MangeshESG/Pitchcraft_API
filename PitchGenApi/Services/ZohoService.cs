@@ -763,7 +763,7 @@ namespace PitchGenApi.Services
 
             }
 
-            return null;
+            return customerData.customer.contact_id ;
         }
 
 

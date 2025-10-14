@@ -14,9 +14,6 @@ public class ZohoCustomerRequest
     [JsonProperty("email")]
     public string Email { get; set; }
 
-    [JsonProperty("mobile")]
-    public string Mobile { get; set; }
-
     [JsonProperty("billing_address")]
     public Address BillingAddress { get; set; }
 
@@ -42,6 +39,6 @@ public class Address
     [JsonProperty("country")]
     public string Country { get; set; }
 
-    [JsonProperty("state_code")]
-    public string StateCode { get; set; }
+    //[JsonProperty("state_code")]
+    //public string StateCode { get; set; }
 }
