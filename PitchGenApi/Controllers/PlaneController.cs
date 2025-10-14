@@ -9,6 +9,7 @@ using System.ComponentModel.DataAnnotations;
 using System.Security.Cryptography;
 using System.Text;
 using System.Security.Cryptography;
+using PitchGenApi.Model;
 
 namespace PitchGenApi.Controllers
 {
@@ -99,14 +100,14 @@ namespace PitchGenApi.Controllers
                 return BadRequest(new { message = "Error processing webhook" });
             }
         }
-        public class WebhookLogs
-        {
-            [Key]
-            public int Id { get; set; }
-            public string? EventName { get; set; }
-            public string? JsonData { get; set; }
-            public DateTime? CreatedAt { get; set; }
-        }
+        //public class WebhookLogs
+        //{
+        //    [Key]
+        //    public int Id { get; set; }
+        //    public string? EventName { get; set; }
+        //    public string? JsonData { get; set; }
+        //    public DateTime? CreatedAt { get; set; }
+        //}
     }
 
 }

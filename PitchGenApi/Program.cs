@@ -117,7 +117,7 @@ app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "PitchGen API v1");
-    c.RoutePrefix = ""; // http://test.pitchkraft.ai/swagger
+    c.RoutePrefix = "swagger"; // ✅ Swagger URL = /swagger/index.html
 });
 
 // ===== CORS + Auth =====
