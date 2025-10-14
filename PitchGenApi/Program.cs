@@ -14,27 +14,23 @@ using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ===== Serilog =====
-Log.Logger = new LoggerConfiguration()
-    .WriteTo.File("logs/error-.txt", rollingInterval: RollingInterval.Day)
-    .CreateLogger();
-
-builder.Host.UseSerilog();
-
-// ===== Configurations =====
+// OpenAI config
 builder.Services.Configure<OpenAISettings>(
-    builder.Configuration.GetSection("OpenAI")
-);
+    builder.Configuration.GetSection("OpenAI"));
 
+// Controllers
 builder.Services.AddControllers();
+
+// Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "PitchGen API", Version = "v1" });
 
+    // JWT token in Swagger
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
-        Description = "JWT Authorization header using the Bearer scheme. Example: 'Bearer {token}'",
+        Description = "JWT Authorization header using the Bearer scheme. Example: \"Bearer {token}\"",
         Name = "Authorization",
         In = ParameterLocation.Header,
         Type = SecuritySchemeType.ApiKey,
@@ -57,12 +53,21 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-// ===== DbContext =====
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"))
-);
+// Http clients
+builder.Services.AddHttpClient();
+builder.Services.AddHttpClient<CampaignPromptService>();
+builder.Services.AddHttpClient<WebSearchService>();
+builder.Services.AddHttpClient<ZohoService>(client =>
+{
+    client.BaseAddress = new Uri("https://www.zohoapis.com/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
 
-// ===== JWT Auth =====
+// DB Context
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// JWT Auth
 var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]);
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -79,21 +84,19 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-// ===== CORS =====
+// CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("MyCorsPolicy", policy =>
     {
-        policy.WithOrigins(
-                "http://localhost:3000",
-                "http://test.pitchkraft.ai"
-            )
-            .AllowAnyHeader()
-            .AllowAnyMethod();
+        policy.WithOrigins("http://localhost:3000", "http://test.pitchkraft.ai")
+              .AllowAnyHeader()
+              .AllowAnyMethod();
     });
 });
 
-// ===== Dependencies =====
+// Dependency Injection
+builder.Services.AddAuthorization();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IPromptRepository, PromptRepository>();
 builder.Services.AddScoped<IPitchService, PitchService>();
@@ -103,25 +106,18 @@ builder.Services.AddScoped<ContactRepository>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
-builder.Services.AddHttpClient<ZohoService>(client =>
-{
-    client.BaseAddress = new Uri("https://www.zohoapis.com/");
-    client.Timeout = TimeSpan.FromSeconds(30);
-});
-builder.Services.AddHttpClient<CampaignPromptService>();
-builder.Services.AddHttpClient<WebSearchService>();
 
+// -------------------------------------------------------------------
+// 🔥 APP PIPELINE
+// -------------------------------------------------------------------
 var app = builder.Build();
 
-// ===== Global Exception Middleware =====
-app.UseMiddleware<GlobalExceptionMiddleware>();
-
-// ===== Swagger (must be first before static) =====
+// ✅ Always enable Swagger (not just development)
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "PitchGen API v1");
-    c.RoutePrefix = "swagger"; // accessible at /swagger
+    c.RoutePrefix = ""; // http://test.pitchkraft.ai/swagger
 });
 
 // ===== CORS + Auth =====
@@ -130,11 +126,10 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// ===== React static files AFTER Swagger =====
+// ✅ Static files (React) come AFTER Swagger
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
-// ===== API routes =====
 app.MapControllers();
 
 // ===== (Optional) fallback only for React, not for Swagger =====
