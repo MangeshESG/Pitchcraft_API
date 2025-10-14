@@ -201,7 +201,6 @@ namespace PitchGenApi.Controllers
         }
 
         // Update campaign template
-        // Change from [HttpPut] to [HttpPost]
         [HttpPost("template/update")]
         public async Task<IActionResult> UpdateCampaignTemplate([FromBody] UpdateCampaignTemplateRequest request)
         {
