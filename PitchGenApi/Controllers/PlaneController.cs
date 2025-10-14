@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Model.DTOs;
@@ -14,11 +15,13 @@ namespace PitchGenApi.Controllers
     {
         private readonly ZohoService _zohoService;
         private readonly IConfiguration _configuration;
+        private readonly AppDbContext _context;
 
-        public PlaneController(ZohoService zohoService, IConfiguration configuration)
+        public PlaneController(ZohoService zohoService, IConfiguration configuration, AppDbContext context)
         {
             _zohoService = zohoService;
             _configuration = configuration;
+            _context = context;
         }
         [HttpPost("create-customer")]
         public async Task<IActionResult> CreateCustomer([FromQuery] int ClinteId, [FromBody] ZohoCustomerRequest customer)
@@ -41,6 +44,21 @@ namespace PitchGenApi.Controllers
                 // Optionally log the exception
                 return BadRequest(new { error = ex.Message });
             }
+        }
+
+        [HttpGet("get-Countries")]
+        public async Task<IActionResult> GetAllCountries()
+        {
+            var countries = await _context.Countriesdropdown
+                .Select(c => new
+                {
+                    c.Id,
+                    c.Name,
+                    c.Currency
+                })
+                .ToListAsync();
+
+            return Ok(countries);
         }
 
         [HttpPost("new-subscription")]
