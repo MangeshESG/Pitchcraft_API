@@ -9,13 +9,19 @@ using PitchGenApi.Repository;
 using Microsoft.OpenApi.Models;
 using PitchGenApi.Services;
 using PitchGenApi.Model;
-
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<OpenAISettings>(
     builder.Configuration.GetSection("OpenAI"));
 
-builder.Services.AddControllers();
+
+builder.Services.Configure<KestrelServerOptions>(options =>
+{
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(10);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(10);
+});
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -86,7 +92,10 @@ builder.Services.AddCors(options =>
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IPromptRepository, PromptRepository>();
-builder.Services.AddScoped<IPitchService, PitchService>();
+builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+}); 
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddScoped<ContactRepository>();
@@ -103,9 +112,15 @@ builder.Services.AddHttpClient<ZohoService>(client =>
 builder.Services.AddControllers();
 
 // ✅ Register CampaignPromptService and HttpClient
-builder.Services.AddHttpClient<CampaignPromptService>();
-builder.Services.AddHttpClient<WebSearchService>(); // ✅ Add this line
+builder.Services.AddHttpClient<CampaignPromptService>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
 
+builder.Services.AddHttpClient<WebSearchService>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(5);
+});
 
 var app = builder.Build();
 
