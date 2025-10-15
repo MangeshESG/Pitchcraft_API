@@ -1,15 +1,10 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using PitchGenApi.Services;
 using PitchGenApi.Model.DTOs;
-using PitchGenApi.Model;
-using System.Threading.Tasks;
 using PitchGenApi.Models;
-using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
-using System;
-using System.Linq;
-using System.Collections.Generic;
+using System.Text.Json;
 
 namespace PitchGenApi.Controllers
 {
@@ -28,26 +23,165 @@ namespace PitchGenApi.Controllers
             _dbContext = dbContext;
         }
 
-        // Existing chat endpoint
-        [HttpPost("chat")]
-        public async Task<IActionResult> Chat([FromBody] ChatRequestDto request)
+        #region Template Definition Endpoints (Shared Templates)
+
+        // Create/Save a new template definition (admin operation)
+        [HttpPost("template-definition/save")]
+        public async Task<IActionResult> SaveTemplateDefinition([FromBody] SaveTemplateDefinitionRequest request)
         {
-            if (string.IsNullOrWhiteSpace(request.UserId))
-                return BadRequest(new { Message = "UserId is required" });
+            try
+            {
+                if (string.IsNullOrWhiteSpace(request.TemplateName))
+                    return BadRequest(new { Message = "Template name is required" });
 
-            var model = string.IsNullOrWhiteSpace(request.Model) ? "gpt-5" : request.Model;
+                // Check if template name already exists
+                var exists = await _dbContext.CampaignTemplateDefinitions
+                    .AnyAsync(t => t.TemplateName == request.TemplateName);
 
-            var result = await _campaignService.ProcessChatAsync(
-                request.UserId,
-                request.Message,
-                request.SystemPrompt,
-                model
-            );
+                if (exists)
+                    return BadRequest(new { Message = "A template with this name already exists" });
 
-            return Ok(new { Response = result });
+                var templateDef = new CampaignTemplateDefinition
+                {
+                    TemplateName = request.TemplateName,
+                    AIInstructions = request.AIInstructions,
+                    AIInstructionsForEdit = request.AIInstructionsForEdit,
+                    PlaceholderList = request.PlaceholderList,
+                    PlaceholderListExtensive = request.PlaceholderListExtensive,
+                    MasterBlueprintUnpopulated = request.MasterBlueprintUnpopulated,
+                    CreatedBy = request.CreatedBy,
+                    CreatedAt = DateTime.UtcNow,
+                    IsActive = true
+                };
+
+                _dbContext.CampaignTemplateDefinitions.Add(templateDef);
+                await _dbContext.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    TemplateDefinitionId = templateDef.Id,
+                    Message = "Template definition saved successfully"
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Error = ex.Message });
+            }
         }
 
-        // Save campaign template with conversation
+        // Get all template definitions
+        [HttpGet("template-definitions")]
+        public async Task<IActionResult> GetTemplateDefinitions([FromQuery] bool activeOnly = true)
+        {
+            try
+            {
+                var query = _dbContext.CampaignTemplateDefinitions.AsQueryable();
+
+                if (activeOnly)
+                    query = query.Where(t => t.IsActive);
+
+                var definitions = await query
+                    .OrderByDescending(t => t.CreatedAt)
+                    .Select(t => new
+                    {
+                        t.Id,
+                        t.TemplateName,
+                        t.CreatedAt,
+                        t.UpdatedAt,
+                        t.IsActive,
+                        UsageCount = t.CampaignTemplates.Count
+                    })
+                    .ToListAsync();
+
+                return Ok(new { TemplateDefinitions = definitions });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Error = ex.Message });
+            }
+        }
+
+        // Get specific template definition
+        [HttpGet("template-definition/{id}")]
+        public async Task<IActionResult> GetTemplateDefinition(int id)
+        {
+            try
+            {
+                var definition = await _dbContext.CampaignTemplateDefinitions
+                    .FirstOrDefaultAsync(t => t.Id == id);
+
+                if (definition == null)
+                    return NotFound(new { Message = "Template definition not found" });
+
+                return Ok(definition);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Error = ex.Message });
+            }
+        }
+
+        // Update template definition
+        [HttpPost("template-definition/update")]
+        public async Task<IActionResult> UpdateTemplateDefinition([FromBody] UpdateTemplateDefinitionRequest request)
+        {
+            try
+            {
+                var definition = await _dbContext.CampaignTemplateDefinitions
+                    .FirstOrDefaultAsync(t => t.Id == request.Id);
+
+                if (definition == null)
+                    return NotFound(new { Message = "Template definition not found" });
+
+                definition.TemplateName = request.TemplateName;
+                definition.AIInstructions = request.AIInstructions;
+                definition.AIInstructionsForEdit = request.AIInstructionsForEdit;
+                definition.PlaceholderList = request.PlaceholderList;
+                definition.PlaceholderListExtensive = request.PlaceholderListExtensive;
+                definition.MasterBlueprintUnpopulated = request.MasterBlueprintUnpopulated;
+                definition.UpdatedAt = DateTime.UtcNow;
+
+                await _dbContext.SaveChangesAsync();
+
+                return Ok(new { Success = true, Message = "Template definition updated successfully" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Error = ex.Message });
+            }
+        }
+
+        // Deactivate template definition
+        [HttpPost("template-definition/{id}/deactivate")]
+        public async Task<IActionResult> DeactivateTemplateDefinition(int id)
+        {
+            try
+            {
+                var definition = await _dbContext.CampaignTemplateDefinitions
+                    .FirstOrDefaultAsync(t => t.Id == id);
+
+                if (definition == null)
+                    return NotFound(new { Message = "Template definition not found" });
+
+                definition.IsActive = false;
+                definition.UpdatedAt = DateTime.UtcNow;
+
+                await _dbContext.SaveChangesAsync();
+
+                return Ok(new { Success = true, Message = "Template definition deactivated" });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Error = ex.Message });
+            }
+        }
+
+        #endregion
+
+        #region Client Campaign Templates Endpoints
+
+        // Save client's filled campaign template
         [HttpPost("template/save")]
         public async Task<IActionResult> SaveCampaignTemplate([FromBody] SaveCampaignTemplateRequest request)
         {
@@ -56,20 +190,26 @@ namespace PitchGenApi.Controllers
                 if (string.IsNullOrWhiteSpace(request.ClientId))
                     return BadRequest(new { Message = "ClientId is required" });
 
-                if (string.IsNullOrWhiteSpace(request.TemplateName))
-                    return BadRequest(new { Message = "Template name is required" });
+                if (request.TemplateDefinitionId <= 0)
+                    return BadRequest(new { Message = "Valid TemplateDefinitionId is required" });
+
+                // Verify template definition exists
+                var definitionExists = await _dbContext.CampaignTemplateDefinitions
+                    .AnyAsync(t => t.Id == request.TemplateDefinitionId && t.IsActive);
+
+                if (!definitionExists)
+                    return BadRequest(new { Message = "Template definition not found or inactive" });
 
                 // Create campaign template
                 var campaignTemplate = new CampaignTemplate
                 {
                     ClientId = request.ClientId,
-                    TemplateName = request.TemplateName,
-                    AIInstructions = request.SystemPrompt, // Changed
-                    PlaceholderListInfo = request.MasterPrompt, // Changed
-                    MasterBlueprintUnpopulated = request.PreviewText, // Changed
-                    PlaceholderListWithValue = request.FinalPrompt, // Changed
-                    CampaignBlueprint = request.FinalPreviewText, // Changed
-                    PlaceholderValues = JsonSerializer.Serialize(request.PlaceholderValues),
+                    TemplateDefinitionId = request.TemplateDefinitionId,
+                    PlaceholderListWithValue = request.PlaceholderListWithValue,
+                    CampaignBlueprint = request.CampaignBlueprint,
+                    PlaceholderValues = request.PlaceholderValues != null
+                        ? JsonSerializer.Serialize(request.PlaceholderValues)
+                        : null,
                     SelectedModel = request.SelectedModel,
                     CreatedAt = DateTime.UtcNow
                 };
@@ -108,13 +248,17 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        // Get saved templates for a client
+        // Get client's campaign templates (list)
         [HttpGet("templates/{clientId}")]
-        public async Task<IActionResult> GetCampaignTemplates(string clientId, [FromQuery] int pageSize = 20, [FromQuery] int pageNumber = 1)
+        public async Task<IActionResult> GetCampaignTemplates(
+            string clientId,
+            [FromQuery] int pageSize = 20,
+            [FromQuery] int pageNumber = 1)
         {
             try
             {
                 var query = _dbContext.CampaignTemplates
+                    .Include(t => t.TemplateDefinition)
                     .Where(t => t.ClientId == clientId)
                     .OrderByDescending(t => t.CreatedAt);
 
@@ -126,7 +270,8 @@ namespace PitchGenApi.Controllers
                     .Select(t => new
                     {
                         t.Id,
-                        t.TemplateName,
+                        t.TemplateDefinitionId,
+                        TemplateName = t.TemplateDefinition != null ? t.TemplateDefinition.TemplateName : "",
                         t.CreatedAt,
                         t.UpdatedAt,
                         t.SelectedModel,
@@ -149,48 +294,61 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        // Get specific template with full details
-        [HttpGet("template/{templateId}")]
-        public async Task<IActionResult> GetCampaignTemplate(int templateId)
+        // Get specific campaign template with full details
+        [HttpGet("campaign/{templateId}")] // ✅ Changed route to avoid conflict
+        public async Task<IActionResult> GetCampaignTemplateDetails(int templateId)
         {
             try
             {
                 var template = await _dbContext.CampaignTemplates
+                    .Include(t => t.TemplateDefinition)
                     .Include(t => t.Conversation)
                     .FirstOrDefaultAsync(t => t.Id == templateId);
 
                 if (template == null)
                     return NotFound(new { Message = "Template not found" });
 
+                if (template.TemplateDefinition == null)
+                    return StatusCode(500, new { Message = "Template definition is missing" });
+
                 // Parse placeholder values
-                Dictionary<string, string> placeholderValues = null;
+                Dictionary<string, string>? placeholderValues = null;
                 if (!string.IsNullOrEmpty(template.PlaceholderValues))
                 {
                     placeholderValues = JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues);
                 }
 
-                var result = new
+                // Parse conversation messages
+                List<ConversationMessage>? messages = null;
+                if (template.Conversation?.ConversationData != null)
                 {
-                    template.Id,
-                    template.ClientId,
-                    template.TemplateName,
-                    template.AIInstructions, // Changed from SystemPrompt
-                    template.PlaceholderListInfo, // Changed from MasterPrompt
-                    template.MasterBlueprintUnpopulated, // Changed from PreviewText
-                    template.PlaceholderListWithValue, // Changed from FinalPrompt
-                    template.CampaignBlueprint, // Changed from FinalPreviewText
+                    messages = JsonSerializer.Deserialize<List<ConversationMessage>>(template.Conversation.ConversationData);
+                }
+
+                var result = new CampaignTemplateDetailResponse
+                {
+                    Id = template.Id,
+                    ClientId = template.ClientId,
+                    TemplateDefinitionId = template.TemplateDefinitionId,
+                    TemplateName = template.TemplateDefinition.TemplateName,
+                    AIInstructions = template.TemplateDefinition.AIInstructions,
+                    AIInstructionsForEdit = template.TemplateDefinition.AIInstructionsForEdit,
+                    PlaceholderList = template.TemplateDefinition.PlaceholderList,
+                    PlaceholderListExtensive = template.TemplateDefinition.PlaceholderListExtensive,
+                    MasterBlueprintUnpopulated = template.TemplateDefinition.MasterBlueprintUnpopulated,
+                    PlaceholderListWithValue = template.PlaceholderListWithValue,
+                    CampaignBlueprint = template.CampaignBlueprint,
                     PlaceholderValues = placeholderValues,
-                    template.SelectedModel,
-                    template.CreatedAt,
-                    template.UpdatedAt,
-                    Conversation = template.Conversation == null ? null : new
+                    SelectedModel = template.SelectedModel,
+                    CreatedAt = template.CreatedAt,
+                    UpdatedAt = template.UpdatedAt,
+                    Conversation = template.Conversation == null ? null : new ConversationData
                     {
-                        Messages = JsonSerializer.Deserialize<List<ConversationMessage>>(template.Conversation.ConversationData),
-                        template.Conversation.StartedAt,
-                        template.Conversation.CompletedAt
+                        Messages = messages ?? new List<ConversationMessage>(),
+                        StartedAt = template.Conversation.StartedAt,
+                        CompletedAt = template.Conversation.CompletedAt
                     }
                 };
-
 
                 return Ok(result);
             }
@@ -200,7 +358,7 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        // Update campaign template
+        // Update client's campaign template
         [HttpPost("template/update")]
         public async Task<IActionResult> UpdateCampaignTemplate([FromBody] UpdateCampaignTemplateRequest request)
         {
@@ -212,26 +370,18 @@ namespace PitchGenApi.Controllers
                 if (template == null)
                     return NotFound(new { Message = "Template not found" });
 
-                // Update fields with new property names
-                template.TemplateName = request.TemplateName;
-                template.AIInstructions = request.AIInstructions;
-                template.PlaceholderListInfo = request.PlaceholderListInfo;
-                template.MasterBlueprintUnpopulated = request.MasterBlueprintUnpopulated;
-
-                // Only update these if provided
+                // Update only client-specific fields
                 if (!string.IsNullOrEmpty(request.PlaceholderListWithValue))
                     template.PlaceholderListWithValue = request.PlaceholderListWithValue;
 
                 if (!string.IsNullOrEmpty(request.CampaignBlueprint))
                     template.CampaignBlueprint = request.CampaignBlueprint;
 
-                template.SelectedModel = request.SelectedModel;
-
-                // Update placeholder values if provided
                 if (request.PlaceholderValues != null)
-                {
                     template.PlaceholderValues = JsonSerializer.Serialize(request.PlaceholderValues);
-                }
+
+                if (!string.IsNullOrEmpty(request.SelectedModel))
+                    template.SelectedModel = request.SelectedModel;
 
                 template.UpdatedAt = DateTime.UtcNow;
 
@@ -245,7 +395,7 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        // Delete template - Changed from DELETE to POST
+        // Delete client's campaign template
         [HttpPost("template/{templateId}/delete")]
         public async Task<IActionResult> DeleteCampaignTemplate(int templateId)
         {
@@ -273,7 +423,28 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        // Existing endpoints
+        #endregion
+
+        #region Chat Endpoints
+
+        [HttpPost("chat")]
+        public async Task<IActionResult> Chat([FromBody] ChatRequestDto request)
+        {
+            if (string.IsNullOrWhiteSpace(request.UserId))
+                return BadRequest(new { Message = "UserId is required" });
+
+            var model = string.IsNullOrWhiteSpace(request.Model) ? "gpt-5" : request.Model;
+
+            var result = await _campaignService.ProcessChatAsync(
+                request.UserId,
+                request.Message ?? "",
+                request.SystemPrompt ?? "",
+                model
+            );
+
+            return Ok(new { Response = result });
+        }
+
         [HttpGet("history/{userId}")]
         public IActionResult GetChatHistory(string userId)
         {
@@ -290,5 +461,7 @@ namespace PitchGenApi.Controllers
             _campaignService.ClearChatHistory(userId);
             return Ok(new { Message = "Chat history cleared" });
         }
+
+        #endregion
     }
 }
