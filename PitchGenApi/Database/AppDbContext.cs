@@ -23,14 +23,14 @@ namespace PitchGenApi.Database
         public DbSet<EmailLog> EmailLogs { get; set; }
         public DbSet<BccEmail> BccEmail { get; set; }
         public DbSet<Campaign> Campaigns { get; set; }
-
         public DbSet<DataFile> data_files { get; set; }
         public DbSet<Contact> contacts { get; set; }
         public DbSet<Segment> segments { get; set; }
         public DbSet<SegmentContact> segmentContacts { get; set; }
-
         public DbSet<ToneSettings> ToneSettings { get; set; }
 
+        // ✅ Campaign Template System
+        public DbSet<CampaignTemplateDefinition> CampaignTemplateDefinitions { get; set; }
         public DbSet<CampaignTemplate> CampaignTemplates { get; set; }
         public DbSet<CampaignConversation> CampaignConversations { get; set; }
 
@@ -50,55 +50,53 @@ namespace PitchGenApi.Database
                 .HasIndex(c => new { c.DataFileId, c.email })
                 .IsUnique();
 
-            // ✅ Composite primary key for SegmentContact
+            // Composite primary key for SegmentContact
             modelBuilder.Entity<SegmentContact>()
                 .HasKey(sc => new { sc.SegmentId, sc.ContactId });
 
+            // ✅ CampaignTemplateDefinition Configuration
+            modelBuilder.Entity<CampaignTemplateDefinition>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.TemplateName).IsUnique();
+                entity.Property(e => e.TemplateName).IsRequired().HasMaxLength(255);
+                entity.Property(e => e.IsActive).HasDefaultValue(true);
+                entity.Property(e => e.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
+            });
 
-            modelBuilder.Entity<CampaignTemplate>()
-               .HasIndex(c => c.ClientId)
-               .HasDatabaseName("IX_CampaignTemplate_ClientId");
+            // ✅ CampaignTemplate Configuration
+            modelBuilder.Entity<CampaignTemplate>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.ClientId);
+                entity.HasIndex(e => e.TemplateDefinitionId);
+                entity.HasIndex(e => new { e.ClientId, e.TemplateDefinitionId });
 
-            modelBuilder.Entity<CampaignTemplate>()
-                .HasIndex(c => new { c.ClientId, c.TemplateName })
-                .HasDatabaseName("IX_CampaignTemplate_ClientId_TemplateName");
+                entity.Property(e => e.PlaceholderValues).HasColumnType("nvarchar(max)");
+                entity.Property(e => e.CreatedAt).HasDefaultValueSql("GETUTCDATE()");
 
-            modelBuilder.Entity<CampaignTemplate>()
-                .Property(c => c.PlaceholderValues)
-                .HasColumnType("nvarchar(max)");
+                // Relationship with TemplateDefinition
+                entity.HasOne(e => e.TemplateDefinition)
+                      .WithMany(d => d.CampaignTemplates)
+                      .HasForeignKey(e => e.TemplateDefinitionId)
+                      .OnDelete(DeleteBehavior.Cascade);
 
-            // Configure relationship between CampaignTemplate and CampaignConversation
-            modelBuilder.Entity<CampaignTemplate>()
-                .HasOne(t => t.Conversation)
-                .WithOne(c => c.CampaignTemplate)
-                .HasForeignKey<CampaignConversation>(c => c.CampaignTemplateId)
-                .OnDelete(DeleteBehavior.Cascade);
+                // Relationship with Conversation
+                entity.HasOne(e => e.Conversation)
+                      .WithOne(c => c.CampaignTemplate)
+                      .HasForeignKey<CampaignConversation>(c => c.CampaignTemplateId)
+                      .OnDelete(DeleteBehavior.Cascade);
+            });
 
-            modelBuilder.Entity<CampaignConversation>()
-                .HasIndex(c => c.ClientId)
-                .HasDatabaseName("IX_CampaignConversation_ClientId");
-
-            modelBuilder.Entity<CampaignConversation>()
-                .Property(c => c.ConversationData)
-                .HasColumnType("nvarchar(max)");
-
+            // ✅ CampaignConversation Configuration
+            modelBuilder.Entity<CampaignConversation>(entity =>
+            {
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => e.ClientId);
+                entity.Property(e => e.ConversationData).HasColumnType("nvarchar(max)");
+            });
 
             base.OnModelCreating(modelBuilder);
-        }
-
-        internal async Task FirstOrDefaultAsync()
-        {
-            throw new NotImplementedException();
-        }
-
-        internal async Task GetAllModelInfoAsync()
-        {
-            throw new NotImplementedException();
-        }
-
-        internal async Task GetClientId()
-        {
-            throw new NotImplementedException();
         }
     }
 }
