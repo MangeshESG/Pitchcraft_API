@@ -1,7 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
 using PitchGenApi.Models;
-using static PitchGenApi.Controllers.PlaneController;
+using PitchGenApi.Controllers;
 
 namespace PitchGenApi.Database
 {

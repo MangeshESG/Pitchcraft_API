@@ -1,19 +1,15 @@
 ﻿using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
+using PitchGenApi.Model.DTOs.Subscription;
 using PitchGenApi.Models.DTOs;
-using System;
-using System.Collections.Generic;
 using System.Data;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Threading.Tasks;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
 
@@ -687,7 +683,7 @@ namespace PitchGenApi.Services
 
             var hostedPageResponse = JsonSerializer.Deserialize<ZohoHostedPageResponse>(responseContent);
 
-            var entity = new Subscription
+            var entity = new Model.Subscription
             {
                 ClientId = clientId,
                 CustomerId = requestModel.customer_id,
@@ -813,6 +809,42 @@ namespace PitchGenApi.Services
                 Console.WriteLine($"Stack trace: {ex.StackTrace}");
             }
             return string.Empty;
+        }
+
+
+        public async Task<(string CustomerId, string PlanName)> GetSubscriptionDetails(string subscriptionId)
+        {
+            // Step 1: Get access token using refresh token
+            var refreshToken = _configuration["Zoho:RefreshToken"];
+            var accessToken = await ZohoRefreshToken(refreshToken);
+
+            string organizationId = _configuration["Zoho:OrganizationId"];
+            var url = $"https://www.zohoapis.com/billing/v1/subscriptions/{subscriptionId}";
+
+            // Step 2: Create HTTP request
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("Authorization", $"Zoho-oauthtoken {accessToken}");
+            request.Headers.Add("X-com-zoho-subscriptions-organizationid", organizationId);
+            request.Headers.Add("Accept", "application/json");
+
+            // Step 3: Send request
+            var response = await _httpClient.SendAsync(request);
+            var responseContent = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+                throw new Exception($"Zoho API Error: {response.StatusCode} - {responseContent}");
+
+            // Step 4: Parse response
+            var subscriptionData = JsonConvert.DeserializeObject<ZohoSubscriptionResponse>(responseContent);
+
+            if (subscriptionData?.subscription == null)
+                throw new Exception("Invalid Zoho subscription response");
+
+            string customerId = subscriptionData.subscription.customer.customer_id;
+            string planName = subscriptionData.subscription.plan.name;
+
+            // Step 5: Return tuple (CustomerId, PlanName)
+            return (customerId, planName);
         }
 
         public async Task<object> GetCustomers(int clientId)

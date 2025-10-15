@@ -11,12 +11,12 @@ using PitchGenApi.Model;
 using PitchGenApi;
 using PitchGenApi.Middleware;
 using Serilog;
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // OpenAI config
-builder.Services.Configure<OpenAISettings>(
-    builder.Configuration.GetSection("OpenAI"));
+builder.Services.Configure<OpenAISettings>(builder.Configuration.GetSection("OpenAI"));
 
 // Controllers
 builder.Services.AddControllers();
@@ -52,6 +52,9 @@ builder.Services.AddSwaggerGen(options =>
         }
     });
 });
+
+// **Force TLS 1.2 and 1.3** globally for all HTTP requests
+ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
 
 // Http clients
 builder.Services.AddHttpClient();
