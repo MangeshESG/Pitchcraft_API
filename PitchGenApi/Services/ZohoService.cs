@@ -11,6 +11,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using JsonSerializer = System.Text.Json.JsonSerializer;
+using System.Net.Security;
 
 
 namespace PitchGenApi.Services
@@ -671,15 +672,24 @@ namespace PitchGenApi.Services
 
             string jsonBody = JsonSerializer.Serialize(requestModel);
 
-            var request = new HttpRequestMessage(HttpMethod.Post, url);
+            // Simple handler - cipher selection handled by OS
+            var handler = new HttpClientHandler
+            {
+                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                               System.Security.Authentication.SslProtocols.Tls13
+            };
+
+            using var client = new HttpClient(handler);
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Add("Authorization", $"Zoho-oauthtoken {accessToken}");
             request.Headers.Add("X-com-zoho-subscriptions-organizationid", organizationId);
             request.Content = new StringContent(jsonBody, System.Text.Encoding.UTF8, "application/json");
 
-            var response = await _httpClient.SendAsync(request);
-            response.EnsureSuccessStatusCode();
-
+            var response = await client.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+                throw new Exception($"Zoho API Error: {response.StatusCode} - {responseContent}");
 
             var hostedPageResponse = JsonSerializer.Deserialize<ZohoHostedPageResponse>(responseContent);
 
@@ -701,6 +711,7 @@ namespace PitchGenApi.Services
             return hostedPageResponse.hostedpage;
         }
 
+
         public async Task<string> CreateCustomer(ZohoCustomerRequest customer, int clientId)
         {
             var refreshToken = _configuration["Zoho:RefreshToken"];
@@ -709,6 +720,14 @@ namespace PitchGenApi.Services
             string organizationId = _configuration["Zoho:OrganizationId"];
             var url = "https://www.zohoapis.com/billing/v1/customers";
 
+            // Simple handler - cipher selection handled by OS
+            var handler = new HttpClientHandler
+            {
+                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                               System.Security.Authentication.SslProtocols.Tls13
+            };
+
+            using var client = new HttpClient(handler);
             using var request = new HttpRequestMessage(HttpMethod.Post, url);
             request.Headers.Add("Authorization", $"Zoho-oauthtoken {accessToken}");
             request.Headers.Add("X-com-zoho-subscriptions-organizationid", organizationId);
@@ -720,7 +739,7 @@ namespace PitchGenApi.Services
             });
             request.Content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
 
-            var response = await _httpClient.SendAsync(request);
+            var response = await client.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
 
             if (!response.IsSuccessStatusCode)
@@ -746,23 +765,12 @@ namespace PitchGenApi.Services
                     Createdat = DateTime.UtcNow
                 };
 
-                try
-                {
-                    _Context.ZohoCustomer.Add(entity);
-                    int result = await _Context.SaveChangesAsync();
-                    Console.WriteLine("Rows affected: " + result);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("Error saving ZohoCustomer: " + ex);
-                }
-
+                _Context.ZohoCustomer.Add(entity);
+                await _Context.SaveChangesAsync();
             }
 
-            return customerData.customer.contact_id ;
+            return customerData.customer.contact_id;
         }
-
-
         public async Task<string> ZohoRefreshToken(string refreshToken)
         {
             try
@@ -814,27 +822,31 @@ namespace PitchGenApi.Services
 
         public async Task<(string CustomerId, string PlanName)> GetSubscriptionDetails(string subscriptionId)
         {
-            // Step 1: Get access token using refresh token
             var refreshToken = _configuration["Zoho:RefreshToken"];
             var accessToken = await ZohoRefreshToken(refreshToken);
 
             string organizationId = _configuration["Zoho:OrganizationId"];
             var url = $"https://www.zohoapis.com/billing/v1/subscriptions/{subscriptionId}";
 
-            // Step 2: Create HTTP request
+            // Simple handler - cipher selection handled by OS
+            var handler = new HttpClientHandler
+            {
+                SslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                               System.Security.Authentication.SslProtocols.Tls13
+            };
+
+            using var client = new HttpClient(handler);
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Add("Authorization", $"Zoho-oauthtoken {accessToken}");
             request.Headers.Add("X-com-zoho-subscriptions-organizationid", organizationId);
             request.Headers.Add("Accept", "application/json");
 
-            // Step 3: Send request
-            var response = await _httpClient.SendAsync(request);
+            var response = await client.SendAsync(request);
             var responseContent = await response.Content.ReadAsStringAsync();
 
             if (!response.IsSuccessStatusCode)
                 throw new Exception($"Zoho API Error: {response.StatusCode} - {responseContent}");
 
-            // Step 4: Parse response
             var subscriptionData = JsonConvert.DeserializeObject<ZohoSubscriptionResponse>(responseContent);
 
             if (subscriptionData?.subscription == null)
@@ -843,10 +855,8 @@ namespace PitchGenApi.Services
             string customerId = subscriptionData.subscription.customer.customer_id;
             string planName = subscriptionData.subscription.plan.name;
 
-            // Step 5: Return tuple (CustomerId, PlanName)
             return (customerId, planName);
         }
-
         public async Task<object> GetCustomers(int clientId)
         {
             var customer = await _Context.ZohoCustomer

@@ -12,6 +12,13 @@ using PitchGenApi;
 using PitchGenApi.Middleware;
 using Serilog;
 using System.Net;
+using System.Security.Authentication;
+using System.Net.Http;
+
+// 🔥 CRITICAL: Force TLS 1.2+ at multiple levels
+ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
+ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
+AppContext.SetSwitch("System.Net.Http.UseSocketsHttpHandler", false); // Force use of HttpClientHandler
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,8 +33,6 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "PitchGen API", Version = "v1" });
-
-    // JWT token in Swagger
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Description = "JWT Authorization header using the Bearer scheme. Example: \"Bearer {token}\"",
@@ -36,7 +41,6 @@ builder.Services.AddSwaggerGen(options =>
         Type = SecuritySchemeType.ApiKey,
         Scheme = "Bearer"
     });
-
     options.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
@@ -53,17 +57,38 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-// **Force TLS 1.2 and 1.3** globally for all HTTP requests
-ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
-
-// Http clients
+// 🔥 Configure HttpClient with TLS enforcement
 builder.Services.AddHttpClient();
-builder.Services.AddHttpClient<CampaignPromptService>();
-builder.Services.AddHttpClient<WebSearchService>();
+builder.Services.AddHttpClient<CampaignPromptService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+    });
+
+builder.Services.AddHttpClient<WebSearchService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+    });
+
+// 🔥 ZOHO SERVICE - CRITICAL CONFIGURATION
 builder.Services.AddHttpClient<ZohoService>(client =>
 {
     client.BaseAddress = new Uri("https://www.zohoapis.com/");
     client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.Add("User-Agent", "PitchGenApi/1.0");
+})
+.ConfigurePrimaryHttpMessageHandler(() =>
+{
+    var handler = new HttpClientHandler
+    {
+        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+        ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
+        UseDefaultCredentials = false,
+        AllowAutoRedirect = true,
+        MaxAutomaticRedirections = 10
+    };
+    return handler;
 });
 
 // DB Context
@@ -110,32 +135,23 @@ builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 
-// -------------------------------------------------------------------
-// 🔥 APP PIPELINE
-// -------------------------------------------------------------------
 var app = builder.Build();
 
-// ✅ Always enable Swagger (not just development)
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "PitchGen API v1");
-    c.RoutePrefix = "swagger"; // ✅ Swagger URL = /swagger/index.html
+    c.RoutePrefix = "swagger";
 });
 
-// ===== CORS + Auth =====
 app.UseCors("MyCorsPolicy");
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
-
-// ✅ Static files (React) come AFTER Swagger
 app.UseDefaultFiles();
 app.UseStaticFiles();
-
 app.MapControllers();
 
-// ===== (Optional) fallback only for React, not for Swagger =====
 app.MapFallback(context =>
 {
     if (context.Request.Path.StartsWithSegments("/swagger"))

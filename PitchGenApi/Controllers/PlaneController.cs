@@ -211,6 +211,99 @@ namespace PitchGenApi.Controllers
             }
         }
 
+
+        [HttpGet("test-tls-direct")]
+        public async Task<IActionResult> TestTlsDirect()
+        {
+            try
+            {
+                // Test with explicit TLS 1.2 handler
+                var handler = new System.Net.Http.HttpClientHandler
+                {
+                    SslProtocols = System.Security.Authentication.SslProtocols.Tls12 |
+                                  System.Security.Authentication.SslProtocols.Tls13
+                };
+
+                using var client = new HttpClient(handler);
+
+                // Test 1: TLS test endpoint
+                var tlsTestResponse = await client.GetAsync("https://tlstest.zoho.com/api");
+                var tlsTestContent = await tlsTestResponse.Content.ReadAsStringAsync();
+
+                // Test 2: Billing API endpoint (same as your CreateCustomer)
+                var refreshToken = _configuration["Zoho:RefreshToken"];
+                string clientID = _configuration["Zoho:ClientId"];
+                string clientSecret = _configuration["Zoho:ClientSecret"];
+
+                var tokenUrl = "https://accounts.zoho.com/oauth/v2/token";
+                var tokenParams = new Dictionary<string, string>
+        {
+            { "refresh_token", refreshToken },
+            { "client_id", clientID },
+            { "client_secret", clientSecret },
+            { "grant_type", "refresh_token" }
+        };
+
+                var tokenRequest = new HttpRequestMessage(HttpMethod.Post, tokenUrl);
+                tokenRequest.Content = new FormUrlEncodedContent(tokenParams);
+                var tokenResponse = await client.SendAsync(tokenRequest);
+                var tokenContent = await tokenResponse.Content.ReadAsStringAsync();
+
+                string accessToken = null;
+                if (tokenResponse.IsSuccessStatusCode)
+                {
+                    dynamic tokenJson = Newtonsoft.Json.JsonConvert.DeserializeObject(tokenContent);
+                    accessToken = tokenJson["access_token"];
+                }
+
+                // Test 3: Actual Billing API call
+                string billingTestResult = "Not tested";
+                if (!string.IsNullOrEmpty(accessToken))
+                {
+                    string organizationId = _configuration["Zoho:OrganizationId"];
+                    var billingUrl = "https://www.zohoapis.com/billing/v1/customers";
+
+                    var billingRequest = new HttpRequestMessage(HttpMethod.Get, billingUrl);
+                    billingRequest.Headers.Add("Authorization", $"Zoho-oauthtoken {accessToken}");
+                    billingRequest.Headers.Add("X-com-zoho-subscriptions-organizationid", organizationId);
+
+                    var billingResponse = await client.SendAsync(billingRequest);
+                    billingTestResult = $"Status: {billingResponse.StatusCode}, Content: {await billingResponse.Content.ReadAsStringAsync()}";
+                }
+
+                return Ok(new
+                {
+                    serverInfo = new
+                    {
+                        protocol = System.Net.ServicePointManager.SecurityProtocol.ToString(),
+                        osVersion = Environment.OSVersion.ToString(),
+                        dotnetVersion = Environment.Version.ToString(),
+                        machineName = Environment.MachineName
+                    },
+                    tlsTest = new
+                    {
+                        status = tlsTestResponse.StatusCode.ToString(),
+                        content = tlsTestContent
+                    },
+                    tokenRefresh = new
+                    {
+                        success = tokenResponse.IsSuccessStatusCode,
+                        hasAccessToken = !string.IsNullOrEmpty(accessToken)
+                    },
+                    billingApiTest = billingTestResult
+                });
+            }
+            catch (Exception ex)
+            {
+                return Ok(new
+                {
+                    success = false,
+                    error = ex.Message,
+                    innerError = ex.InnerException?.Message,
+                    stackTrace = ex.StackTrace?.Split('\n').Take(10)
+                });
+            }
+        }
     }
 
 }
