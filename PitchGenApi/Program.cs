@@ -163,6 +163,8 @@ builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
 
 builder.Services.AddSingleton<JwtService>();
 
+builder.Services.AddScoped<ZohoDataService>();
+
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 
 builder.Services.AddHttpClient<ZohoService>(client =>

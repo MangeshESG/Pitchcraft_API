@@ -16,12 +16,14 @@ namespace PitchGenApi.Controllers
         private readonly ZohoService _zohoService;
         private readonly IConfiguration _configuration;
         private readonly AppDbContext _context;
+        private readonly ZohoDataService _zohodata;
 
-        public PlaneController(ZohoService zohoService, IConfiguration configuration, AppDbContext context)
+        public PlaneController(ZohoService zohoService, IConfiguration configuration, AppDbContext context, ZohoDataService zohodata)
         {
             _zohoService = zohoService;
             _configuration = configuration;
             _context = context;
+            _zohodata = zohodata;
         }
         [HttpPost("create-customer")]
         public async Task<IActionResult> CreateCustomer([FromQuery] int ClinteId, [FromBody] ZohoCustomerRequest customer)
@@ -80,7 +82,21 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                var result = await _zohoService.GetCustomers(clientId);
+                var result = await _zohodata.GetCustomers(clientId);
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+        
+        [HttpGet("get-CustomersInClient")]
+        public async Task<IActionResult> GetCustomersInClient([FromQuery] int clientId)
+        {
+            try
+            {
+                var result = await _zohodata.GetCustomersInClient(clientId);
                 return Ok(result);
             }
             catch (Exception ex)

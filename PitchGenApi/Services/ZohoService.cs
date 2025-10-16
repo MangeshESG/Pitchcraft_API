@@ -814,20 +814,5 @@ namespace PitchGenApi.Services
             }
             return string.Empty;
         }
-
-        public async Task<object> GetCustomers(int clientId)
-        {
-            var customer = await _Context.ZohoCustomer
-                .Where(c => c.ClientId == clientId)
-                .Select(c => new {
-                    c.CustomerId,
-                    c.ClientId,
-                    c.ContactName,
-                    c.Email
-                })
-                .FirstOrDefaultAsync();
-
-            return customer;
-        }
     }
 }
