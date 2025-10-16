@@ -125,8 +125,9 @@ namespace PitchGenApi.Controllers
                 }
 
                 // Step 2: Delete related contacts in bulk (fast)
+                // Changed DataFileId to data_file_id (or whatever your actual column name is)
                 int deletedContacts = await _context.Database.ExecuteSqlInterpolatedAsync(
-                    $"DELETE FROM contacts WHERE DataFileId = {dataFileId}");
+                    $"DELETE FROM contacts WHERE data_file_id = {dataFileId}");
 
                 // Step 3: Delete the data file
                 _context.data_files.Remove(dataFile);
@@ -143,7 +144,6 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new { Message = "Internal server error", Error = ex.Message });
             }
         }
-
 
         [HttpGet("contacts/by-client-datafile")]
         public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId)
