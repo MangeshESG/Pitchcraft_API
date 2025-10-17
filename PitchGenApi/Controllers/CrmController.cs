@@ -411,44 +411,118 @@ namespace PitchGenApi.Controllers
 
             return Ok(logs);
         }
+
         [HttpPost("Creat-Segments")]
         public async Task<IActionResult> CreateSegment([FromQuery] int ClientId, [FromBody] CreateSegmentDto dto)
         {
-            var dataFileExists = await _context.data_files
-                .AnyAsync(df => df.id == dto.DataFileId && df.client_id == ClientId);
-
-            if (!dataFileExists)
+            try
             {
-                return BadRequest(new { message = "Invalid ClientId or DataFileId. No matching data file found." });
-            }
+                // Validate input
+                if (dto.ContactIds == null || !dto.ContactIds.Any())
+                {
+                    return BadRequest(new { message = "ContactIds cannot be empty" });
+                }
 
-            var segment = new Segment
-            {
-                Name = dto.Name,
-                ClientId = ClientId,
-                Description = dto.Description,
-                DataFileId = dto.DataFileId,
-                CreatedAt = DateTime.UtcNow
-            };
+                // Validate DataFile exists
+                var dataFileExists = await _context.data_files
+                    .AnyAsync(df => df.id == dto.DataFileId && df.client_id == ClientId);
 
-            _context.segments.Add(segment);
-            await _context.SaveChangesAsync();
+                if (!dataFileExists)
+                {
+                    return BadRequest(new { message = "Invalid ClientId or DataFileId. No matching data file found." });
+                }
 
-            foreach (var contactId in dto.ContactIds)
-            {
-                var segmentContact = new SegmentContact
+                // Create a comma-separated list of contact IDs for SQL query
+                var contactIdsList = dto.ContactIds.Distinct().ToList();
+                var contactIdsString = string.Join(",", contactIdsList);
+
+                // Use FromSqlRaw to avoid EF Core query translation issues
+                var existingContactIds = await _context.contacts
+                    .FromSqlRaw($"SELECT * FROM contacts WHERE id IN ({contactIdsString})")
+                    .Select(c => c.id)
+                    .ToListAsync();
+
+                var invalidContactIds = contactIdsList.Except(existingContactIds).ToList();
+
+                // Check if there are any valid contacts
+                if (!existingContactIds.Any())
+                {
+                    return BadRequest(new
+                    {
+                        message = "None of the provided contacts exist. Segment not created.",
+                        invalidContactCount = invalidContactIds.Count,
+                        invalidContactIds = invalidContactIds
+                    });
+                }
+
+                // Create segment with valid contacts only
+                var segment = new Segment
+                {
+                    Name = dto.Name,
+                    ClientId = ClientId,
+                    Description = dto.Description,
+                    DataFileId = dto.DataFileId,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.segments.Add(segment);
+                await _context.SaveChangesAsync();
+
+                // Batch insert segment contacts (only valid ones)
+                var segmentContacts = existingContactIds.Select(contactId => new SegmentContact
                 {
                     SegmentId = segment.Id,
                     ContactId = contactId,
                     AddedAt = DateTime.UtcNow
+                }).ToList();
+
+                _context.segmentContacts.AddRange(segmentContacts);
+                await _context.SaveChangesAsync();
+
+                // Prepare response message
+                var message = invalidContactIds.Any()
+                    ? $"Segment created successfully. {invalidContactIds.Count} invalid contact(s) found and skipped. {existingContactIds.Count} contact(s) added successfully."
+                    : "Segment created successfully";
+
+                var response = new
+                {
+                    message = message,
+                    segmentId = segment.Id,
+                    contactsAdded = existingContactIds.Count,
+                    contactsRequested = contactIdsList.Count,
+                    validContactCount = existingContactIds.Count,
+                    invalidContactCount = invalidContactIds.Count
                 };
-                _context.segmentContacts.Add(segmentContact);
+
+                // Add invalid contact IDs to response if any exist
+                if (invalidContactIds.Any())
+                {
+                    return Ok(new
+                    {
+                        response.message,
+                        response.segmentId,
+                        response.contactsAdded,
+                        response.contactsRequested,
+                        response.validContactCount,
+                        response.invalidContactCount,
+                        invalidContactIds = invalidContactIds
+                    });
+                }
+
+                return Ok(response);
             }
-
-            await _context.SaveChangesAsync();
-
-            return Ok(new { message = "Segment created successfully", segmentId = segment.Id });
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "An error occurred while creating the segment",
+                    error = ex.Message,
+                    innerError = ex.InnerException?.Message
+                });
+            }
         }
+
+
 
         [HttpGet("get-segments-by-client")]
         public async Task<IActionResult> GetSegmentsByClientId([FromQuery] int clientId)
