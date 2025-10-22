@@ -7,6 +7,10 @@ using Newtonsoft.Json;
 using PitchGenApi.Model;
 using PitchGenApi.Models;
 using PitchGenApi.Model.DTOs;
+using PitchGenApi.Database;
+using Microsoft.EntityFrameworkCore; // ✅ Needed for async EF methods
+
+
 
 namespace PitchGenApi.Services
 {
@@ -21,10 +25,17 @@ namespace PitchGenApi.Services
         // Store edit sessions separately
         private static Dictionary<string, EditSession> _editSessions = new();
 
-        public CampaignPromptService(HttpClient httpClient, IOptions<OpenAISettings> options)
+        private readonly AppDbContext _dbContext;   // ✅ Add this
+
+        public CampaignPromptService(
+            HttpClient httpClient,
+            IOptions<OpenAISettings> options,
+            AppDbContext dbContext) // ✅ Inject it
         {
             _httpClient = httpClient;
             _apiKey = options.Value.ApiKey;
+            _dbContext = dbContext;  // ✅ assign it
+
             _httpClient.Timeout = TimeSpan.FromMinutes(5);
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
@@ -404,6 +415,12 @@ namespace PitchGenApi.Services
                         { "content", aiResponse }
                     });
                 }
+                // NEW: 🆕 Extract placeholder values after each AI message
+                var placeholderValues = ExtractPlaceholderValues(aiResponse);
+                if (placeholderValues.Count > 0)
+                {
+                    await SavePartialPlaceholderValues(sessionKey, placeholderValues);
+                }
             }
 
             // Return non-complete response
@@ -422,6 +439,83 @@ namespace PitchGenApi.Services
         // ========================================
         // NESTED CLASSES
         // ========================================
+
+        private Dictionary<string, string> ExtractPlaceholderValues(string aiResponse)
+        {
+            var placeholders = new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(aiResponse))
+                return placeholders;
+
+            var match = Regex.Match(aiResponse, @"==PLACEHOLDER_VALUES_START==([\s\S]*?)==PLACEHOLDER_VALUES_END==");
+            if (match.Success)
+            {
+                var section = match.Groups[1].Value;
+                var lineRegex = new Regex(@"\{([^}]+)\}\s*=\s*(.*)");
+                foreach (Match line in lineRegex.Matches(section))
+                {
+                    var key = line.Groups[1].Value.Trim();
+                    var value = line.Groups[2].Value.Trim();
+                    placeholders[key] = value;
+                }
+            }
+
+            return placeholders;
+        }
+
+        private async Task SavePartialPlaceholderValues(string sessionKey, Dictionary<string, string> placeholderValues)
+        {
+            try
+            {
+                // Extract userId and templateId if this is an edit session
+                string userId;
+                int? campaignTemplateId = null;
+
+                if (_editSessions.ContainsKey(sessionKey))
+                {
+                    var session = _editSessions[sessionKey];
+                    userId = session.UserId;
+                    campaignTemplateId = session.CampaignTemplateId;
+                }
+                else if (_sessions.ContainsKey(sessionKey))
+                {
+                    userId = _sessions[sessionKey].UserId;
+                }
+                else
+                {
+                    return;
+                }
+
+                if (campaignTemplateId.HasValue)
+                {
+                    // ✅ Update CampaignTemplate record in DB dynamically
+                    var template = await _dbContext.CampaignTemplates
+                        .FirstOrDefaultAsync(t => t.Id == campaignTemplateId);
+
+                    if (template != null)
+                    {
+                        Dictionary<string, string>? existing = null;
+                        if (!string.IsNullOrEmpty(template.PlaceholderValues))
+                        {
+                            existing = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues);
+                        }
+                        existing ??= new Dictionary<string, string>();
+
+                        foreach (var kvp in placeholderValues)
+                            existing[kvp.Key] = kvp.Value;
+
+                        template.PlaceholderValues = System.Text.Json.JsonSerializer.Serialize(existing);
+                        template.UpdatedAt = DateTime.UtcNow;
+
+                        await _dbContext.SaveChangesAsync();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error saving partial placeholder values: {ex.Message}");
+            }
+        }
+
 
         public class EditSession
         {
