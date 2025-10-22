@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
 using PitchGenApi.Model;
 using PitchGenApi.Models;
+using PitchGenApi.Model.DTOs;
 
 namespace PitchGenApi.Services
 {
@@ -17,6 +18,9 @@ namespace PitchGenApi.Services
         // Store sessions (chat history per user)
         private static Dictionary<string, CampaignSession> _sessions = new();
 
+        // Store edit sessions separately
+        private static Dictionary<string, EditSession> _editSessions = new();
+
         public CampaignPromptService(HttpClient httpClient, IOptions<OpenAISettings> options)
         {
             _httpClient = httpClient;
@@ -26,7 +30,10 @@ namespace PitchGenApi.Services
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
         }
 
-        // ✅ Single method to handle both start and continue
+        // ========================================
+        // REGULAR CHAT METHODS
+        // ========================================
+
         public async Task<object> ProcessChatAsync(string userId, string message, string systemPrompt, string model)
         {
             // Check if this is a new conversation or continuing existing one
@@ -83,10 +90,9 @@ namespace PitchGenApi.Services
                 });
             }
 
-            return await SendToGptAsync(_sessions[userId].Messages, model, userId);
+            return await SendToGptAsync(_sessions[userId].Messages, model, userId, false);
         }
 
-        // ✅ Get chat history
         public object GetChatHistory(string userId)
         {
             if (!_sessions.ContainsKey(userId))
@@ -100,15 +106,155 @@ namespace PitchGenApi.Services
             };
         }
 
-        // ✅ Clear chat history
         public void ClearChatHistory(string userId)
         {
             if (_sessions.ContainsKey(userId))
                 _sessions.Remove(userId);
         }
 
-        // ✅ Send to GPT and capture assistant + tool calls
-        private async Task<object> SendToGptAsync(List<Dictionary<string, string>> messages, string model, string userId)
+        // ========================================
+        // EDIT MODE METHODS
+        // ========================================
+
+        public async Task<object> StartEditConversationAsync(
+            string userId,
+            int campaignTemplateId,
+            string placeholder,
+            string currentValue,
+            string editInstructions,
+            List<ConversationMessage> oldMessages,
+            Dictionary<string, string> placeholderValues,
+            string model)
+        {
+            // Create session key combining userId and templateId
+            string sessionKey = $"{userId}_{campaignTemplateId}";
+
+            // Initialize edit session
+            var editSession = new EditSession
+            {
+                UserId = userId,
+                CampaignTemplateId = campaignTemplateId,
+                EditingPlaceholder = placeholder,
+                OriginalPlaceholderValues = placeholderValues ?? new Dictionary<string, string>(),
+                Messages = new List<Dictionary<string, string>>()
+            };
+
+            // Build context message from old conversation
+            string contextMessage = BuildContextFromOldConversation(oldMessages, placeholder, placeholderValues);
+
+            // Add system prompt with context
+            editSession.Messages.Add(new Dictionary<string, string>
+            {
+                { "role", "system" },
+                { "content", $"{editInstructions}\n\n{contextMessage}" }
+            });
+
+            // Add initial user message
+            string initialMessage = $"I want to change the value of {{{placeholder}}}. Current value is: \"{currentValue}\"";
+            editSession.Messages.Add(new Dictionary<string, string>
+            {
+                { "role", "user" },
+                { "content", initialMessage }
+            });
+
+            // Store session
+            _editSessions[sessionKey] = editSession;
+
+            // Get AI response
+            return await SendToGptAsync(editSession.Messages, model, sessionKey, true);
+        }
+
+        public async Task<object> ContinueEditConversationAsync(
+            string userId,
+            int campaignTemplateId,
+            string message,
+            string model)
+        {
+            string sessionKey = $"{userId}_{campaignTemplateId}";
+
+            if (!_editSessions.ContainsKey(sessionKey))
+            {
+                return new
+                {
+                    assistantText = "⚠️ Edit session not found. Please start a new edit conversation.",
+                    error = true
+                };
+            }
+
+            var editSession = _editSessions[sessionKey];
+
+            // Add user message
+            editSession.Messages.Add(new Dictionary<string, string>
+            {
+                { "role", "user" },
+                { "content", message }
+            });
+
+            return await SendToGptAsync(editSession.Messages, model, sessionKey, true);
+        }
+
+        public void ClearEditSession(string userId, int campaignTemplateId)
+        {
+            string sessionKey = $"{userId}_{campaignTemplateId}";
+            if (_editSessions.ContainsKey(sessionKey))
+                _editSessions.Remove(sessionKey);
+        }
+
+        // ========================================
+        // HELPER METHODS
+        // ========================================
+
+        private string BuildContextFromOldConversation(
+            List<ConversationMessage> oldMessages,
+            string editingPlaceholder,
+            Dictionary<string, string> placeholderValues)
+        {
+            if (oldMessages == null || oldMessages.Count == 0)
+            {
+                return "ORIGINAL CONTEXT: This is a new campaign with no previous conversation.";
+            }
+
+            var contextBuilder = new StringBuilder();
+            contextBuilder.AppendLine("=== ORIGINAL CONVERSATION CONTEXT ===");
+            contextBuilder.AppendLine("Here's the original conversation where this campaign was created:");
+            contextBuilder.AppendLine();
+
+            // Include relevant parts of old conversation (limit to avoid token limits)
+            int messageCount = 0;
+            foreach (var msg in oldMessages)
+            {
+                if (messageCount >= 10) break; // Limit to last 10 messages for context
+
+                string role = msg.Type == "user" ? "User" : "Assistant";
+                contextBuilder.AppendLine($"{role}: {msg.Content}");
+                contextBuilder.AppendLine();
+                messageCount++;
+            }
+
+            contextBuilder.AppendLine("=== CURRENT PLACEHOLDER VALUES ===");
+            if (placeholderValues != null && placeholderValues.Count > 0)
+            {
+                foreach (var kvp in placeholderValues)
+                {
+                    string marker = kvp.Key == editingPlaceholder ? " ← EDITING THIS" : "";
+                    contextBuilder.AppendLine($"{{{kvp.Key}}}: {kvp.Value}{marker}");
+                }
+            }
+            contextBuilder.AppendLine("=== END OF CONTEXT ===");
+            contextBuilder.AppendLine();
+
+            return contextBuilder.ToString();
+        }
+
+        // ========================================
+        // GPT API COMMUNICATION
+        // ========================================
+
+        private async Task<object> SendToGptAsync(
+            List<Dictionary<string, string>> messages,
+            string model,
+            string sessionKey,
+            bool isEditMode = false)
         {
             var inputMessages = messages.Select(m => new
             {
@@ -139,15 +285,13 @@ namespace PitchGenApi.Services
                 requestData = new
                 {
                     model = model,
-                    input = inputMessages, // MUST use 'input' not 'messages'
+                    input = inputMessages,
                     tools = new object[] { new { type = "web_search" } },
                     tool_choice = "auto",
                     max_output_tokens = 15000,
                     temperature = 1.0
                 };
             }
-
-            
 
             var response = await _httpClient.PostAsync(
                 "https://api.openai.com/v1/responses",
@@ -190,39 +334,76 @@ namespace PitchGenApi.Services
             // Check for completion markers
             if (!string.IsNullOrWhiteSpace(aiResponse))
             {
-                // Look for the specific completion pattern
-                bool hasPlaceholderSection = aiResponse.Contains("==PLACEHOLDER_VALUES_START==")
-                                           && aiResponse.Contains("==PLACEHOLDER_VALUES_END==");
-                bool hasCompletionJson = aiResponse.Contains("\"status\"")
-                                       && aiResponse.Contains("\"complete\"");
-
-                if (hasPlaceholderSection && hasCompletionJson)
+                if (isEditMode)
                 {
-                    Console.WriteLine("Completion markers detected!");
+                    // Check for edit completion marker
+                    bool hasUpdateSection = aiResponse.Contains("==PLACEHOLDER_UPDATE_START==")
+                                           && aiResponse.Contains("==PLACEHOLDER_UPDATE_END==");
 
-                    // Clear the session
-                    ClearChatHistory(userId);
-
-                    // Return completion response
-                    return new
+                    if (hasUpdateSection)
                     {
-                        isComplete = true,
-                        assistantText = aiResponse,
-                        fullResponse = result,
-                        sessionActive = false,
-                        messageCount = 0
-                    };
+                        Console.WriteLine("Edit completion markers detected!");
+
+                        // Clear the edit session
+                        if (_editSessions.ContainsKey(sessionKey))
+                            _editSessions.Remove(sessionKey);
+
+                        return new
+                        {
+                            isComplete = true,
+                            assistantText = aiResponse,
+                            fullResponse = result,
+                            sessionActive = false
+                        };
+                    }
+                }
+                else
+                {
+                    // Regular completion check
+                    bool hasPlaceholderSection = aiResponse.Contains("==PLACEHOLDER_VALUES_START==")
+                                               && aiResponse.Contains("==PLACEHOLDER_VALUES_END==");
+                    bool hasCompletionJson = aiResponse.Contains("\"status\"")
+                                           && aiResponse.Contains("\"complete\"");
+
+                    if (hasPlaceholderSection && hasCompletionJson)
+                    {
+                        Console.WriteLine("Completion markers detected!");
+
+                        // Clear the regular session
+                        if (_sessions.ContainsKey(sessionKey))
+                            _sessions.Remove(sessionKey);
+
+                        return new
+                        {
+                            isComplete = true,
+                            assistantText = aiResponse,
+                            fullResponse = result,
+                            sessionActive = false,
+                            messageCount = 0
+                        };
+                    }
                 }
             }
 
             // Save assistant reply to history
-            if (!string.IsNullOrWhiteSpace(aiResponse) && _sessions.ContainsKey(userId))
+            if (!string.IsNullOrWhiteSpace(aiResponse))
             {
-                _sessions[userId].Messages.Add(new Dictionary<string, string>
-        {
-            { "role", "assistant" },
-            { "content", aiResponse }
-        });
+                if (isEditMode && _editSessions.ContainsKey(sessionKey))
+                {
+                    _editSessions[sessionKey].Messages.Add(new Dictionary<string, string>
+                    {
+                        { "role", "assistant" },
+                        { "content", aiResponse }
+                    });
+                }
+                else if (!isEditMode && _sessions.ContainsKey(sessionKey))
+                {
+                    _sessions[sessionKey].Messages.Add(new Dictionary<string, string>
+                    {
+                        { "role", "assistant" },
+                        { "content", aiResponse }
+                    });
+                }
             }
 
             // Return non-complete response
@@ -232,9 +413,25 @@ namespace PitchGenApi.Services
                 assistantText = aiResponse ?? "I'm sorry, I encountered an issue. Please try again.",
                 fullResponse = result,
                 sessionActive = true,
-                messageCount = _sessions.ContainsKey(userId) ? _sessions[userId].Messages.Count : 0
+                messageCount = isEditMode && _editSessions.ContainsKey(sessionKey)
+                    ? _editSessions[sessionKey].Messages.Count
+                    : (!isEditMode && _sessions.ContainsKey(sessionKey) ? _sessions[sessionKey].Messages.Count : 0)
             };
         }
+
+        // ========================================
+        // NESTED CLASSES
+        // ========================================
+
+        public class EditSession
+        {
+            public string UserId { get; set; }
+            public int CampaignTemplateId { get; set; }
+            public string EditingPlaceholder { get; set; }
+            public List<Dictionary<string, string>> Messages { get; set; } = new();
+            public Dictionary<string, string> OriginalPlaceholderValues { get; set; }
+        }
+
         public class CompletionResponse
         {
             [JsonProperty("status")]
@@ -243,17 +440,13 @@ namespace PitchGenApi.Services
             [JsonProperty("final_prompt")]
             public string FinalPrompt { get; set; }
         }
-
-        // In your CampaignPromptService or a constants file
-
     }
 
-    // Keep existing WebSearchService class as is...
+    // ========================================
+    // WEB SEARCH SERVICE
+    // ========================================
 
-
-
-// ✅ Models for parsing web search tool responses
-public class WebSearchService
+    public class WebSearchService
     {
         public class WebSearchResponse
         {
@@ -308,8 +501,5 @@ public class WebSearchService
             [JsonProperty("snippet")]
             public string Snippet { get; set; }
         }
-
-
-
     }
 }
