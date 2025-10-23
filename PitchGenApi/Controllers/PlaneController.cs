@@ -12,6 +12,7 @@ using System.Security.Cryptography;
 using PitchGenApi.Model;
 using Newtonsoft.Json.Linq;
 
+
 namespace PitchGenApi.Controllers
 {
     [ApiController]
@@ -22,6 +23,8 @@ namespace PitchGenApi.Controllers
         private readonly IConfiguration _configuration;
         private readonly AppDbContext _context;
         private const string ZohoSecretKey = "ijdfhumsjjjewkss447dom-0MKODFOOE9MFC"; // Set this same key in Zoho dashboard
+        private readonly ZohoDataService _zohodata;  // ✅ Add this
+
 
         public PlaneController(ZohoService zohoService, IConfiguration configuration, AppDbContext context, ZohoDataService zohodata)
         {

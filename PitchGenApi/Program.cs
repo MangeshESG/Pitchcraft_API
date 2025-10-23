@@ -10,6 +10,7 @@ using Microsoft.OpenApi.Models;
 using PitchGenApi.Services;
 using PitchGenApi.Model;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using System.Security.Authentication;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<OpenAISettings>(

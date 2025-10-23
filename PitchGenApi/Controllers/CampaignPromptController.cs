@@ -1,8 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using PitchGenApi.Services;
 using PitchGenApi.Model.DTOs;
-using PitchGenApi.Model;
-using System.Threading.Tasks;
 using PitchGenApi.Models;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;

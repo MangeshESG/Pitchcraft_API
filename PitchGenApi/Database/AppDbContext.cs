@@ -34,6 +34,16 @@ namespace PitchGenApi.Database
         public DbSet<CampaignTemplate> CampaignTemplates { get; set; }
         public DbSet<CampaignConversation> CampaignConversations { get; set; }
 
+        // ✅ Newly added DbSets (for LoginController, registration, Zoho, etc.)
+        public DbSet<ClientDetails> ClientDetails { get; set; }
+        public DbSet<UserCredits> UserCredits { get; set; }
+        public DbSet<WebhookLogs> WebhookLogs { get; set; }
+        public DbSet<EmailOtpVerification> EmailOtpVerifications { get; set; }
+        public DbSet<TempRegisterData> TempRegisterData { get; set; }
+        public DbSet<ZohoCustomer> ZohoCustomer { get; set; }
+        public DbSet<Subscription> Subscription { get; set; }
+        public DbSet<Countriesdropdown> Countriesdropdown { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
