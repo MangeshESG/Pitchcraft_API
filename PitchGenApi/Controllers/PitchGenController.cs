@@ -613,14 +613,15 @@ namespace PitchGenApi.Controllers
                     Console.WriteLine($"Direct scrape failed, retrying with proxy for client IP {clientIp}");
                     var proxy = new WebProxy
                     {
-                        Address = new Uri("http://proxy.toolip.io:31113"), // ✅ Updated host and port
+                        Address = new Uri("http://proxy.toolip.io:31112"), // ✅ Updated host and port
                         BypassProxyOnLocal = false,
                         UseDefaultCredentials = false,
-                                            Credentials = new NetworkCredential(
-                            "tl-319b52ed0809f3c466a37c73a9de3eacf82c516bd6d2b938d8378c9064aca1ea-country-us-session-3583b", // ✅ Updated username
-                            "tcgasgt0ec39" // ✅ Updated password
+                        Credentials = new NetworkCredential(
+                            "tl-051d5a4e61dbd6020e34a3545d3a49310ee8f6e5557bee6ca10029153a037ef8-country-us-session-844e2", // ✅ Updated username
+                            "2qd0cjls5z3q" // ✅ Updated password
                         )
                     };
+
 
 
 

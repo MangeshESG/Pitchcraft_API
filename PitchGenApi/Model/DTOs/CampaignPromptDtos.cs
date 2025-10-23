@@ -1,23 +1,27 @@
 ﻿namespace PitchGenApi.Model.DTOs
 {
-    public class StartCampaignDto
+    public class ChatRequestDto
     {
-        public string? UserId { get; set; }
-        public string? SystemPrompt { get; set; }
-        public string? Model { get; set; } // Add this
+        public string UserId { get; set; }
+        public string Message { get; set; }
+        public string SystemPrompt { get; set; } // Optional - only needed for first message
+        public string Model { get; set; } // Optional - defaults to gpt-5
     }
 
-    public class CampaignChatDto
+    public class StartEditConversationRequest
     {
-        public string? UserId { get; set; }
-        public string? Message { get; set; }
-        public string? Model { get; set; } // Add this
+        public string UserId { get; set; }
+        public int CampaignTemplateId { get; set; }
+        public string Placeholder { get; set; }
+        public string CurrentValue { get; set; }
+        public string Model { get; set; }
     }
 
-
-
-
-
-    // ✅ DTO for generating sample email: matches your real Contact model
-
+    public class EditChatRequest
+    {
+        public string UserId { get; set; }
+        public int CampaignTemplateId { get; set; }
+        public string Message { get; set; }
+        public string Model { get; set; }
+    }
 }

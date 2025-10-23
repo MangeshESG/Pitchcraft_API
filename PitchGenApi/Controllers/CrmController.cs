@@ -124,6 +124,541 @@ namespace PitchGenApi.Controllers
                     return NotFound("Data file not found for the given client.");
                 }
 
+                // Step 2: Delete related contacts in bulk (fast)
+                // Changed DataFileId to data_file_id (or whatever your actual column name is)
+                int deletedContacts = await _context.Database.ExecuteSqlInterpolatedAsync(
+                    $"DELETE FROM contacts WHERE data_file_id = {dataFileId}");
+
+                // Step 3: Delete the data file
+                _context.data_files.Remove(dataFile);
+                await _context.SaveChangesAsync();
+
+                // Step 4: Return result
+                return Ok(new
+                {
+                    Message = $"Deleted {deletedContacts} contacts and data file ID {dataFileId} successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = "Internal server error", Error = ex.Message });
+            }
+        }
+
+        [HttpGet("contacts/by-client-datafile")]
+        public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            if (clientId <= 0 || dataFileId <= 0)
+                return BadRequest("Both clientId and dataFileId must be greater than 0.");
+
+            // Check if data file exists and belongs to this client
+            var dataFileExists = await _context.data_files
+                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+            if (!dataFileExists)
+                return NotFound("No data file found for this client.");
+
+            // Fetch contacts for that data file
+            var contacts = await _context.contacts
+                .Where(c => c.DataFileId == dataFileId)
+                .Select(c => new
+                {
+                    c.id,
+                    c.full_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    c.email_subject,
+                    c.email_body,
+                    c.created_at,
+                    c.updated_at,
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    c.CompanyEventLink
+                })
+                .ToListAsync();
+
+            return Ok(new
+            {
+                contactCount = contacts.Count,
+                contacts
+            });
+        }
+
+
+        [HttpPost("update-datafile")]
+        public async Task<IActionResult> UpdateDataFileById([FromQuery] int id, [FromQuery] string name, [FromQuery] string description, [FromQuery] string dataFileName)
+        {
+            if (id == 0)
+                return BadRequest("Invalid id");
+
+            var dataFile = await _context.data_files
+                .FirstOrDefaultAsync(d => d.id == id);
+
+            if (dataFile == null)
+                return NotFound("Data file not found");
+
+            dataFile.name = name;
+            dataFile.description = description;
+            dataFile.data_file_name = dataFileName;
+            dataFile.updated_at = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Data file updated successfully");
+        }
+
+
+
+        [HttpPost("contacts/update-email")]
+        public async Task<IActionResult> UpdateContactEmail([FromBody] ContactEmailUpdateDto request)
+        {
+            if (request.ClientId <= 0 || request.ContactId <= 0)
+                return BadRequest("ClientId and ContactId are required.");
+
+            // First, verify the contact belongs to this client
+            var contact = await _context.contacts
+                .Include(c => c.data_file)  // ✅ Changed from DataFile to data_file
+                .FirstOrDefaultAsync(c => c.id == request.ContactId && c.data_file.client_id == request.ClientId);
+
+            if (contact == null)
+                return NotFound("Contact not found for this client.");
+
+            // Update only if values are provided
+            if (!string.IsNullOrWhiteSpace(request.EmailSubject))
+                contact.email_subject = request.EmailSubject;
+
+            if (!string.IsNullOrWhiteSpace(request.EmailBody))
+                contact.email_body = request.EmailBody;
+
+            contact.updated_at = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                success = true,
+                message = "Contact email subject/body updated successfully.",
+                contactId = contact.id
+            });
+        }
+
+
+
+
+        [HttpGet("datafile-byclientid")]
+        public async Task<IActionResult> GetDataFilesByClientId(int clientId)
+        {
+            try
+            {
+                var result = await _context.data_files
+                    .Where(x => x.client_id == clientId)
+                    .ToListAsync();
+
+                return Ok(result); // 🔁 Returns full list of DataFile objects
+            }
+            catch (Exception ex)
+            {
+                return BadRequest("Error: " + ex.Message);
+            }
+        }
+        [HttpGet("getlogs")]
+        public async Task<IActionResult> GetLogs([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            // Step 1: Validate clientId + dataFileId match
+            bool isValid = await _context.data_files
+                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+            if (!isValid)
+                return BadRequest("Invalid clientId or dataFileId.");
+
+            // Step 2: Fetch EmailLogs with Contact details (anonymous projection)
+            var logs = await (
+                from log in _context.EmailLogs
+                join contact in _context.contacts
+                on log.ContactId equals contact.id into contactGroup
+                from contact in contactGroup.DefaultIfEmpty() // left join (some ContactId might be null)
+                where log.ClientId == clientId && log.DataFileId == dataFileId
+                orderby log.SentAt descending
+                select new
+                {
+                    // Email log details
+                    log.Id,
+                    log.ContactId,
+                    log.ClientId,
+                    log.DataFileId,
+                    log.Subject,
+                    log.Body,
+                    log.SentAt,
+                    log.IsSuccess,
+                    log.ErrorMessage,
+                    log.ToEmail,
+                    log.process_name,
+
+                    // Contact details
+                    Name = contact.full_name,
+                    Email = contact.email,
+                    address = contact.country_or_address,
+                    Website = contact.website,
+                    Company = contact.company_name,
+                    JobTitle = contact.job_title,
+                    LinkedIn = contact.linkedin_url
+                }
+            )
+            .Take(1000)
+            .ToListAsync();
+
+            return Ok(logs);
+        }
+
+        [HttpGet("gettrackinglogs")]
+        public async Task<IActionResult> GettrackingLogs([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            // Step 1: Validate dataFileId belongs to clientId
+            bool isValid = await _context.data_files
+                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+            if (!isValid)
+            {
+                return BadRequest("Invalid clientId or dataFileId.");
+            }
+
+            // Step 2: Get EmailTrackingLogs
+            var logs = await _context.EmailTrackingLogs
+                .Where(e => e.ClientId == clientId && e.DataFileId == dataFileId)
+                .OrderByDescending(e => e.Timestamp)
+                .Take(1000)
+                .ToListAsync();
+
+            return Ok(logs);
+        }
+
+        [HttpGet("getlogs-by-segment")]
+        public async Task<IActionResult> GetLogsBySegment([FromQuery] int clientId, [FromQuery] int segmentId)
+        {
+            // Step 1: Validate segmentId belongs to clientId
+            bool isValid = await _context.segments
+                .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
+
+            if (!isValid)
+                return BadRequest("Invalid clientId or segmentId.");
+
+            // Step 2: Use a join approach
+            var logs = await (
+                from log in _context.EmailLogs
+                join sc in _context.segmentContacts on log.ContactId equals sc.ContactId
+                join contact in _context.contacts on log.ContactId equals contact.id into contactGroup
+                from contact in contactGroup.DefaultIfEmpty()
+                where sc.SegmentId == segmentId && log.ClientId == clientId
+                orderby log.SentAt descending
+                select new
+                {
+                    // Email log details
+                    log.Id,
+                    log.ContactId,
+                    log.ClientId,
+                    log.DataFileId,
+                    log.Subject,
+                    log.Body,
+                    log.SentAt,
+                    log.IsSuccess,
+                    log.ErrorMessage,
+                    log.ToEmail,
+                    log.process_name,
+
+                    // Contact details
+                    Name = contact.full_name,
+                    Email = contact.email,
+                    Address = contact.country_or_address,
+                    Website = contact.website,
+                    Company = contact.company_name,
+                    JobTitle = contact.job_title,
+                    LinkedIn = contact.linkedin_url
+                }
+            )
+            .Take(1000)
+            .ToListAsync();
+
+            return Ok(logs);
+        }
+
+        [HttpGet("gettrackinglogs-by-segment")]
+        public async Task<IActionResult> GetTrackingLogsBySegment([FromQuery] int clientId, [FromQuery] int segmentId)
+        {
+            // Step 1: Validate segmentId belongs to clientId
+            bool isValid = await _context.segments
+                .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
+
+            if (!isValid)
+                return BadRequest("Invalid clientId or segmentId.");
+
+            // Step 2: Use a join approach
+            var logs = await (
+                from log in _context.EmailTrackingLogs
+                join sc in _context.segmentContacts on log.ContactId equals sc.ContactId
+                where sc.SegmentId == segmentId && log.ClientId == clientId
+                orderby log.Timestamp descending
+                select log
+            )
+            .Take(1000)
+            .ToListAsync();
+
+            return Ok(logs);
+        }
+
+        [HttpPost("Creat-Segments")]
+        public async Task<IActionResult> CreateSegment([FromQuery] int ClientId, [FromBody] CreateSegmentDto dto)
+        {
+            try
+            {
+                // Validate input
+                if (dto.ContactIds == null || !dto.ContactIds.Any())
+                {
+                    return BadRequest(new { message = "ContactIds cannot be empty" });
+                }
+
+                // Validate DataFile exists
+                var dataFileExists = await _context.data_files
+                    .AnyAsync(df => df.id == dto.DataFileId && df.client_id == ClientId);
+
+                if (!dataFileExists)
+                {
+                    return BadRequest(new { message = "Invalid ClientId or DataFileId. No matching data file found." });
+                }
+
+                // Create a comma-separated list of contact IDs for SQL query
+                var contactIdsList = dto.ContactIds.Distinct().ToList();
+                var contactIdsString = string.Join(",", contactIdsList);
+
+                // Use FromSqlRaw to avoid EF Core query translation issues
+                var existingContactIds = await _context.contacts
+                    .FromSqlRaw($"SELECT * FROM contacts WHERE id IN ({contactIdsString})")
+                    .Select(c => c.id)
+                    .ToListAsync();
+
+                var invalidContactIds = contactIdsList.Except(existingContactIds).ToList();
+
+                // Check if there are any valid contacts
+                if (!existingContactIds.Any())
+                {
+                    return BadRequest(new
+                    {
+                        message = "None of the provided contacts exist. Segment not created.",
+                        invalidContactCount = invalidContactIds.Count,
+                        invalidContactIds = invalidContactIds
+                    });
+                }
+
+                // Create segment with valid contacts only
+                var segment = new Segment
+                {
+                    Name = dto.Name,
+                    ClientId = ClientId,
+                    Description = dto.Description,
+                    DataFileId = dto.DataFileId,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.segments.Add(segment);
+                await _context.SaveChangesAsync();
+
+                // Batch insert segment contacts (only valid ones)
+                var segmentContacts = existingContactIds.Select(contactId => new SegmentContact
+                {
+                    SegmentId = segment.Id,
+                    ContactId = contactId,
+                    AddedAt = DateTime.UtcNow
+                }).ToList();
+
+                _context.segmentContacts.AddRange(segmentContacts);
+                await _context.SaveChangesAsync();
+
+                // Prepare response message
+                var message = invalidContactIds.Any()
+                    ? $"Segment created successfully. {invalidContactIds.Count} invalid contact(s) found and skipped. {existingContactIds.Count} contact(s) added successfully."
+                    : "Segment created successfully";
+
+                var response = new
+                {
+                    message = message,
+                    segmentId = segment.Id,
+                    contactsAdded = existingContactIds.Count,
+                    contactsRequested = contactIdsList.Count,
+                    validContactCount = existingContactIds.Count,
+                    invalidContactCount = invalidContactIds.Count
+                };
+
+                // Add invalid contact IDs to response if any exist
+                if (invalidContactIds.Any())
+                {
+                    return Ok(new
+                    {
+                        response.message,
+                        response.segmentId,
+                        response.contactsAdded,
+                        response.contactsRequested,
+                        response.validContactCount,
+                        response.invalidContactCount,
+                        invalidContactIds = invalidContactIds
+                    });
+                }
+
+                return Ok(response);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "An error occurred while creating the segment",
+                    error = ex.Message,
+                    innerError = ex.InnerException?.Message
+                });
+            }
+        }
+
+
+
+        [HttpGet("get-segments-by-client")]
+        public async Task<IActionResult> GetSegmentsByClientId([FromQuery] int clientId)
+        {
+            var segments = await _context.segments
+                .Where(s => s.ClientId == clientId)
+                .Select(s => new
+                {
+                    s.Id,
+                    s.Name,
+                    s.Description,
+                    s.DataFileId,
+                    s.ClientId,
+                    s.CreatedAt,
+                    s.UpdatedAt
+                })
+                .ToListAsync();
+
+            if (segments == null || segments.Count == 0)
+            {
+                return NotFound(new { message = "No segments found for this client." });
+            }
+
+            return Ok(segments);
+        }
+
+        [HttpGet("segment/{segmentId}/contacts")]
+        public async Task<IActionResult> GetContactsBySegmentId(int segmentId)
+        {
+            var contacts = await _repository.GetContactBySegment(segmentId);
+            return Ok(contacts);
+        }
+
+
+        [HttpPost("update-segment")]
+        public async Task<IActionResult> UpdateSegmentById([FromQuery] int id, [FromQuery] string name, [FromQuery] string description)
+        {
+            if (id == 0)
+                return BadRequest("Invalid Segment Id");
+
+            var segment = await _context.segments
+                .FirstOrDefaultAsync(s => s.Id == id);
+
+            if (segment == null)
+                return NotFound("Segment not found");
+
+            segment.Name = name;
+            segment.Description = description;
+            segment.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Segment updated successfully");
+        }
+
+        [HttpPost("delete-segment")]
+        public async Task<IActionResult> DeleteSegment([FromQuery] int segmentId)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                // Step 1: Fetch the Segment (null-safe, no properties accessed)
+                var segment = await _context.segments
+                                            .FirstOrDefaultAsync(s => s.Id == segmentId);
+
+                if (segment == null)
+                {
+                    return NotFound(new { message = "Segment not found." });
+                }
+
+                // Step 2: Get SegmentContacts list (null-safe)
+                var segmentContacts = await _context.segmentContacts
+                                                    .Where(sc => sc.SegmentId == segmentId)
+                                                    .ToListAsync();
+
+                // Step 3: Remove related contacts
+                if (segmentContacts?.Count > 0)
+                {
+                    _context.segmentContacts.RemoveRange(segmentContacts);
+                }
+
+                // Step 4: Remove the Segment
+                _context.segments.Remove(segment);
+
+                // Save all changes
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new { message = "Segment and related contacts deleted successfully." });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return StatusCode(500, new
+                {
+                    message = "Internal server error",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetContacts([FromQuery] int? dataFileId)
+        {
+            var contacts = await _repository.GetContactsAsync(dataFileId);
+            return Ok(contacts);
+        }
+        [HttpGet("Singel-contact")]
+        public async Task<IActionResult> GetContactWithNext([FromQuery] int dataFileId, [FromQuery] int? contactId = null)
+        {
+            if (dataFileId == 0)
+                return BadRequest("dataFileId is required.");
+
+            var result = await _repository.GetContactWithNextAsync(dataFileId, contactId);
+
+            if (result == null)
+                return NotFound("Contact not found.");
+
+            return Ok(result);
+        }
+
+        [HttpPost("delete-contacts-and-file")]
+        public async Task<IActionResult> DeleteContactsAndFile([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            try
+            {
+                // Step 1: Check if data_file exists
+                var dataFile = await _context.data_files
+                    .FirstOrDefaultAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+                if (dataFile == null)
+                {
+                    return NotFound("Data file not found for the given client.");
+                }
+
                 // Step 2: Get related contacts
                 var contactsToDelete = _context.contacts
                     .Where(c => c.DataFileId == dataFileId);

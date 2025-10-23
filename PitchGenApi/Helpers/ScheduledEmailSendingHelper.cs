@@ -35,6 +35,13 @@ public class ScheduledEmailSendingHelper
             Console.WriteLine("⚠️ Both DataFileId and SegmentId are invalid — skipping.");
             return;
         }
+
+        if ((!step.DataFileId.HasValue || step.DataFileId.Value <= 0) &&
+            (!step.SegmentId.HasValue || step.SegmentId.Value <= 0))
+        {
+            Console.WriteLine("⚠️ Both DataFileId and SegmentId are invalid — skipping.");
+            return;
+        }
         if (step == null || step.TimeZone == null || step.SegmentId == null)
         {
             Console.WriteLine("⚠️ Step, TimeZone or Segmentid is null — skipping.");

@@ -7,28 +7,21 @@ using System.Text;
 using PitchGenApi.Services;
 using PitchGenApi.Repository;
 using Microsoft.OpenApi.Models;
+using PitchGenApi.Services;
 using PitchGenApi.Model;
-using PitchGenApi;
-using PitchGenApi.Middleware;
-using Serilog;
-using System.Net;
-using System.Security.Authentication;
-using System.Net.Http;
-
-// 🔥 CRITICAL: Force TLS 1.2+ at multiple levels
-ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls13;
-ServicePointManager.ServerCertificateValidationCallback = delegate { return true; };
-AppContext.SetSwitch("System.Net.Http.UseSocketsHttpHandler", false); // Force use of HttpClientHandler
-
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 var builder = WebApplication.CreateBuilder(args);
 
-// OpenAI config
-builder.Services.Configure<OpenAISettings>(builder.Configuration.GetSection("OpenAI"));
+builder.Services.Configure<OpenAISettings>(
+    builder.Configuration.GetSection("OpenAI"));
 
-// Controllers
-builder.Services.AddControllers();
 
-// Swagger
+builder.Services.Configure<KestrelServerOptions>(options =>
+{
+    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(10);
+    options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(10);
+});
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -127,16 +120,35 @@ builder.Services.AddCors(options =>
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IPromptRepository, PromptRepository>();
-builder.Services.AddScoped<IPitchService, PitchService>();
+builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+}); 
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddScoped<ContactRepository>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
 builder.Services.AddSingleton<JwtService>();
+builder.Services.AddHttpClient<ZohoService>(client =>
+{
+    client.BaseAddress = new Uri("https://www.zohoapis.com/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+    // Remove the line below if you're managing headers per request
+    // client.DefaultRequestHeaders.Add("Accept", "application/json");
+});
 
-builder.Services.AddScoped<ZohoDataService>();
+builder.Services.AddControllers();
 
-builder.Services.AddScoped<IResetPassworde, ResetPassword>();
+// ✅ Register CampaignPromptService and HttpClient
+builder.Services.AddHttpClient<CampaignPromptService>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
+
+builder.Services.AddHttpClient<WebSearchService>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(5);
+});
 
 var app = builder.Build();
 
@@ -151,6 +163,8 @@ app.UseCors("MyCorsPolicy");
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
+
+// ? Serve React build first
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapControllers();
@@ -165,5 +179,10 @@ app.MapFallback(context =>
     context.Response.Redirect("/");
     return Task.CompletedTask;
 });
+
+
+
+// ? Map API controllers
+app.MapControllers();
 
 app.Run();
