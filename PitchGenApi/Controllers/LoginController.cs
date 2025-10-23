@@ -59,7 +59,10 @@ namespace PitchGenApi.Controllers
 
             if (user.TrustDiviceNumber == null || user.TrustDiviceNumber != dto.trustednumber)
             {
-                var trusteddiviceotp = RegisterEmailSender.TrustOtpEmail(user.Email, otp);
+                var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+                var userAgent = Request.Headers["User-Agent"].ToString();
+                var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+                var trusteddiviceotp = RegisterEmailSender.TrustOtpEmail(user.Email, otp, user.FirstName, ipAddress, browserName);
             }
 
             var otpEntity = new EmailOtpVerification
@@ -254,10 +257,16 @@ namespace PitchGenApi.Controllers
         [HttpPost("restpass_send-otp")]
         public async Task<IActionResult> SendOtp([FromQuery] string email)
         {
+            var user = await _userRepository.GetUser(email);
+
             if (string.IsNullOrWhiteSpace(email))
                 return BadRequest(new { message = "Email is required." });
 
-            var response = await _resetPassword.SendOtpAsync(email);
+            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var userAgent = Request.Headers["User-Agent"].ToString();
+            var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+
+            var response = await _resetPassword.SendOtpAsync(email, user.FirstName, ipAddress, browserName);
 
             if (!response.Success)
                 return BadRequest(new { message = response.Message });

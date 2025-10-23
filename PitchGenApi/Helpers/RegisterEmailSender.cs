@@ -1,4 +1,5 @@
-﻿using System.Net;
+﻿using Org.BouncyCastle.Utilities.Net;
+using System.Net;
 using System.Net.Mail;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
@@ -38,65 +39,65 @@ namespace PitchGenApi.Helpers
             const string subject = "Your Two-Factor Authentication Code - PitchKraft.ai";
 
             string body = $@"
-            <html>
-            <head>
-              <style>
-                body {{
-                  font-family: Arial, sans-serif;
-                  background-color: #f9f9f9;
-                  color: #333;
-                  padding: 20px;
-                }}
-                .container {{
-                  background-color: #fff;
-                  padding: 30px;
-                  border-radius: 10px;
-                  box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                }}
-                .otp-code {{
-                  font-size: 24px;
-                  font-weight: bold;
-                  color: #2f54eb;
-                  letter-spacing: 5px;
-                  background-color: #f0f2ff;
-                  padding: 10px 20px;
-                  display: inline-block;
-                  border-radius: 5px;
-                  margin: 20px 0;
-                }}
-                .footer {{
-                  margin-top: 30px;
-                  font-size: 13px;
-                  color: #777;
-                }}
-              </style>
-            </head>
-            <body>
-              <div class='container'>
-                <h2>Hello {firstName},</h2>
-                <p>Please find below your two-factor authentication code for <strong>PitchKraft.ai</strong>.</p>
-                <div class='otp-code'>{otp}</div>
-                <p>This code is valid only for <strong>5 minutes</strong> from the time it was generated.</p>
+                        <html>
+                        <head>
+                          <style>
+                            body {{
+                              font-family: Arial, sans-serif;
+                              background-color: #f9f9f9;
+                              color: #333;
+                              padding: 20px;
+                            }}
+                            .container {{
+                              background-color: #fff;
+                              padding: 30px;
+                              border-radius: 10px;
+                              box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                            }}
+                            .otp-code {{
+                              font-size: 24px;
+                              font-weight: bold;
+                              color: #2f54eb;
+                              letter-spacing: 5px;
+                              background-color: #f0f2ff;
+                              padding: 10px 20px;
+                              display: inline-block;
+                              border-radius: 5px;
+                              margin: 20px 0;
+                            }}
+                            .footer {{
+                              margin-top: 30px;
+                              font-size: 13px;
+                              color: #777;
+                            }}
+                          </style>
+                        </head>
+                        <body>
+                          <div class='container'>
+                            <h2>Hello {firstName},</h2>
+                            <p>Please find below your two-factor authentication code for <strong>PitchKraft.ai</strong>.</p>
+                            <div class='otp-code'>{otp}</div>
+                            <p>This code is valid only for <strong>5 minutes</strong> from the time it was generated.</p>
 
-                <h4>Login Attempt Details:</h4>
-                <ul>
-                  <li><strong>Username:</strong> {toEmail}</li>
-                  <li><strong>IP Address:</strong> {ipAddress}</li>
-                  <li><strong>Browser:</strong> {browserName}</li>
-                </ul>
+                            <h4>Login Attempt Details:</h4>
+                            <ul>
+                              <li><strong>Username:</strong> {toEmail}</li>
+                              <li><strong>IP Address:</strong> {ipAddress}</li>
+                              <li><strong>Browser:</strong> {browserName}</li>
+                            </ul>
 
-                <p>If you think this wasn't you, please <a href='https://www.pitchkraft.ai'>contact us</a> or email <a href='mailto:support@pitchkraft.ai'>support@pitchkraft.ai</a>.</p>
+                            <p>If you think this wasn't you, please <a href='https://www.pitchkraft.ai'>contact us</a> or email <a href='mailto:support@pitchkraft.ai'>support@pitchkraft.ai</a>.</p>
 
-                <div class='footer'>
-                  Regards,<br/>
-                  <strong>Support Team</strong><br/>
-                  PitchKraft<br/>
-                  <a href='mailto:support@pitchkraft.ai'>support@pitchkraft.ai</a><br/>
-                  <a href='https://www.pitchkraft.ai'>www.pitchkraft.ai</a>
-                </div>
-              </div>
-            </body>
-            </html>";
+                            <div class='footer'>
+                              Regards,<br/>
+                              <strong>Support Team</strong><br/>
+                              PitchKraft<br/>
+                              <a href='mailto:support@pitchkraft.ai'>support@pitchkraft.ai</a><br/>
+                              <a href='https://www.pitchkraft.ai'>www.pitchkraft.ai</a>
+                            </div>
+                          </div>
+                        </body>
+                        </html>";
 
             using var message = new MailMessage(fromAddress, toAddress)
             {
@@ -119,22 +120,81 @@ namespace PitchGenApi.Helpers
             {
                 Subject = subject,
                 Body = body,
-                IsBodyHtml = false
+                IsBodyHtml = true
             };
 
             using var smtp = CreateSmtpClient();
             await smtp.SendMailAsync(message);
         }
 
-        public static async Task TrustOtpEmail(string toEmail, string otp)
+        public static async Task TrustOtpEmail(string toEmail, string otp, string firstName, string ipAddress, string browserName)
         {
             var fromAddress = new MailAddress(FromEmail, FromName);
             var toAddress = new MailAddress(toEmail);
             using var message = new MailMessage(fromAddress, toAddress)
             {
-                Subject = "login otp trust device",
-                Body = $"this is your otp {otp} for login",
-                IsBodyHtml = false
+                Subject = "Your Two-Factor Login Authentication Code - PitchKraft.ai",
+                Body = $@"
+                    <html>
+                    <head>
+                      <style>
+                        body {{
+                          font-family: Arial, sans-serif;
+                          background-color: #f9f9f9;
+                          color: #333;
+                          padding: 20px;
+                        }}
+                        .container {{
+                          background-color: #fff;
+                          padding: 30px;
+                          border-radius: 10px;
+                          box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                        }}
+                        .otp-code {{
+                          font-size: 24px;
+                          font-weight: bold;
+                          color: #2f54eb;
+                          letter-spacing: 5px;
+                          background-color: #f0f2ff;
+                          padding: 10px 20px;
+                          display: inline-block;
+                          border-radius: 5px;
+                          margin: 20px 0;
+                        }}
+                        .footer {{
+                          margin-top: 30px;
+                          font-size: 13px;
+                          color: #777;
+                        }}
+                      </style>
+                    </head>
+                    <body>
+                      <div class='container'>
+                        <h2>Hello {firstName},</h2>
+                        <p>Please find below your two-factor authentication code for <strong>PitchKraft.ai</strong>.</p>
+                        <div class='otp-code'>{otp}</div>
+                        <p>This code is valid only for <strong>5 minutes</strong> from the time it was generated.</p>
+
+                        <h4>Login Attempt Details:</h4>
+                        <ul>
+                          <li><strong>Username:</strong> {toEmail}</li>
+                          <li><strong>IP Address:</strong> {ipAddress}</li>
+                          <li><strong>Browser:</strong> {browserName}</li>
+                        </ul>
+
+                        <p>If you think this wasn't you, please <a href='https://www.pitchkraft.ai'>contact us</a> or email <a href='mailto:support@pitchkraft.ai'>support@pitchkraft.ai</a>.</p>
+
+                        <div class='footer'>
+                          Regards,<br/>
+                          <strong>Support Team</strong><br/>
+                          PitchKraft<br/>
+                          <a href='mailto:support@pitchkraft.ai'>support@pitchkraft.ai</a><br/>
+                          <a href='https://www.pitchkraft.ai'>www.pitchkraft.ai</a>
+                        </div>
+                      </div>
+                    </body>
+                    </html>",
+                IsBodyHtml = true
             };
 
             using var smtp = CreateSmtpClient();
