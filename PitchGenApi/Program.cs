@@ -160,7 +160,7 @@ builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddScoped<ContactRepository>();
 
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
-
+builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddSingleton<JwtService>();
 
 builder.Services.AddScoped<ZohoDataService>();
