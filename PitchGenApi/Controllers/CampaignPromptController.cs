@@ -23,6 +23,7 @@ namespace PitchGenApi.Controllers
             _dbContext = dbContext;
         }
 
+        #region Template Definition Endpoints (Shared Templates)
 
         // Create/Save a new template definition (admin operation)
         [HttpPost("template-definition/save")]
@@ -176,7 +177,9 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        #endregion
 
+        #region Client Campaign Templates Endpoints
 
         // Save client's filled campaign template
         [HttpPost("template/save")]
@@ -420,7 +423,7 @@ namespace PitchGenApi.Controllers
             }
         }
 
-
+        #endregion
 
         #region Chat Endpoints
 
@@ -459,162 +462,88 @@ namespace PitchGenApi.Controllers
             return Ok(new { Message = "Chat history cleared" });
         }
 
+
+        [HttpPost("example/generate")]
+        public async Task<IActionResult> RegenerateExample([FromBody] GenerateExampleOutputRequest req)
+        {
+            if (req.CampaignTemplateId <= 0)
+                return BadRequest(new { Message = "Valid CampaignTemplateId required" });
+
+            var template = await _dbContext.CampaignTemplates
+                .Include(t => t.TemplateDefinition)
+                .FirstOrDefaultAsync(t => t.Id == req.CampaignTemplateId);
+
+            if (template == null)
+                return NotFound(new { Message = "Template not found" });
+
+            var vals = string.IsNullOrEmpty(template.PlaceholderValues)
+                ? new Dictionary<string, string>()
+                : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues);
+
+            string master = template.TemplateDefinition.MasterBlueprintUnpopulated ?? "";
+            var html = await _campaignService.GenerateExampleOutputAsync(vals, master, req.Model ?? "gpt-4o");
+
+            if (!string.IsNullOrEmpty(html))
+            {
+                template.ExampleOutput = html;
+                template.UpdatedAt = DateTime.UtcNow;
+                await _dbContext.SaveChangesAsync();
+            }
+
+            return Ok(new { Success = true, ExampleOutput = html });
+        }
+
+        // =====================================================
+        //  Create campaign instance (called before first chat)
+        // =====================================================
+        [HttpPost("campaign/start")]
+        public async Task<IActionResult> StartCampaign([FromBody] StartCampaignRequest req)
+        {
+            if (string.IsNullOrWhiteSpace(req.ClientId))
+                return BadRequest(new { Message = "ClientId required" });
+            if (req.TemplateDefinitionId <= 0)
+                return BadRequest(new { Message = "Valid TemplateDefinitionId required" });
+            if (string.IsNullOrWhiteSpace(req.TemplateName))
+                return BadRequest(new { Message = "Template name required" });
+
+            // ✅ Load template definition
+            var templateDef = await _dbContext.CampaignTemplateDefinitions
+                .FirstOrDefaultAsync(t => t.Id == req.TemplateDefinitionId);
+
+            if (templateDef == null)
+                return BadRequest(new { Message = "Template definition not found" });
+
+            var campaign = new CampaignTemplate
+            {
+                ClientId = req.ClientId,
+                TemplateDefinitionId = req.TemplateDefinitionId,
+                TemplateName = req.TemplateName,
+                PlaceholderValues = "{}",
+                SelectedModel = req.Model ?? "gpt-4o",
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _dbContext.CampaignTemplates.Add(campaign);
+            await _dbContext.SaveChangesAsync();
+
+            // ✅ Store session in memory with loaded template definition data
+            CampaignPromptService._sessions[req.ClientId] = new CampaignPromptService.CampaignSession
+            {
+                UserId = req.ClientId,
+                CampaignTemplateId = campaign.Id,
+                Messages = new()
+            };
+
+            return Ok(new
+            {
+                Success = true,
+                CampaignId = campaign.Id,
+                TemplateName = campaign.TemplateName,
+                TemplateDefinitionId = campaign.TemplateDefinitionId,
+                Message = $"Template '{req.TemplateName}' created. Ready to start conversation..."
+            });
+        }
         #endregion
 
-        // ========================================
-        // ✅ ADD THIS NEW REGION FOR EDIT MODE
-        // ========================================
-
-        #region Edit Mode Endpoints
-
-        // Start edit conversation with historical context
-        [HttpPost("edit/start")]
-        public async Task<IActionResult> StartEditConversation([FromBody] StartEditConversationRequest request)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(request.UserId))
-                    return BadRequest(new { Message = "UserId is required" });
-
-                if (request.CampaignTemplateId <= 0)
-                    return BadRequest(new { Message = "Valid CampaignTemplateId is required" });
-
-                if (string.IsNullOrWhiteSpace(request.Placeholder))
-                    return BadRequest(new { Message = "Placeholder is required" });
-
-                // Get the campaign template with conversation history
-                var template = await _dbContext.CampaignTemplates
-                    .Include(t => t.TemplateDefinition)
-                    .Include(t => t.Conversation)
-                    .FirstOrDefaultAsync(t => t.Id == request.CampaignTemplateId);
-
-                if (template == null)
-                    return NotFound(new { Message = "Template not found" });
-
-                if (template.TemplateDefinition == null)
-                    return StatusCode(500, new { Message = "Template definition is missing" });
-
-                // Get placeholder values
-                Dictionary<string, string>? placeholderValues = null;
-                if (!string.IsNullOrEmpty(template.PlaceholderValues))
-                {
-                    placeholderValues = JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues);
-                }
-
-                // Get old conversation messages
-                List<ConversationMessage>? oldMessages = null;
-                if (template.Conversation?.ConversationData != null)
-                {
-                    oldMessages = JsonSerializer.Deserialize<List<ConversationMessage>>(template.Conversation.ConversationData);
-                }
-
-                // Get AI instructions for editing
-                string editInstructions = template.TemplateDefinition.AIInstructionsForEdit;
-                if (string.IsNullOrEmpty(editInstructions))
-                {
-                    // Fallback to default edit instructions
-                    editInstructions = GetDefaultEditInstructions();
-                }
-
-                // Replace placeholders in edit instructions
-                editInstructions = editInstructions
-                    .Replace("{placeholder}", request.Placeholder)
-                    .Replace("{currentValue}", request.CurrentValue);
-
-                // Start edit conversation with context
-                var result = await _campaignService.StartEditConversationAsync(
-                    request.UserId,
-                    request.CampaignTemplateId,
-                    request.Placeholder,
-                    request.CurrentValue,
-                    editInstructions,
-                    oldMessages,
-                    placeholderValues,
-                    request.Model
-                );
-
-                return Ok(new { Response = result });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { Error = ex.Message });
-            }
-        }
-
-        // Continue edit conversation
-        [HttpPost("edit/chat")]
-        public async Task<IActionResult> EditChat([FromBody] EditChatRequest request)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(request.UserId))
-                    return BadRequest(new { Message = "UserId is required" });
-
-                if (request.CampaignTemplateId <= 0)
-                    return BadRequest(new { Message = "Valid CampaignTemplateId is required" });
-
-                if (string.IsNullOrWhiteSpace(request.Message))
-                    return BadRequest(new { Message = "Message is required" });
-
-                var result = await _campaignService.ContinueEditConversationAsync(
-                    request.UserId,
-                    request.CampaignTemplateId,
-                    request.Message,
-                    request.Model
-                );
-
-                return Ok(new { Response = result });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { Error = ex.Message });
-            }
-        }
-
-        // Clear edit session
-        [HttpPost("edit/clear/{userId}/{campaignTemplateId}")]
-        public IActionResult ClearEditSession(string userId, int campaignTemplateId)
-        {
-            try
-            {
-                _campaignService.ClearEditSession(userId, campaignTemplateId);
-                return Ok(new { Message = "Edit session cleared successfully" });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { Error = ex.Message });
-            }
-        }
-
-        // Helper method for default edit instructions
-        private string GetDefaultEditInstructions()
-        {
-            return @"You are an AI assistant helping to edit a specific placeholder value in a campaign template. 
-The user wants to modify the value for {placeholder}.
-Current value: ""{currentValue}""
-
-CONTEXT FROM ORIGINAL CONVERSATION:
-You previously helped create this campaign. Review the original conversation to understand the context and maintain consistency.
-
-Your task:
-1. Review the original conversation context to understand how this placeholder was originally filled
-2. Ask the user what new value they want for {placeholder}
-3. Ensure the new value maintains consistency with other placeholders and the campaign's tone
-4. Confirm the new value with them
-5. When confirmed, return the response in this EXACT format:
-
-==PLACEHOLDER_UPDATE_START==
-{placeholder} = [new value here]
-==PLACEHOLDER_UPDATE_END==
-
-{
-  ""status"": ""complete"",
-  ""updated_placeholder"": ""{placeholder}"",
-  ""old_value"": ""{currentValue}"",
-  ""new_value"": ""[new value here]""
-}";
-        }
-
-        #endregion
     }
 }

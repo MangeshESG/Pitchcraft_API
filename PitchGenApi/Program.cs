@@ -117,10 +117,7 @@ builder.Services.AddHttpClient<CampaignPromptService>(client =>
     client.Timeout = TimeSpan.FromMinutes(10);
 });
 
-builder.Services.AddHttpClient<WebSearchService>(client =>
-{
-    client.Timeout = TimeSpan.FromMinutes(5);
-});
+
 
 var app = builder.Build();
 
