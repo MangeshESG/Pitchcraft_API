@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using PitchGenApi.Repositories;
 using Microsoft.IdentityModel.Tokens;
+using PitchGenApi.Model.DTOs;
 
 namespace PitchGenApi.Controllers
 {
@@ -28,34 +29,6 @@ namespace PitchGenApi.Controllers
             _webhookSecret = _config["Stripe:WebhookSecret"]; // ✅ from appsettings
             StripeConfiguration.ApiKey = _config["Stripe:SecretKey"];
         }
-        [HttpPost("create-customer")]
-        public async Task<IActionResult> CreateCustomer([FromBody] CreateCustomerRequest req)
-        {
-            // req.UserId => your internal user id (string)
-            // req.Email optional
-
-            // 1. check DB if user already has StripeCustomerId
-            //var user = await _context.StripeSubscription.FirstOrDefaultAsync(u => u.UserId == req.UserId);
-            ////if (user == null) return BadRequest("User not found");
-
-            //if (!string.IsNullOrEmpty(user.StripeCustomerId))
-            //    return Ok(new { stripeCustomerId = user.StripeCustomerId });
-
-            var options = new CustomerCreateOptions
-            {
-                Email = req.Email,
-                Metadata = new Dictionary<string, string> { { "app_user_id", req.UserId } }
-            };
-            var service = new CustomerService();
-            var stripeCustomer = await service.CreateAsync(options);
-
-            //user.StripeCustomerId = stripeCustomer.Id;
-            //await _context.SaveChangesAsync();
-
-            return Ok(new { stripeCustomerId = stripeCustomer.Id });
-        }
-
-        public class CreateCustomerRequest { public string UserId { get; set; } = ""; public string? Email { get; set; } }
 
         [HttpPost("create-subscription")]
         public async Task<IActionResult> CreateSubscription([FromBody] CreateSubscriptionRequest req)
@@ -79,7 +52,6 @@ namespace PitchGenApi.Controllers
                     });
 
                     customerId = customer.Id;
-                    Console.WriteLine($"✅ New Stripe customer created: {customerId}");
                 }
 
                 // 2. Create subscription with default_incomplete so we get payment intent client secret
@@ -89,12 +61,11 @@ namespace PitchGenApi.Controllers
                     Items = new List<SubscriptionItemOptions> {
                         new SubscriptionItemOptions { Price = req.PriceId }
                     },
-                                    PaymentBehavior = "default_incomplete",
-                                    Expand = new List<string> {
+                         PaymentBehavior = "default_incomplete",
+                           Expand = new List<string> {
                         "latest_invoice.payment_intent",
-                        "latest_invoice.payments"
-                    },
-                                    Metadata = new Dictionary<string, string> {
+                        "latest_invoice.payments"},
+                        Metadata = new Dictionary<string, string> {
                         { "app_user_id", req.UserId },
                         { "plan", req.PriceId }
                     }
@@ -156,93 +127,11 @@ namespace PitchGenApi.Controllers
             }
             catch (Exception ex)
             {
-                Console.WriteLine("CreateSubscription error: " + ex.Message);
                 return BadRequest(new { error = ex.Message });
             }
         }
 
-        public class CreateSubscriptionRequest
-        {
-            public string UserId { get; set; } = "";
-            public string PriceId { get; set; } = ""; // price_xxx from Stripe
-            public string? Email { get; set; }
-        }
 
-        // 🔹 Create checkout session
-        //[HttpPost("create-checkout-session")]
-        //public async Task<IActionResult> CreateCheckoutSession([FromBody] CheckoutRequest request)
-        //{
-        //    var options = new SessionCreateOptions
-        //    {
-        //        PaymentMethodTypes = new List<string> { "card" },
-        //        Mode = "subscription",
-        //        SuccessUrl = "https://localhost:7216/success",
-        //        CancelUrl = "https://localhost:7216/cancel",
-        //        LineItems = new List<SessionLineItemOptions>
-        //{
-        //    new SessionLineItemOptions
-        //    {
-        //        Price = request.PriceId,
-        //        Quantity = 1,
-        //    },
-        //},
-        //        ClientReferenceId = request.UserId.ToString(),
-        //        Metadata = new Dictionary<string, string>
-        //{
-        //    { "Plan", request.PriceId }
-        //}
-        //    };
-
-        //    // 👇 Add this: reuse existing Stripe Customer
-        //    var existingCustomer = await _context.StripeSubscription
-        //        .Where(x => x.UserId == request.UserId)
-        //        .OrderByDescending(x => x.StartDate)
-        //        .Select(x => x.StripeCustomerId)
-        //        .FirstOrDefaultAsync();
-
-        //    if (!string.IsNullOrEmpty(existingCustomer))
-        //    {
-        //        options.Customer = existingCustomer;
-        //    }
-
-        //    var service = new SessionService();
-        //    var session = await service.CreateAsync(options);
-
-        //    return Ok(new { url = session.Url });
-        //}
-
-        //[HttpPost("create-payment-intent")]
-        //public async Task<IActionResult> CreatePaymentIntent([FromBody] PaymentIntentRequest request)
-        //{
-        //    var options = new PaymentIntentCreateOptions
-        //    {
-        //        Amount = (long)(request.Amount * 100), // amount in cents (e.g. $199 → 19900)
-        //        Currency = "usd",
-        //        AutomaticPaymentMethods = new PaymentIntentAutomaticPaymentMethodsOptions
-        //        {
-        //            Enabled = true,
-        //        },
-        //        Metadata = new Dictionary<string, string>
-        //{
-        //    { "userId", request.UserId },
-        //    { "plan", request.PlanName }
-        //}
-        //    };
-
-        //    var service = new PaymentIntentService();
-        //    var paymentIntent = await service.CreateAsync(options);
-
-        //    return Ok(new { clientSecret = paymentIntent.ClientSecret });
-        //}
-
-        //public class PaymentIntentRequest
-        //{
-        //    public string UserId { get; set; }
-        //    public string PlanName { get; set; }
-        //    public decimal Amount { get; set; } // USD
-        //}
-
-        // 🔹 Stripe Webhook endpoint
         [HttpPost("webhook")]
         public async Task<IActionResult> Webhook()
         {
@@ -259,7 +148,6 @@ namespace PitchGenApi.Controllers
             }
             catch (StripeException ex)
             {
-                Console.WriteLine($"⚠️ Stripe webhook signature error: {ex.Message}");
                 return BadRequest();
             }
             catch (Exception ex)
@@ -288,7 +176,6 @@ namespace PitchGenApi.Controllers
                     break;
 
                 default:
-                    Console.WriteLine($"⚙️ Unhandled event type: {stripeEvent.Type}");
                     break;
             }
 
@@ -296,11 +183,3 @@ namespace PitchGenApi.Controllers
         }
     }
 }
-
-    // 🔹 Request model for checkout
-    public class CheckoutRequest
-    {
-        public string PriceId { get; set; } = string.Empty;
-        public string UserId { get; set; } = string.Empty;
-    }
-
