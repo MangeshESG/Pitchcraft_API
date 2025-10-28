@@ -11,6 +11,8 @@ using PitchGenApi.Services;
 using PitchGenApi.Model;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using System.Security.Authentication;
+using PitchGenApi;
+using PitchGenApi.Repositories;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<OpenAISettings>(
@@ -128,7 +130,9 @@ builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddScoped<ContactRepository>();
+builder.Services.AddScoped<ZohoDataService>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
+builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddSingleton<JwtService>();
 builder.Services.AddHttpClient<ZohoService>(client =>

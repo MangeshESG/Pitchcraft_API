@@ -1,14 +1,13 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Helpers;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
-using PitchGenApi.Repository;
+using PitchGenApi.Repositories;
 using PitchGenApi.Services;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -22,15 +21,15 @@ namespace PitchGenApi.Controllers
         private readonly IUserRepository _userRepository;
         private readonly JwtService _jwtService;
         private readonly IResetPassworde _resetPassword;
-        private readonly ZohoService _zohoService;
+        private readonly IStripeRepository _stripe;
 
-        public LoginController(AppDbContext context, ZohoService zohoService, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword)
+        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword)
         {
             _context = context;
             _userRepository = userRepository;
             _jwtService = jwtService;
             _resetPassword = resetPassword;
-            _zohoService = zohoService;
+            _stripe = stripe;
         }
 
         [HttpPost("login")]
@@ -237,14 +236,14 @@ namespace PitchGenApi.Controllers
             _context.ClientDetails.Add(client);
             _context.SaveChanges(); // Save client to get generated ID
 
-
-            var userCredits = new UserCredits
-            {
-                ClientId = client.Id,
-                Credits = 100,
-                CreatedAt = DateTime.Now
-            };
-            _context.UserCredits.Add(userCredits);
+            await _stripe.SaveUserCreditsAsync(client.Id, "Basic","Basic Default");
+            //var userCredits = new UserCredits
+            //{
+            //    ClientId = client.Id,
+            //    Credits = 100,
+            //    CreatedAt = DateTime.Now
+            //};
+            //_context.UserCredits.Add(userCredits);
 
             // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);

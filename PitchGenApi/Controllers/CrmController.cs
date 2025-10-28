@@ -636,14 +636,16 @@ namespace PitchGenApi.Controllers
 
             try
             {
-                var credit = await _context.UserCredits.FirstOrDefaultAsync(cr => cr.ClientId == clientId);
+                var total = await _context.UserCredits
+                        .Where(x => x.ClientId == clientId && x.Status == "Active")
+                        .SumAsync(x => (int?)x.Credits ?? 0);
 
-                if (credit == null)
+                if (total == null)
                 {
                     return NotFound($"No credit found for client with ID {clientId}");
                 }
 
-                return Ok(credit.Credits);
+                return Ok(total);
             }
             catch (Exception ex)
             {
