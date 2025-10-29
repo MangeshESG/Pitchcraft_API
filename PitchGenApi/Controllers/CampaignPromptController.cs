@@ -271,7 +271,8 @@ namespace PitchGenApi.Controllers
                     {
                         t.Id,
                         t.TemplateDefinitionId,
-                        TemplateName = t.TemplateDefinition != null ? t.TemplateDefinition.TemplateName : "",
+                        TemplateName = t.TemplateName, // ✅ instance name
+                        TemplateDefinitionName = t.TemplateDefinition != null ? t.TemplateDefinition.TemplateName : "",
                         t.CreatedAt,
                         t.UpdatedAt,
                         t.SelectedModel,
@@ -476,16 +477,27 @@ namespace PitchGenApi.Controllers
             if (template == null)
                 return NotFound(new { Message = "Template not found" });
 
+            // ✅ Merge values from database & frontend
             var vals = string.IsNullOrEmpty(template.PlaceholderValues)
                 ? new Dictionary<string, string>()
-                : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues);
+                : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
+                  ?? new Dictionary<string, string>();
+
+            if (req.PlaceholderValues?.Count > 0)
+            {
+                foreach (var pair in req.PlaceholderValues)
+                    vals[pair.Key] = pair.Value;
+            }
 
             string master = template.TemplateDefinition.MasterBlueprintUnpopulated ?? "";
+
+            // ✅ Generate with merged placeholders
             var html = await _campaignService.GenerateExampleOutputAsync(vals, master, req.Model ?? "gpt-4o");
 
             if (!string.IsNullOrEmpty(html))
             {
                 template.ExampleOutput = html;
+                template.PlaceholderValues = JsonSerializer.Serialize(vals);
                 template.UpdatedAt = DateTime.UtcNow;
                 await _dbContext.SaveChangesAsync();
             }
