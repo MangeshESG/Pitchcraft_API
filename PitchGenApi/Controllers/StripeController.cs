@@ -99,13 +99,24 @@ namespace PitchGenApi.Controllers
                         if (!string.IsNullOrEmpty(paymentIntentId))
                         {
                             var paymentIntentService = new PaymentIntentService();
+
+                            // 🔹 Add this section to make Stripe send receipt email automatically
+                            var updateOptions = new PaymentIntentUpdateOptions
+                            {
+                                ReceiptEmail = req.Email ?? client?.Email ?? "noemail@example.com"
+                            };
+
+                            await paymentIntentService.UpdateAsync(paymentIntentId, updateOptions);
+
+                            // 🔹 Now fetch client secret as usual
                             var paymentIntent = await paymentIntentService.GetAsync(paymentIntentId);
                             clientSecret = paymentIntent.ClientSecret;
                         }
                     }
                 }
 
-                 //✅ Save subscription info in DB
+
+                //✅ Save subscription info in DB
                 var dbSub = new StripeSubscription
                 {
                     UserId = req.UserId,
@@ -131,6 +142,26 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpGet("{invoiceId}")]
+        public IActionResult GetInvoiceUrls(string invoiceId)
+        {
+            try
+            {
+                var invoice = _stripeRepository.GetInvoiceDetailsAsync(invoiceId);
+
+                if (invoice == null)
+                    return NotFound(new { message = "Invoice not found" });
+
+                return Ok(new
+                {
+                    InvoiceDwtils = invoice
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
 
         [HttpPost("webhook")]
         public async Task<IActionResult> Webhook()

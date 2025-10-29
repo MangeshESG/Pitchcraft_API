@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using System.Security.Authentication;
 using PitchGenApi;
 using PitchGenApi.Repositories;
+using PitchGenApi.Helpers;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<OpenAISettings>(
@@ -128,10 +129,12 @@ builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
     client.Timeout = TimeSpan.FromMinutes(10);
 }); 
 builder.Services.AddScoped<EmailSendingHelper>();
+builder.Services.AddScoped<EmailTemplateHelper>();
 builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddScoped<ContactRepository>();
 builder.Services.AddScoped<ZohoDataService>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
+builder.Services.AddScoped<IRegisterEmailSender, RegisterEmailSender>();
 builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddSingleton<JwtService>();

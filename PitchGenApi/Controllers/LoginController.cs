@@ -22,14 +22,16 @@ namespace PitchGenApi.Controllers
         private readonly JwtService _jwtService;
         private readonly IResetPassworde _resetPassword;
         private readonly IStripeRepository _stripe;
+        private readonly IRegisterEmailSender _register;
 
-        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword)
+        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register)
         {
             _context = context;
             _userRepository = userRepository;
             _jwtService = jwtService;
             _resetPassword = resetPassword;
             _stripe = stripe;
+            _register = register;
         }
 
         [HttpPost("login")]
@@ -61,7 +63,7 @@ namespace PitchGenApi.Controllers
                 var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
                 var userAgent = Request.Headers["User-Agent"].ToString();
                 var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
-                var trusteddiviceotp = RegisterEmailSender.TrustOtpEmail(user.Email, otp, user.FirstName, ipAddress, browserName);
+                await _register.TrustOtpEmail(user.Email, otp, user.FirstName, ipAddress, browserName);
             }
 
             var otpEntity = new EmailOtpVerification
@@ -139,18 +141,12 @@ namespace PitchGenApi.Controllers
                 user.IsAdmin,
                 Token = token,
                 trustenumber = user.TrustDiviceNumber,
-                //ClientID = user.ClientID,
-                //Isadmin = user.IsAdmin,
-                //IsDemoAccount = user.IsDemoAccount,
-                //FirstName = user.FirstName,
-                //LastName = user.LastName,
-                //CompanyName = user.CompanyName,
             });
         }
 
         // Step 1: Register Request → Generate OTP → Send Email
         [HttpPost("register")]
-        public IActionResult Register([FromBody] RegisterRequest request)
+        public async Task<IActionResult> Register([FromBody] RegisterRequest request)
         {
             if (_context.ClientDetails.Any(u => u.Email == request.Email || u.Username == request.Username))
             {
@@ -190,7 +186,7 @@ namespace PitchGenApi.Controllers
             var userAgent = Request.Headers["User-Agent"].ToString();
             var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
 
-            RegisterEmailSender.SendOtpEmail(request.Email, otp, request.FirstName, ipAddress, browserName);
+           await _register.SendOtpEmail(request.Email, otp, request.FirstName, ipAddress, browserName);
 
             return Ok("OTP sent to your email.");
         }
@@ -236,14 +232,7 @@ namespace PitchGenApi.Controllers
             _context.ClientDetails.Add(client);
             _context.SaveChanges(); // Save client to get generated ID
 
-            await _stripe.SaveUserCreditsAsync(client.Id, "Basic","Basic Default");
-            //var userCredits = new UserCredits
-            //{
-            //    ClientId = client.Id,
-            //    Credits = 100,
-            //    CreatedAt = DateTime.Now
-            //};
-            //_context.UserCredits.Add(userCredits);
+            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default");
 
             // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);
@@ -264,13 +253,28 @@ namespace PitchGenApi.Controllers
             var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
             var userAgent = Request.Headers["User-Agent"].ToString();
             var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+            string otp = OtpGenerator.GenerateSecureOtp();
+            DateTime expiry = DateTime.UtcNow.AddMinutes(10);
 
-            var response = await _resetPassword.SendOtpAsync(email, user.FirstName, ipAddress, browserName);
+            var otpEntry = new EmailOtpVerification
+            {
+                Email = email,
+                OTP = otp,
+                IsVerified = false,
+                OtpType = "reset password",
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = expiry
+            };
 
-            if (!response.Success)
-                return BadRequest(new { message = response.Message });
+            _context.EmailOtpVerifications.Add(otpEntry);
+            await _context.SaveChangesAsync();
+            await _register.SendResetPasswordEmailAsync(email,otp, user.FirstName, ipAddress, browserName);
 
-            return Ok(new { message = response.Message });
+            return Ok(new
+            {
+                success = true,
+                message = "OTP sent successfully"
+            });
         }
 
         [HttpPost("verify-otp-and-reset-password")]

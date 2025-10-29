@@ -44,6 +44,7 @@ namespace PitchGenApi.Database
         public DbSet<Subscription> Subscription { get; set; }
         public DbSet<Countriesdropdown> Countriesdropdown { get; set; }
         public DbSet<StripeSubscription> StripeSubscription { get; set; }
+        public DbSet<EmailTemplates> EmailTemplates { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

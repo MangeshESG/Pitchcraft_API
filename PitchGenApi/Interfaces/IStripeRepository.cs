@@ -1,4 +1,5 @@
-﻿using Stripe;
+﻿using PitchGenApi.Model.DTOs;
+using Stripe;
 using System.Threading.Tasks;
 
 namespace PitchGenApi.Repositories
@@ -9,5 +10,6 @@ namespace PitchGenApi.Repositories
         Task HandleInvoicePaidAsync(Event stripeEvent);
         Task HandleSubscriptionCancelledAsync(Event stripeEvent);
         Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId);
+        Task<StripeInvoiceResponse?> GetInvoiceDetailsAsync(string invoiceId);
     }
 }

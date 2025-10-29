@@ -1,6 +1,7 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
+using PitchGenApi.Model.DTOs;
 using Stripe;
 
 namespace PitchGenApi.Repositories
@@ -156,6 +157,43 @@ namespace PitchGenApi.Repositories
             else
             {
                 Console.WriteLine($"⚠️ Subscription {subscription.Id} not found in database.");
+            }
+        }
+        public async Task<StripeInvoiceResponse?> GetInvoiceDetailsAsync(string invoiceId)
+        {
+            if (string.IsNullOrWhiteSpace(invoiceId))
+                throw new ArgumentException("Invoice ID cannot be null or empty.", nameof(invoiceId));
+
+            var service = new InvoiceService();
+
+            try
+            {
+                var invoice = await service.GetAsync(invoiceId);
+
+                if (invoice == null)
+                    throw new Exception($"Invoice not found for ID: {invoiceId}");
+
+                // Map Stripe invoice to custom model
+                var response = new StripeInvoiceResponse
+                {
+                    InvoiceId = invoice.Id,
+                    CustomerEmail = invoice.CustomerEmail,
+                    CustomerName = invoice.CustomerName,
+                    InvoiceNumber = invoice.Number,
+                    InvoiceDate = invoice.Created.ToUniversalTime(),
+                    AmountPaid = (decimal)(invoice.AmountPaid / 100.0m), // convert cents to currency
+                    InvoicePdfUrl = invoice.InvoicePdf
+                };
+
+                return response;
+            }
+            catch (StripeException ex)
+            {
+                throw new Exception($"Stripe API error: {ex.Message}", ex);
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error fetching invoice details: {ex.Message}", ex);
             }
         }
 
