@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Helpers;
@@ -232,7 +233,10 @@ namespace PitchGenApi.Controllers
             _context.ClientDetails.Add(client);
             _context.SaveChanges(); // Save client to get generated ID
 
-            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default");
+            var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
+            var formattedSubNumber = $"SUB-{nextSubNumber:D4}"; // e.g. SUB-0001
+
+            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default", formattedSubNumber);
 
             // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);

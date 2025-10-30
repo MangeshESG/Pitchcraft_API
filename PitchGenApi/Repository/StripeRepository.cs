@@ -15,59 +15,59 @@ namespace PitchGenApi.Repositories
             _context = context;
         }
 
-        public async Task HandleCheckoutCompletedAsync(Event stripeEvent)
-        {
-            if (stripeEvent.Data.Object is not Stripe.Checkout.Session session)
-            {
-                return;
-            }
+        //public async Task HandleCheckoutCompletedAsync(Event stripeEvent)
+        //{
+        //    if (stripeEvent.Data.Object is not Stripe.Checkout.Session session)
+        //    {
+        //        return;
+        //    }
 
-            var userId = session.ClientReferenceId;
-            var planId = session.Metadata.ContainsKey("Plan") ? session.Metadata["Plan"] : "";
-            var stripeCustomerId = session.CustomerId;
-            var stripeSubscriptionId = session.SubscriptionId;
+        //    var userId = session.ClientReferenceId;
+        //    var planId = session.Metadata.ContainsKey("Plan") ? session.Metadata["Plan"] : "";
+        //    var stripeCustomerId = session.CustomerId;
+        //    var stripeSubscriptionId = session.SubscriptionId;
 
-            if (string.IsNullOrEmpty(userId))
-            {
-                return;
-            }
+        //    if (string.IsNullOrEmpty(userId))
+        //    {
+        //        return;
+        //    }
 
-            // ✅ Idempotent insert/update
-            var existing = await _context.StripeSubscription
-                .FirstOrDefaultAsync(x => x.StripeSubscriptionId == stripeSubscriptionId);
+        //    // ✅ Idempotent insert/update
+        //    var existing = await _context.StripeSubscription
+        //        .FirstOrDefaultAsync(x => x.StripeSubscriptionId == stripeSubscriptionId);
 
-            if (int.TryParse(userId, out int clientId))
-            {
-                await SaveUserCreditsAsync(clientId, planId, stripeSubscriptionId);
-            }
-            else
-            {
-                Console.WriteLine($"⚠️ Invalid userId: {userId}, cannot convert to int");
-            }
+        //    if (int.TryParse(userId, out int clientId))
+        //    {
+        //        await SaveUserCreditsAsync(clientId, planId, stripeSubscriptionId);
+        //    }
+        //    else
+        //    {
+        //        Console.WriteLine($"⚠️ Invalid userId: {userId}, cannot convert to int");
+        //    }
 
-            if (existing == null)
-            {
-                var record = new StripeSubscription
-                {
-                    UserId = userId,
-                    StripeCustomerId = stripeCustomerId ?? "",
-                    StripeSubscriptionId = stripeSubscriptionId ?? "",
-                    PlanId = planId ?? "",
-                    StartDate = DateTime.UtcNow,
-                    Status = "Active"
-                };
+        //    if (existing == null)
+        //    {
+        //        var record = new StripeSubscription
+        //        {
+        //            UserId = userId,
+        //            StripeCustomerId = stripeCustomerId ?? "",
+        //            StripeSubscriptionId = stripeSubscriptionId ?? "",
+        //            PlanId = planId ?? "",
+        //            StartDate = DateTime.UtcNow,
+        //            Status = "Active"
+        //        };
 
-                _context.StripeSubscription.Add(record);
-            }
-            else
-            {
-                existing.Status = "Active";
-                existing.PlanId = planId ?? existing.PlanId;
-                existing.StripeCustomerId = stripeCustomerId ?? existing.StripeCustomerId;
-            }
+        //        _context.StripeSubscription.Add(record);
+        //    }
+        //    else
+        //    {
+        //        existing.Status = "Active";
+        //        existing.PlanId = planId ?? existing.PlanId;
+        //        existing.StripeCustomerId = stripeCustomerId ?? existing.StripeCustomerId;
+        //    }
 
-            await _context.SaveChangesAsync();
-        }
+        //    await _context.SaveChangesAsync();
+        //}
         public async Task HandleInvoicePaidAsync(Event stripeEvent)
         {
             // Extract invoice object
@@ -82,11 +82,13 @@ namespace PitchGenApi.Repositories
             var firstLine = invoice.Lines?.Data?.FirstOrDefault();
             string? userId = null;
             string? planId = null;
+            string? SubcribtionNumber = null;
 
             if (firstLine?.Metadata != null)
             {
                 userId = firstLine.Metadata.TryGetValue("app_user_id", out string uid) ? uid : null;
                 planId = firstLine.Metadata.TryGetValue("plan", out string pid) ? pid : null;
+                SubcribtionNumber = firstLine.Metadata.TryGetValue("subscription_number", out string sn) ? sn : null; // ✅ fixed line
             }
 
             if (string.IsNullOrEmpty(userId))
@@ -123,7 +125,7 @@ namespace PitchGenApi.Repositories
             await _context.SaveChangesAsync();
 
             // Grant credits or features after successful payment
-            await SaveUserCreditsAsync(clientId, planId, subscriptionId);
+            await SaveUserCreditsAsync(clientId, planId, subscriptionId, SubcribtionNumber);
         }
 
         public async Task HandleSubscriptionCancelledAsync(Event stripeEvent)
@@ -158,6 +160,22 @@ namespace PitchGenApi.Repositories
             {
                 Console.WriteLine($"⚠️ Subscription {subscription.Id} not found in database.");
             }
+        }
+        public async Task<List<Stripe.Subscription>> GetAllSubscriptionsByCustomerAsync(string customerId)
+        {
+            var service = new SubscriptionService();
+            var options = new SubscriptionListOptions
+            {
+                Customer = customerId,
+                Expand = new List<string>
+                {
+                    "data.customer",
+                    "data.items.data.price"
+                }
+            };
+
+            var subscriptions = await service.ListAsync(options);
+            return subscriptions.Data.ToList();
         }
         public async Task<StripeInvoiceResponse?> GetInvoiceDetailsAsync(string invoiceId)
         {
@@ -197,7 +215,7 @@ namespace PitchGenApi.Repositories
             }
         }
 
-        public async Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId)
+        public async Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId, string SubcribtionNumber )
         {
             try
             {
@@ -240,6 +258,7 @@ namespace PitchGenApi.Repositories
                     CreatedAt = now,
                     Plane = planName,
                     StripeSubscriptionId = stripeSubscriptionId,
+                    SubscriptionNumber = SubcribtionNumber,
                     Status = "Active",
                     StartDate = now,
                     EndDate = now.AddMonths(1)

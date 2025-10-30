@@ -35,13 +35,14 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                // 1. Ensure Stripe customer exists — create if missing
+                // 1️⃣ Ensure Stripe customer exists — create if missing
                 var user = await _context.StripeSubscription.FirstOrDefaultAsync(u => u.UserId == req.UserId);
                 var client = await _context.ClientDetails
                     .FirstOrDefaultAsync(u => u.Id == Convert.ToInt32(req.UserId));
+
                 string customerId = user?.StripeCustomerId ?? string.Empty;
 
-                 //🔹 Step 2: If no Stripe customer — create a new one(but don't save in DB)
+                // 🔹 Step 2: If no Stripe customer — create a new one (don’t save in DB)
                 if (string.IsNullOrEmpty(customerId))
                 {
                     var customerService = new CustomerService();
@@ -54,28 +55,36 @@ namespace PitchGenApi.Controllers
                     customerId = customer.Id;
                 }
 
-                // 2. Create subscription with default_incomplete so we get payment intent client secret
+                // 2️⃣ Generate a unique subscription number before creating Stripe subscription
+                var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
+                var formattedSubNumber = $"SUB-{nextSubNumber:D4}"; // e.g. SUB-0001
+
+                // 3️⃣ Create subscription with metadata (including your custom subscription number)
                 var subOptions = new SubscriptionCreateOptions
                 {
                     Customer = customerId,
-                    Items = new List<SubscriptionItemOptions> {
-                        new SubscriptionItemOptions { Price = req.PriceId }
-                    },
-                         PaymentBehavior = "default_incomplete",
-                           Expand = new List<string> {
-                        "latest_invoice.payment_intent",
-                        "latest_invoice.payments"},
-                        Metadata = new Dictionary<string, string> {
-                        { "app_user_id", req.UserId },
-                        { "plan", req.PriceId }
-                    }
+                    Items = new List<SubscriptionItemOptions>
+            {
+                new SubscriptionItemOptions { Price = req.PriceId }
+            },
+                    PaymentBehavior = "default_incomplete",
+                    Expand = new List<string>
+            {
+                "latest_invoice.payment_intent",
+                "latest_invoice.payments"
+            },
+                    Metadata = new Dictionary<string, string>
+            {
+                { "app_user_id", req.UserId },
+                { "plan", req.PriceId },
+                { "subscription_number", formattedSubNumber } // ✅ custom subscription number
+            }
                 };
-
 
                 var subService = new SubscriptionService();
                 var subscription = await subService.CreateAsync(subOptions);
 
-                // ✅ Fetch PaymentIntent ClientSecret (universal method)
+                // 4️⃣ Fetch PaymentIntent client secret (if available)
                 string? clientSecret = null;
 
                 if (subscription.LatestInvoice != null && subscription.LatestInvoice is Invoice invoice)
@@ -83,24 +92,13 @@ namespace PitchGenApi.Controllers
                     if (invoice.Payments != null && invoice.Payments.Data.Count > 0)
                     {
                         var firstPayment = invoice.Payments.Data[0];
-                        object? paymentIntentObj = firstPayment.Payment?.PaymentIntentId;
-
-                        string? paymentIntentId = null;
-
-                        if (paymentIntentObj is string idString)
-                        {
-                            paymentIntentId = idString;
-                        }
-                        else if (paymentIntentObj is PaymentIntent piObject)
-                        {
-                            paymentIntentId = piObject.Id;
-                        }
+                        string? paymentIntentId = firstPayment.Payment?.PaymentIntentId;
 
                         if (!string.IsNullOrEmpty(paymentIntentId))
                         {
                             var paymentIntentService = new PaymentIntentService();
 
-                            // 🔹 Add this section to make Stripe send receipt email automatically
+                            // 🔹 Auto-send Stripe receipt email
                             var updateOptions = new PaymentIntentUpdateOptions
                             {
                                 ReceiptEmail = req.Email ?? client?.Email ?? "noemail@example.com"
@@ -108,15 +106,13 @@ namespace PitchGenApi.Controllers
 
                             await paymentIntentService.UpdateAsync(paymentIntentId, updateOptions);
 
-                            // 🔹 Now fetch client secret as usual
                             var paymentIntent = await paymentIntentService.GetAsync(paymentIntentId);
                             clientSecret = paymentIntent.ClientSecret;
                         }
                     }
                 }
 
-
-                //✅ Save subscription info in DB
+                // 5️⃣ Save subscription info (including number) in DB
                 var dbSub = new StripeSubscription
                 {
                     UserId = req.UserId,
@@ -124,14 +120,17 @@ namespace PitchGenApi.Controllers
                     StripeCustomerId = customerId,
                     PlanId = req.PriceId,
                     Status = subscription.Status,
+                    SubscriptionNumber = formattedSubNumber, // ✅ store custom number
                     StartDate = DateTime.UtcNow
                 };
 
                 _context.StripeSubscription.Add(dbSub);
                 await _context.SaveChangesAsync();
 
+                // 6️⃣ Return everything to frontend
                 return Ok(new
                 {
+                    subscriptionNumber = formattedSubNumber,
                     subscriptionId = subscription.Id,
                     clientSecret
                 });
@@ -163,6 +162,102 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpGet("customer/{ClientId}/subscriptions")]
+        public async Task<IActionResult> GetAllSubscriptionsByCustomer(
+        string ClientId,
+        int limit = 10,
+        string? startingAfter = null)
+        {
+            // ✅ Get Stripe Customer ID from your local DB
+            var subscriptionRecord = await _context.StripeSubscription
+                .FirstOrDefaultAsync(s => s.UserId == ClientId);
+
+            //if (subscriptionRecord == null || string.IsNullOrWhiteSpace(subscriptionRecord.StripeCustomerId))
+            //    return BadRequest(new { message = "No Stripe customer found for this client." });
+
+            var customerId = subscriptionRecord.StripeCustomerId;
+
+            try
+            {
+                var service = new SubscriptionService();
+
+                // ⚙️ Expand only up to price level to avoid deep expand limit
+                var options = new SubscriptionListOptions
+                {
+                    Customer = customerId,
+                    Limit = limit,
+                    Expand = new List<string>
+                    {
+                        "data.customer",
+                        "data.items.data.price"
+                    }
+                };
+
+                if (!string.IsNullOrEmpty(startingAfter))
+                    options.StartingAfter = startingAfter;
+
+                var subscriptions = await service.ListAsync(options);
+
+                //if (subscriptions == null || subscriptions.Data.Count == 0)
+                //    return Ok(new { message = "No subscriptions found for this customer." });
+
+                var productService = new ProductService();
+                var result = new List<object>();
+
+                foreach (var s in subscriptions.Data)
+                {
+                    var firstItem = s.Items?.Data?.FirstOrDefault();
+                    var price = firstItem?.Price;
+                    string planName = price?.Nickname;
+                    decimal? planAmount = price?.UnitAmountDecimal / 100;
+                    string interval = price?.Recurring?.Interval;
+
+                    // ⚙️ Fetch product name manually (safe way, avoids deep expand)
+                    if (string.IsNullOrEmpty(planName) && price?.ProductId != null)
+                    {
+                        var product = await productService.GetAsync(price.ProductId);
+                        planName = product?.Name;
+                    }
+                    string subscriptionNumber = s.Metadata != null && s.Metadata.ContainsKey("subscription_number")
+                        ? s.Metadata["subscription_number"]
+                        : "N/A";
+                    string Status = s.Status;
+                    var StartDate = s.StartDate;
+                    var EndDate = s.Items.Data.First().CurrentPeriodEnd;
+                    var CustomerEmail = (s.Customer as Stripe.Customer)?.Email ?? "N/A";
+
+                    result.Add(new
+                    {
+                        SubscriptionId = subscriptionNumber,
+                        Status,
+                        PlanName = planName ?? "N/A",
+                        PlanAmount = planAmount ?? 0,
+                        Interval = interval ?? "N/A",
+                        StartDate,
+                        EndDate,
+                        //CancelAtPeriodEnd = s.CancelAtPeriodEnd,
+                        CustomerEmail
+                    });
+                }
+
+                // 🔁 Include pagination info in response
+                return Ok(new
+                {
+                    Data = result,
+                    HasMore = subscriptions.HasMore,
+                    NextCursor = subscriptions.Data.LastOrDefault()?.Id
+                });
+            }
+            catch (StripeException ex)
+            {
+                return StatusCode(500, new { message = "Stripe error", error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Server error", error = ex.Message });
+            }
+        }
+
         [HttpPost("webhook")]
         public async Task<IActionResult> Webhook()
         {
@@ -190,9 +285,9 @@ namespace PitchGenApi.Controllers
             // ✅ Route events to repo
             switch (stripeEvent.Type)
             {
-                case "checkout.session.completed":
-                    await _stripeRepository.HandleCheckoutCompletedAsync(stripeEvent);
-                    break;
+                //case "checkout.session.completed":
+                //    await _stripeRepository.HandleCheckoutCompletedAsync(stripeEvent);
+                //    break;
 
                 case "invoice.paid":
                     await _stripeRepository.HandleInvoicePaidAsync(stripeEvent);
