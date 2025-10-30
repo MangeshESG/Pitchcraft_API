@@ -14,11 +14,12 @@ using System.Security.Authentication;
 using PitchGenApi;
 using PitchGenApi.Repositories;
 using PitchGenApi.Helpers;
+using Microsoft.Extensions.FileProviders;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<OpenAISettings>(
     builder.Configuration.GetSection("OpenAI"));
-
 
 builder.Services.Configure<KestrelServerOptions>(options =>
 {
@@ -114,9 +115,13 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("MyCorsPolicy", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "http://test.pitchkraft.ai")
+        policy.WithOrigins(
+                "http://localhost:3000",
+                "http://test.pitchkraft.ai",
+                "https://test.pitchkraft.ai")
               .AllowAnyHeader()
-              .AllowAnyMethod();
+              .AllowAnyMethod()
+              .AllowCredentials();
     });
 });
 
@@ -127,7 +132,7 @@ builder.Services.AddScoped<IPromptRepository, PromptRepository>();
 builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
 {
     client.Timeout = TimeSpan.FromMinutes(10);
-}); 
+});
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddScoped<EmailTemplateHelper>();
 builder.Services.AddHostedService<EmailSchedulerService>();
@@ -138,13 +143,6 @@ builder.Services.AddScoped<IRegisterEmailSender, RegisterEmailSender>();
 builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddSingleton<JwtService>();
-builder.Services.AddHttpClient<ZohoService>(client =>
-{
-    client.BaseAddress = new Uri("https://www.zohoapis.com/");
-    client.Timeout = TimeSpan.FromSeconds(30);
-    // Remove the line below if you're managing headers per request
-    // client.DefaultRequestHeaders.Add("Accept", "application/json");
-});
 
 builder.Services.AddControllers();
 
@@ -161,6 +159,7 @@ builder.Services.AddHttpClient<WebSearchService>(client =>
 
 var app = builder.Build();
 
+// Swagger configuration
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
@@ -173,25 +172,73 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// ? Serve React build first
-app.UseDefaultFiles();
-app.UseStaticFiles();
+// ✅ Serve static files from wwwroot with proper configuration
+var wwwrootPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+Console.WriteLine($"📁 Serving static files from: {wwwrootPath}");
+Console.WriteLine($"📁 ContentRootPath: {app.Environment.ContentRootPath}");
+
+if (Directory.Exists(wwwrootPath))
+{
+    var indexPath = Path.Combine(wwwrootPath, "index.html");
+    Console.WriteLine($"✅ wwwroot exists. index.html exists: {File.Exists(indexPath)}");
+
+    // Serve default files (index.html)
+    app.UseDefaultFiles(new DefaultFilesOptions
+    {
+        DefaultFileNames = new List<string> { "index.html" },
+        FileProvider = new PhysicalFileProvider(wwwrootPath),
+        RequestPath = ""
+    });
+
+    // Serve static files
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(wwwrootPath),
+        RequestPath = "",
+        OnPrepareResponse = ctx =>
+        {
+            // Add cache headers for static assets
+            if (ctx.File.Name.EndsWith(".js") || ctx.File.Name.EndsWith(".css"))
+            {
+                ctx.Context.Response.Headers.Append("Cache-Control", "public,max-age=31536000");
+            }
+        }
+    });
+}
+else
+{
+    Console.WriteLine($"❌ WARNING: wwwroot directory not found at {wwwrootPath}");
+}
+
+// ✅ Map API controllers FIRST before fallback
 app.MapControllers();
 
-app.MapFallback(context =>
+// ✅ SPA Fallback - serve index.html for client-side routing
+app.MapFallback(async context =>
 {
-    if (context.Request.Path.StartsWithSegments("/swagger"))
+    // Don't handle API, Swagger, or tracking requests
+    if (context.Request.Path.StartsWithSegments("/api") ||
+        context.Request.Path.StartsWithSegments("/swagger") ||
+        context.Request.Path.StartsWithSegments("/track"))
     {
         context.Response.StatusCode = 404;
-        return Task.CompletedTask;
+        return;
     }
-    context.Response.Redirect("/");
-    return Task.CompletedTask;
+
+    // Serve index.html for SPA routing
+    var indexPath = Path.Combine(wwwrootPath, "index.html");
+    if (File.Exists(indexPath))
+    {
+        Console.WriteLine($"🔄 Serving index.html for path: {context.Request.Path}");
+        context.Response.ContentType = "text/html; charset=utf-8";
+        await context.Response.SendFileAsync(indexPath);
+    }
+    else
+    {
+        Console.WriteLine($"❌ index.html not found at: {indexPath}");
+        context.Response.StatusCode = 404;
+        await context.Response.WriteAsync($"index.html not found at {indexPath}");
+    }
 });
-
-
-
-// ? Map API controllers
-app.MapControllers();
 
 app.Run();
