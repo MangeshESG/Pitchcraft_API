@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
@@ -15,80 +15,303 @@ namespace PitchGenApi.Repositories
             _context = context;
         }
 
-        //public async Task HandleCheckoutCompletedAsync(Event stripeEvent)
+        public async Task<string> CreateCreditPurchaseIntentAsync(string userId, int credits)
+        {
+            if (credits <= 0)
+                throw new ArgumentException("Credits must be greater than zero.");
+
+            // Check for existing Stripe customer
+            var existingCustomerId = await _context.StripeSubscription
+                .Where(c => c.UserId == userId)
+                .Select(c => c.StripeCustomerId)
+                .FirstOrDefaultAsync();
+
+            var customerService = new CustomerService();
+
+            // If no customer exists, create a new one (do not save in DB)
+            if (string.IsNullOrEmpty(existingCustomerId))
+            {
+                var newCustomer = await customerService.CreateAsync(new CustomerCreateOptions
+                {
+                    Metadata = new Dictionary<string, string>
+                    {
+                        { "userId", userId }
+                    }
+                });
+
+                existingCustomerId = newCustomer.Id;
+            }
+
+            decimal pricePerCredit = 0.20m; // USD
+            decimal totalAmount = credits * pricePerCredit;
+            long amountInCents = (long)(totalAmount * 100);
+
+            var options = new PaymentIntentCreateOptions
+            {
+                Amount = amountInCents,
+                Currency = "usd",
+                Customer = existingCustomerId, // Attach existing or newly created customer
+                Metadata = new Dictionary<string, string>
+                {
+                    { "userId", userId },
+                    { "credits", credits.ToString() }
+                },
+                AutomaticPaymentMethods = new PaymentIntentAutomaticPaymentMethodsOptions
+                {
+                    Enabled = true
+                }
+            };
+
+            var service = new PaymentIntentService();
+            var paymentIntent = await service.CreateAsync(options);
+
+            return paymentIntent.ClientSecret;
+        }
+
+        public async Task<CreateSubscriptionResponse> CreateSubscriptionAsync(CreateSubscriptionRequest req)
+        {
+            var user = await _context.StripeSubscription.FirstOrDefaultAsync(u => u.UserId == req.UserId);
+            var client = await _context.ClientDetails
+                .FirstOrDefaultAsync(u => u.Id == Convert.ToInt32(req.UserId));
+
+            string customerId = user?.StripeCustomerId ?? string.Empty;
+
+            if (string.IsNullOrEmpty(customerId))
+            {
+                var customerService = new CustomerService();
+                var customer = await customerService.CreateAsync(new CustomerCreateOptions
+                {
+                    Email = req.Email ?? client?.Email ?? "noemail@example.com",
+                    Metadata = new Dictionary<string, string> { { "app_user_id", req.UserId } }
+                });
+
+                customerId = customer.Id;
+            }
+
+            var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
+            var formattedSubNumber = $"SUB-{nextSubNumber:D4}";
+
+            var subOptions = new SubscriptionCreateOptions
+            {
+                Customer = customerId,
+                Items = new List<SubscriptionItemOptions>
+                {
+                    new SubscriptionItemOptions { Price = req.PriceId }
+                },
+                PaymentBehavior = "default_incomplete",
+                Expand = new List<string>
+                {
+                    "latest_invoice.payment_intent",
+                    "latest_invoice.payments"
+                },
+                Metadata = new Dictionary<string, string>
+                {
+                    { "app_user_id", req.UserId },
+                    { "plan", req.PriceId },
+                    { "subscription_number", formattedSubNumber }
+                }
+            };
+
+            var subService = new SubscriptionService();
+            var subscription = await subService.CreateAsync(subOptions);
+
+            string? clientSecret = null;
+
+            if (subscription.LatestInvoice != null && subscription.LatestInvoice is Invoice invoice)
+            {
+                if (invoice.Payments != null && invoice.Payments.Data.Count > 0)
+                {
+                    var firstPayment = invoice.Payments.Data[0];
+                    string? paymentIntentId = firstPayment.Payment?.PaymentIntentId;
+
+                    if (!string.IsNullOrEmpty(paymentIntentId))
+                    {
+                        var paymentIntentService = new PaymentIntentService();
+
+                        var updateOptions = new PaymentIntentUpdateOptions
+                        {
+                            ReceiptEmail = req.Email ?? client?.Email ?? "noemail@example.com"
+                        };
+
+                        await paymentIntentService.UpdateAsync(paymentIntentId, updateOptions);
+
+                        var paymentIntent = await paymentIntentService.GetAsync(paymentIntentId);
+                        clientSecret = paymentIntent.ClientSecret;
+                    }
+                }
+            }
+
+            var dbSub = new StripeSubscription
+            {
+                UserId = req.UserId,
+                StripeSubscriptionId = subscription.Id,
+                StripeCustomerId = customerId,
+                PlanId = req.PriceId,
+                Status = subscription.Status,
+                SubscriptionNumber = formattedSubNumber,
+                StartDate = DateTime.UtcNow
+            };
+
+            _context.StripeSubscription.Add(dbSub);
+            await _context.SaveChangesAsync();
+
+            return new CreateSubscriptionResponse
+            {
+                SubscriptionNumber = formattedSubNumber,
+                SubscriptionId = subscription.Id,
+                ClientSecret = clientSecret
+            };
+        }
+
+        //public async Task<StripeSubscriptionResponse> GetAllSubscriptionsByCustomerAsync(string clientId, int limit = 10, string? startingAfter = null)
         //{
-        //    if (stripeEvent.Data.Object is not Stripe.Checkout.Session session)
-        //    {
-        //        return;
-        //    }
+        //    var subscriptionRecord = await _context.StripeSubscription
+        //        .FirstOrDefaultAsync(s => s.UserId == clientId);
 
-        //    var userId = session.ClientReferenceId;
-        //    var planId = session.Metadata.ContainsKey("Plan") ? session.Metadata["Plan"] : "";
-        //    var stripeCustomerId = session.CustomerId;
-        //    var stripeSubscriptionId = session.SubscriptionId;
+        //    var customerId = subscriptionRecord?.StripeCustomerId;
 
-        //    if (string.IsNullOrEmpty(userId))
-        //    {
-        //        return;
-        //    }
+        //    var service = new SubscriptionService();
 
-        //    // ✅ Idempotent insert/update
-        //    var existing = await _context.StripeSubscription
-        //        .FirstOrDefaultAsync(x => x.StripeSubscriptionId == stripeSubscriptionId);
-
-        //    if (int.TryParse(userId, out int clientId))
+        //    var options = new SubscriptionListOptions
         //    {
-        //        await SaveUserCreditsAsync(clientId, planId, stripeSubscriptionId);
-        //    }
-        //    else
-        //    {
-        //        Console.WriteLine($"⚠️ Invalid userId: {userId}, cannot convert to int");
-        //    }
-
-        //    if (existing == null)
-        //    {
-        //        var record = new StripeSubscription
+        //        Customer = customerId,
+        //        Limit = limit,
+        //        Expand = new List<string>
         //        {
-        //            UserId = userId,
-        //            StripeCustomerId = stripeCustomerId ?? "",
-        //            StripeSubscriptionId = stripeSubscriptionId ?? "",
-        //            PlanId = planId ?? "",
-        //            StartDate = DateTime.UtcNow,
-        //            Status = "Active"
-        //        };
+        //            "data.customer",
+        //            "data.items.data.price"
+        //        }
+        //    };
 
-        //        _context.StripeSubscription.Add(record);
-        //    }
-        //    else
+        //    if (!string.IsNullOrEmpty(startingAfter))
+        //        options.StartingAfter = startingAfter;
+
+        //    var subscriptions = await service.ListAsync(options);
+
+        //    var productService = new ProductService();
+        //    var result = new List<object>();
+
+        //    foreach (var s in subscriptions.Data)
         //    {
-        //        existing.Status = "Active";
-        //        existing.PlanId = planId ?? existing.PlanId;
-        //        existing.StripeCustomerId = stripeCustomerId ?? existing.StripeCustomerId;
+        //        var firstItem = s.Items?.Data?.FirstOrDefault();
+        //        var price = firstItem?.Price;
+        //        string planName = price?.Nickname;
+        //        decimal? planAmount = price?.UnitAmountDecimal / 100;
+        //        string interval = price?.Recurring?.Interval;
+
+        //        if (string.IsNullOrEmpty(planName) && price?.ProductId != null)
+        //        {
+        //            var product = await productService.GetAsync(price.ProductId);
+        //            planName = product?.Name;
+        //        }
+        //        string subscriptionNumber = s.Metadata != null && s.Metadata.ContainsKey("subscription_number")
+        //            ? s.Metadata["subscription_number"]
+        //            : "N/A";
+        //        string Status = s.Status;
+        //        var StartDate = s.StartDate;
+        //        var EndDate = s.Items.Data.First().CurrentPeriodEnd;
+        //        var CustomerEmail = (s.Customer as Stripe.Customer)?.Email ?? "N/A";
+
+        //        result.Add(new
+        //        {
+        //            SubscriptionId = subscriptionNumber,
+        //            Status,
+        //            PlanName = planName ?? "N/A",
+        //            PlanAmount = planAmount ?? 0,
+        //            Interval = interval ?? "N/A",
+        //            StartDate,
+        //            EndDate,
+        //            CustomerEmail
+        //        });
         //    }
 
-        //    await _context.SaveChangesAsync();
+        //    return new StripeSubscriptionResponse
+        //    {
+        //        Data = result,
+        //        HasMore = subscriptions.HasMore,
+        //        NextCursor = subscriptions.Data.LastOrDefault()?.Id
+        //    };
         //}
+        public async Task<PlanHistoryPagedResult<object>> GetPlanHistoryByClientIdAsync(int clientId, int pageNumber = 1, int pageSize = 10)
+        {
+            if (pageNumber < 1)
+                pageNumber = 1;
+
+            if (pageSize < 1)
+                pageSize = 10;
+
+            var query = _context.UserCredits
+                .Where(x => x.ClientId == clientId)
+                .OrderByDescending(x => x.CreatedAt);
+
+            var totalRecords = await query.CountAsync();
+            var totalPages = (int)Math.Ceiling(totalRecords / (double)pageSize);
+
+            var data = await query
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
+                .Select(x => new
+                {
+                    SubscriptionId = x.SubscriptionNumber ?? "N/A",
+                    Status = x.Status ?? "N/A",
+                    PlanName = x.Plane ?? "N/A",
+                    PlanAmount = x.Amount == null ? 0 : x.Amount,
+                    Interval = "Monthly", // or map from your plan if available
+                    StartDate = x.StartDate != default ? x.StartDate : DateTime.MinValue,
+                    EndDate = x.EndDate != default ? x.EndDate : DateTime.MinValue,
+                })
+                .ToListAsync();
+
+            return new PlanHistoryPagedResult<object>
+            {
+                Items = data,
+                TotalRecords = totalRecords,
+                TotalPages = totalPages,
+                CurrentPage = pageNumber,
+                PageSize = pageSize
+            };
+        }
+
+        public async Task HandleWebhookEventAsync(Event stripeEvent)
+        {
+            switch (stripeEvent.Type)
+            {
+                case "invoice.paid":
+                    await HandleInvoicePaidAsync(stripeEvent);
+                    break;
+
+                case "customer.subscription.deleted":
+                    await HandleSubscriptionCancelledAsync(stripeEvent);
+                    break;
+
+                case "invoice.payment_succeeded":
+                    await HandleSubscriptionCancelledAsync(stripeEvent);
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
         public async Task HandleInvoicePaidAsync(Event stripeEvent)
         {
-            // Extract invoice object
             if (stripeEvent.Data.Object is not Stripe.Invoice invoice)
                 return;
 
-            // Extract Subscription ID
             var subscriptionId = invoice.Lines?.Data?.FirstOrDefault()?.Parent?
                          .SubscriptionItemDetails?.Subscription;
 
-            // Extract metadata from first line item
             var firstLine = invoice.Lines?.Data?.FirstOrDefault();
             string? userId = null;
             string? planId = null;
             string? SubcribtionNumber = null;
-
+            var StartDate = invoice.PeriodStart;
+            var EndDate = invoice.PeriodEnd;
             if (firstLine?.Metadata != null)
             {
                 userId = firstLine.Metadata.TryGetValue("app_user_id", out string uid) ? uid : null;
                 planId = firstLine.Metadata.TryGetValue("plan", out string pid) ? pid : null;
-                SubcribtionNumber = firstLine.Metadata.TryGetValue("subscription_number", out string sn) ? sn : null; // ✅ fixed line
+                SubcribtionNumber = firstLine.Metadata.TryGetValue("subscription_number", out string sn) ? sn : null;
             }
 
             if (string.IsNullOrEmpty(userId))
@@ -97,11 +320,9 @@ namespace PitchGenApi.Repositories
             if (!int.TryParse(userId, out int clientId))
                 return;
 
-            // Find existing subscription
             var existing = await _context.StripeSubscription
                 .FirstOrDefaultAsync(x => x.UserId == userId && x.StripeSubscriptionId == subscriptionId);
 
-            // Create or update subscription
             if (existing == null)
             {
                 var newRecord = new StripeSubscription
@@ -124,8 +345,7 @@ namespace PitchGenApi.Repositories
 
             await _context.SaveChangesAsync();
 
-            // Grant credits or features after successful payment
-            await SaveUserCreditsAsync(clientId, planId, subscriptionId, SubcribtionNumber);
+            await SaveUserCreditsAsync(clientId, planId, subscriptionId, SubcribtionNumber, StartDate, EndDate);
         }
 
         public async Task HandleSubscriptionCancelledAsync(Event stripeEvent)
@@ -139,7 +359,7 @@ namespace PitchGenApi.Repositories
 
             if (sub != null)
             {
-                sub.Status = "Cancelled";
+                sub.Status = subscription.Status;
                 sub.EndDate = DateTime.UtcNow;
                 await _context.SaveChangesAsync();
             }
@@ -153,7 +373,7 @@ namespace PitchGenApi.Repositories
 
             if (CreditsExpiry != null)
             {
-                CreditsExpiry.Status = "Cancelled";
+                CreditsExpiry.Status = subscription.Status;
                 await _context.SaveChangesAsync();
             }
             else
@@ -161,22 +381,7 @@ namespace PitchGenApi.Repositories
                 Console.WriteLine($"⚠️ Subscription {subscription.Id} not found in database.");
             }
         }
-        public async Task<List<Stripe.Subscription>> GetAllSubscriptionsByCustomerAsync(string customerId)
-        {
-            var service = new SubscriptionService();
-            var options = new SubscriptionListOptions
-            {
-                Customer = customerId,
-                Expand = new List<string>
-                {
-                    "data.customer",
-                    "data.items.data.price"
-                }
-            };
 
-            var subscriptions = await service.ListAsync(options);
-            return subscriptions.Data.ToList();
-        }
         public async Task<StripeInvoiceResponse?> GetInvoiceDetailsAsync(string invoiceId)
         {
             if (string.IsNullOrWhiteSpace(invoiceId))
@@ -184,95 +389,73 @@ namespace PitchGenApi.Repositories
 
             var service = new InvoiceService();
 
-            try
-            {
-                var invoice = await service.GetAsync(invoiceId);
+            var invoice = await service.GetAsync(invoiceId);
 
-                if (invoice == null)
-                    throw new Exception($"Invoice not found for ID: {invoiceId}");
+            if (invoice == null)
+                throw new Exception($"Invoice not found for ID: {invoiceId}");
 
-                // Map Stripe invoice to custom model
-                var response = new StripeInvoiceResponse
-                {
-                    InvoiceId = invoice.Id,
-                    CustomerEmail = invoice.CustomerEmail,
-                    CustomerName = invoice.CustomerName,
-                    InvoiceNumber = invoice.Number,
-                    InvoiceDate = invoice.Created.ToUniversalTime(),
-                    AmountPaid = (decimal)(invoice.AmountPaid / 100.0m), // convert cents to currency
-                    InvoicePdfUrl = invoice.InvoicePdf
-                };
+            var response = new StripeInvoiceResponse
+            {
+                InvoiceId = invoice.Id,
+                CustomerEmail = invoice.CustomerEmail,
+                CustomerName = invoice.CustomerName,
+                InvoiceNumber = invoice.Number,
+                InvoiceDate = invoice.Created.ToUniversalTime(),
+                AmountPaid = (decimal)(invoice.AmountPaid / 100.0m),
+                InvoicePdfUrl = invoice.InvoicePdf
+            };
 
-                return response;
-            }
-            catch (StripeException ex)
-            {
-                throw new Exception($"Stripe API error: {ex.Message}", ex);
-            }
-            catch (Exception ex)
-            {
-                throw new Exception($"Error fetching invoice details: {ex.Message}", ex);
-            }
+            return response;
         }
 
-        public async Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId, string SubcribtionNumber )
+        public async Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId, string SubcribtionNumber, DateTime StartDate, DateTime EndDate)
         {
-            try
+            int credits = 0;
+            string planName = "Unknown";
+
+            switch (planId)
             {
-                // 🧮 Determine credits based on plan
-                int credits = 0;
-                string planName = "Unknown";
+                case "Basic":
+                case "price_basic":
+                    credits = 100;
+                    planName = "Basic";
+                    break;
 
-                switch (planId)
-                {
-                    case "Basic":
-                    case "price_basic":
-                        credits = 100;
-                        planName = "Basic";
-                        break;
+                case "price_1SMmZiHDCkj9hBmZ5u4UA72M":
+                case "standard":
+                case "price_standard":
+                    credits = 500;
+                    planName = "Standard";
+                    break;
 
-                    case "price_1SMmZiHDCkj9hBmZ5u4UA72M": // 👈 your actual standard ID
-                    case "standard":
-                    case "price_standard":
-                        credits = 500;
-                        planName = "Standard";
-                        break;
+                case "price_1SMmZ6HDCkj9hBmZNyIzVJQL":
+                case "price_premium":
+                    credits = 1000;
+                    planName = "Premium";
+                    break;
 
-                    case "price_1SMmZ6HDCkj9hBmZNyIzVJQL":
-                    case "price_premium":
-                        credits = 1000;
-                        planName = "Premium";
-                        break;
-
-                    default:
-                        Console.WriteLine($"⚠️ Unknown plan ID: {planId}");
-                        return; // Don’t insert unknown plans
-                }
-
-                var now = DateTime.UtcNow;
-
-                var userCredits = new UserCredits
-                {
-                    ClientId = userId,
-                    Credits = credits,
-                    CreatedAt = now,
-                    Plane = planName,
-                    StripeSubscriptionId = stripeSubscriptionId,
-                    SubscriptionNumber = SubcribtionNumber,
-                    Status = "Active",
-                    StartDate = now,
-                    EndDate = now.AddMonths(1)
-                };
-
-                _context.UserCredits.Add(userCredits);
-                await _context.SaveChangesAsync();
-
+                default:
+                    Console.WriteLine($"⚠️ Unknown plan ID: {planId}");
+                    return;
             }
-            catch (Exception ex)
+
+            var now = DateTime.UtcNow;
+
+            var userCredits = new UserCredits
             {
-                Console.WriteLine($"💥 Error saving user credits: {ex.Message}");
-            }
+                ClientId = userId,
+                Credits = credits,
+                CreatedAt = now,
+                Plane = planName,
+                StripeSubscriptionId = stripeSubscriptionId,
+                SubscriptionNumber = SubcribtionNumber,
+                Status = "Active",
+                StartDate = now,
+                EndDate = now.AddMonths(1)
+            };
+
+            _context.UserCredits.Add(userCredits);
+            await _context.SaveChangesAsync();
         }
-
     }
 }

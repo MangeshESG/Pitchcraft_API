@@ -11,6 +11,7 @@ using PitchGenApi.Services;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using UglyToad.PdfPig.Graphics.Operations.PathPainting;
 
 namespace PitchGenApi.Controllers
 {
@@ -235,8 +236,10 @@ namespace PitchGenApi.Controllers
 
             var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
             var formattedSubNumber = $"SUB-{nextSubNumber:D4}"; // e.g. SUB-0001
+            var StartDate = DateTime.UtcNow;
+            var EndDate = StartDate.AddMonths(1);
 
-            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default", formattedSubNumber);
+            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default", formattedSubNumber, StartDate, EndDate);
 
             // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);
