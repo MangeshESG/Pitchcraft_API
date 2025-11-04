@@ -7,25 +7,29 @@ using System.Text;
 using PitchGenApi.Services;
 using PitchGenApi.Repository;
 using Microsoft.OpenApi.Models;
-using PitchGenApi.Services;
 using PitchGenApi.Model;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using System.Security.Authentication;
 using PitchGenApi;
 using PitchGenApi.Repositories;
 using PitchGenApi.Helpers;
+using Hangfire;
+using Hangfire.SqlServer;
+
 var builder = WebApplication.CreateBuilder(args);
 
+// ✅ OpenAI settings
 builder.Services.Configure<OpenAISettings>(
     builder.Configuration.GetSection("OpenAI"));
 
-
+// ✅ Kestrel configuration
 builder.Services.Configure<KestrelServerOptions>(options =>
 {
     options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(10);
     options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(10);
 });
 
+// ✅ Swagger configuration
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -54,45 +58,38 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-// 🔥 Configure HttpClient with TLS enforcement
+// ✅ HTTP Clients
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient<CampaignPromptService>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
     {
         SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
     });
-
 builder.Services.AddHttpClient<WebSearchService>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
     {
         SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
     });
-
-// 🔥 ZOHO SERVICE - CRITICAL CONFIGURATION
 builder.Services.AddHttpClient<ZohoService>(client =>
 {
     client.BaseAddress = new Uri("https://www.zohoapis.com/");
     client.Timeout = TimeSpan.FromSeconds(30);
     client.DefaultRequestHeaders.Add("User-Agent", "PitchGenApi/1.0");
 })
-.ConfigurePrimaryHttpMessageHandler(() =>
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
-    var handler = new HttpClientHandler
-    {
-        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-        ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
-        UseDefaultCredentials = false,
-        AllowAutoRedirect = true,
-        MaxAutomaticRedirections = 10
-    };
-    return handler;
+    SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
+    UseDefaultCredentials = false,
+    AllowAutoRedirect = true,
+    MaxAutomaticRedirections = 10
 });
 
-// DB Context
+// ✅ Database Context
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// JWT Auth
+// ✅ JWT Authentication
 var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]);
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -109,7 +106,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-// CORS
+// ✅ CORS Policy
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("MyCorsPolicy", policy =>
@@ -120,14 +117,14 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Dependency Injection
+// ✅ Dependency Injection
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IPromptRepository, PromptRepository>();
 builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
 {
     client.Timeout = TimeSpan.FromMinutes(10);
-}); 
+});
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddScoped<EmailTemplateHelper>();
 builder.Services.AddHostedService<EmailSchedulerService>();
@@ -138,29 +135,25 @@ builder.Services.AddScoped<IRegisterEmailSender, RegisterEmailSender>();
 builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddSingleton<JwtService>();
-builder.Services.AddHttpClient<ZohoService>(client =>
-{
-    client.BaseAddress = new Uri("https://www.zohoapis.com/");
-    client.Timeout = TimeSpan.FromSeconds(30);
-    // Remove the line below if you're managing headers per request
-    // client.DefaultRequestHeaders.Add("Accept", "application/json");
-});
 
 builder.Services.AddControllers();
 
-// ✅ Register CampaignPromptService and HttpClient
-builder.Services.AddHttpClient<CampaignPromptService>(client =>
+// ✅ Hangfire Configuration
+builder.Services.AddHangfire(config =>
 {
-    client.Timeout = TimeSpan.FromMinutes(10);
+    config.SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+          .UseSimpleAssemblyNameTypeSerializer()
+          .UseRecommendedSerializerSettings()
+          .UseSqlServerStorage(builder.Configuration.GetConnectionString("DefaultConnection"));
 });
+builder.Services.AddHangfireServer();
 
-builder.Services.AddHttpClient<WebSearchService>(client =>
-{
-    client.Timeout = TimeSpan.FromMinutes(5);
-});
+// ✅ Register your background job service
+builder.Services.AddScoped<MonthlyCreditResetJob>();
 
 var app = builder.Build();
 
+// ✅ Swagger UI
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
@@ -173,11 +166,25 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// ? Serve React build first
+// ✅ Hangfire Dashboard (optional, disable for prod)
+//app.UseHangfireDashboard("/hangfire");
+
+// ✅ CORRECT CODE — use DI-based RecurringJobManager
+using (var scope = app.Services.CreateScope())
+{
+    var recurringJobs = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
+    recurringJobs.AddOrUpdate<MonthlyCreditResetJob>(
+        "minute-credit-reset",
+        job => job.Execute(),
+        Cron.Minutely);
+}
+
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapControllers();
 
+// ✅ React fallback
 app.MapFallback(context =>
 {
     if (context.Request.Path.StartsWithSegments("/swagger"))
@@ -188,10 +195,5 @@ app.MapFallback(context =>
     context.Response.Redirect("/");
     return Task.CompletedTask;
 });
-
-
-
-// ? Map API controllers
-app.MapControllers();
 
 app.Run();

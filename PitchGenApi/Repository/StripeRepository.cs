@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
@@ -45,7 +46,8 @@ namespace PitchGenApi.Repositories
             decimal pricePerCredit = 0.20m; // USD
             decimal totalAmount = credits * pricePerCredit;
             long amountInCents = (long)(totalAmount * 100);
-
+            var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
+            var formattedSubNumber = $"SUB-{nextSubNumber:D4}";
             var options = new PaymentIntentCreateOptions
             {
                 Amount = amountInCents,
@@ -53,8 +55,10 @@ namespace PitchGenApi.Repositories
                 Customer = existingCustomerId, // Attach existing or newly created customer
                 Metadata = new Dictionary<string, string>
                 {
-                    { "userId", userId },
-                    { "credits", credits.ToString() }
+                    { "app_user_id", userId },
+                    { "credits", credits.ToString() },
+                    { "flag", "custom_credit" },
+                    { "subscription_number", formattedSubNumber }
                 },
                 AutomaticPaymentMethods = new PaymentIntentAutomaticPaymentMethodsOptions
                 {
@@ -81,8 +85,11 @@ namespace PitchGenApi.Repositories
                 var customerService = new CustomerService();
                 var customer = await customerService.CreateAsync(new CustomerCreateOptions
                 {
-                    Email = req.Email ?? client?.Email ?? "noemail@example.com",
-                    Metadata = new Dictionary<string, string> { { "app_user_id", req.UserId } }
+                    Email = client?.Email ?? "noemail@example.com",
+                    Metadata = new Dictionary<string, string>
+            {
+                { "app_user_id", req.UserId }
+            }
                 });
 
                 customerId = customer.Id;
@@ -91,6 +98,11 @@ namespace PitchGenApi.Repositories
             var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
             var formattedSubNumber = $"SUB-{nextSubNumber:D4}";
 
+            // ✅ Use the interval from request (Monthly or Yearly)
+            var intervalValue = string.Equals(req.Interval, "Yearly", StringComparison.OrdinalIgnoreCase)
+                ? "Yearly"
+                : "Monthly";
+
             var subOptions = new SubscriptionCreateOptions
             {
                 Customer = customerId,
@@ -98,17 +110,18 @@ namespace PitchGenApi.Repositories
                 {
                     new SubscriptionItemOptions { Price = req.PriceId }
                 },
-                PaymentBehavior = "default_incomplete",
-                Expand = new List<string>
+                        PaymentBehavior = "default_incomplete",
+                        Expand = new List<string>
+                        {
+                            "latest_invoice.payment_intent",
+                            "latest_invoice.payments"
+                        },
+                        Metadata = new Dictionary<string, string>
                 {
-                    "latest_invoice.payment_intent",
-                    "latest_invoice.payments"
-                },
-                Metadata = new Dictionary<string, string>
-                {
-                    { "app_user_id", req.UserId },
-                    { "plan", req.PriceId },
-                    { "subscription_number", formattedSubNumber }
+                        { "app_user_id", req.UserId },
+                        { "plan", req.PriceId },
+                        { "subscription_number", formattedSubNumber },
+                        { "interval", intervalValue } // ✅ dynamically set interval
                 }
             };
 
@@ -130,7 +143,7 @@ namespace PitchGenApi.Repositories
 
                         var updateOptions = new PaymentIntentUpdateOptions
                         {
-                            ReceiptEmail = req.Email ?? client?.Email ?? "noemail@example.com"
+                            ReceiptEmail = client?.Email ?? "noemail@example.com"
                         };
 
                         await paymentIntentService.UpdateAsync(paymentIntentId, updateOptions);
@@ -149,7 +162,8 @@ namespace PitchGenApi.Repositories
                 PlanId = req.PriceId,
                 Status = subscription.Status,
                 SubscriptionNumber = formattedSubNumber,
-                StartDate = DateTime.UtcNow
+                StartDate = DateTime.UtcNow,
+                Interval = intervalValue
             };
 
             _context.StripeSubscription.Add(dbSub);
@@ -162,6 +176,7 @@ namespace PitchGenApi.Repositories
                 ClientSecret = clientSecret
             };
         }
+
 
         //public async Task<StripeSubscriptionResponse> GetAllSubscriptionsByCustomerAsync(string clientId, int limit = 10, string? startingAfter = null)
         //{
@@ -256,9 +271,10 @@ namespace PitchGenApi.Repositories
                     Status = x.Status ?? "N/A",
                     PlanName = x.Plane ?? "N/A",
                     PlanAmount = x.Amount == null ? 0 : x.Amount,
-                    Interval = "Monthly", // or map from your plan if available
-                    StartDate = x.StartDate != default ? x.StartDate : DateTime.MinValue,
-                    EndDate = x.EndDate != default ? x.EndDate : DateTime.MinValue,
+                    x.Interval,
+                    x.StartDate ,
+                    x.EndDate ,
+
                 })
                 .ToListAsync();
 
@@ -284,13 +300,106 @@ namespace PitchGenApi.Repositories
                     await HandleSubscriptionCancelledAsync(stripeEvent);
                     break;
 
-                case "invoice.payment_succeeded":
-                    await HandleSubscriptionCancelledAsync(stripeEvent);
+                case "payment_intent.succeeded":
+                    await HandlePaymentIntentSucceededAsync(stripeEvent);
                     break;
 
                 default:
                     break;
             }
+        }
+        public async Task HandlePaymentIntentSucceededAsync(Event stripeEvent)
+        {
+            try
+            {
+                var paymentIntent = stripeEvent.Data.Object as Stripe.PaymentIntent;
+                if (paymentIntent == null)
+                    return;
+
+                // ✅ Extract metadata safely
+                var clientIdStr = paymentIntent.Metadata.TryGetValue("app_user_id", out var userIdValue) ? userIdValue : null;
+                var creditsStr = paymentIntent.Metadata.TryGetValue("credits", out var creditsValue) ? creditsValue : null;
+                var flag = paymentIntent.Metadata.TryGetValue("flag", out var flagValue) ? flagValue : null;
+                var SubcribtionNumber = paymentIntent.Metadata.TryGetValue("subscription_number", out string sn) ? sn : null;
+
+                if (string.IsNullOrEmpty(clientIdStr))
+                {
+                    Console.WriteLine("❌ Missing 'app_user_id' in payment metadata.");
+                    return;
+                }
+
+                // ✅ Convert userId (string) → int (ClientId)
+                if (!int.TryParse(clientIdStr, out int clientId))
+                {
+                    Console.WriteLine($"❌ Invalid ClientId format: {clientIdStr}");
+                    return;
+                }
+
+                // ✅ Only handle custom credit purchases
+                if (flag != "custom_credit")
+                {
+                    Console.WriteLine($"ℹ️ Skipping — flag is not 'custom_credit' for user {clientId}");
+                    return;
+                }
+
+                // ✅ Parse and validate credits
+                var amountUsd = paymentIntent.AmountReceived / 100m; // Stripe sends in cents
+                if (!int.TryParse(creditsStr, out int creditsPurchased))
+                    creditsPurchased = 0;
+
+                if (creditsPurchased <= 0)
+                {
+                    Console.WriteLine($"⚠️ Invalid or missing credits: {creditsStr}");
+                    return;
+                }
+
+                // ✅ Ensure client exists
+                var client = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
+                if (client == null)
+                {
+                    Console.WriteLine($"❌ No client found for ID: {clientId}");
+                    return;
+                }
+
+                // ✅ Always insert new UserCredits record
+                var newCredit = new UserCredits
+                {
+                    ClientId = clientId,
+                    Credits = creditsPurchased,
+                    CreatedAt = DateTime.UtcNow,
+                    Status = "Active",
+                    Plane = "Custom Credit",
+                    Amount = amountUsd,
+                    StartDate = DateTime.UtcNow,
+                    SubscriptionNumber = SubcribtionNumber
+
+                };
+
+                await _context.UserCredits.AddAsync(newCredit);
+                await _context.SaveChangesAsync();
+
+                Console.WriteLine($"🆕 Added new credit record for user {clientId} — {creditsPurchased} credits (${amountUsd}).");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Error in HandlePaymentIntentSucceededAsync: {ex.Message}");
+            }
+        }
+
+        public async Task<object?> GetActivePlanStatusAndPlaneAsync(int clientId)
+        {
+            var record = await _context.UserCredits
+                .Where(u => u.ClientId == clientId && u.Status == "active")
+                .OrderByDescending(u => u.CreatedAt)
+                .Select(u => new
+                {
+                    u.Status,
+                    u.Plane,
+                    u.Interval
+                })
+                .FirstOrDefaultAsync();
+
+            return record;
         }
 
         public async Task HandleInvoicePaidAsync(Event stripeEvent)
@@ -300,18 +409,26 @@ namespace PitchGenApi.Repositories
 
             var subscriptionId = invoice.Lines?.Data?.FirstOrDefault()?.Parent?
                          .SubscriptionItemDetails?.Subscription;
-
+            var amountPaid = invoice.AmountPaid / 100m;
             var firstLine = invoice.Lines?.Data?.FirstOrDefault();
             string? userId = null;
             string? planId = null;
             string? SubcribtionNumber = null;
-            var StartDate = invoice.PeriodStart;
-            var EndDate = invoice.PeriodEnd;
+            string? interval = null;
+            var StartDate = DateTime.UtcNow;
+            var EndDate = StartDate.AddMonths(1);
             if (firstLine?.Metadata != null)
             {
                 userId = firstLine.Metadata.TryGetValue("app_user_id", out string uid) ? uid : null;
                 planId = firstLine.Metadata.TryGetValue("plan", out string pid) ? pid : null;
                 SubcribtionNumber = firstLine.Metadata.TryGetValue("subscription_number", out string sn) ? sn : null;
+                interval = firstLine.Metadata.TryGetValue("interval", out string intr) ? intr : null;
+
+            }
+
+            if (interval == "Yearly")
+            {
+                EndDate = StartDate.AddYears(1);
             }
 
             if (string.IsNullOrEmpty(userId))
@@ -331,8 +448,8 @@ namespace PitchGenApi.Repositories
                     StripeCustomerId = invoice.CustomerId ?? "",
                     StripeSubscriptionId = subscriptionId ?? "",
                     PlanId = planId ?? "",
-                    StartDate = DateTime.UtcNow,
-                    EndDate = DateTime.UtcNow.AddMonths(1),
+                    StartDate = StartDate,
+                    EndDate = EndDate,
                     Status = "Active"
                 };
 
@@ -345,7 +462,7 @@ namespace PitchGenApi.Repositories
 
             await _context.SaveChangesAsync();
 
-            await SaveUserCreditsAsync(clientId, planId, subscriptionId, SubcribtionNumber, StartDate, EndDate);
+            await SaveUserCreditsAsync(clientId, planId, subscriptionId, SubcribtionNumber, StartDate, EndDate, interval, amountPaid);
         }
 
         public async Task HandleSubscriptionCancelledAsync(Event stripeEvent)
@@ -408,54 +525,130 @@ namespace PitchGenApi.Repositories
             return response;
         }
 
-        public async Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId, string SubcribtionNumber, DateTime StartDate, DateTime EndDate)
+        public async Task SaveUserCreditsAsync(
+    int userId,
+    string planId,
+    string stripeSubscriptionId,
+    string SubcribtionNumber,
+    DateTime StartDate,
+    DateTime EndDate,
+    string interval,
+    decimal amount)
         {
-            int credits = 0;
-            string planName = "Unknown";
-
-            switch (planId)
+            try
             {
-                case "Basic":
-                case "price_basic":
-                    credits = 100;
-                    planName = "Basic";
-                    break;
+                int credits = 0;
+                string planName = "Unknown";
+                int monthlyLimit = 0;
 
-                case "price_1SMmZiHDCkj9hBmZ5u4UA72M":
-                case "standard":
-                case "price_standard":
-                    credits = 500;
-                    planName = "Standard";
-                    break;
+                // 🔹 Plan logic
+                switch (planId)
+                {
+                    case "Basic":
+                        credits = 100;
+                        planName = "Basic";
+                        amount = 0;
+                        monthlyLimit = 100;
+                        break;
 
-                case "price_1SMmZ6HDCkj9hBmZNyIzVJQL":
-                case "price_premium":
-                    credits = 1000;
-                    planName = "Premium";
-                    break;
+                    case "price_1SMmZiHDCkj9hBmZ5u4UA72M":
+                    case "price_standard":
+                        credits = 1000;
+                        planName = "Standard";
+                        monthlyLimit = 1000;
+                        break;
 
-                default:
-                    Console.WriteLine($"⚠️ Unknown plan ID: {planId}");
-                    return;
+                    case "price_1SMmZ6HDCkj9hBmZNyIzVJQL":
+                    case "price_premium":
+                        credits = 2000;
+                        planName = "Premium";
+                        monthlyLimit = 2000;
+                        break;
+
+                    case "price_1SPgOFHDCkj9hBmZxSnUTzAT":
+                        credits = 12000;
+                        planName = "Standard";
+                        monthlyLimit = 1000;
+                        break;
+
+                    case "price_1SPh0hHDCkj9hBmZXtVBJ1QG":
+                        credits = 24000;
+                        planName = "Premium";
+                        monthlyLimit = 2000;
+                        break;
+
+                    default:
+                        Console.WriteLine($"⚠️ Unknown plan ID: {planId}");
+                        return;
+                }
+
+                var now = DateTime.UtcNow;
+
+                // ✅ Step 1 — Add new user credit record
+                var userCredits = new UserCredits
+                {
+                    ClientId = userId,
+                    Credits = credits,
+                    TotalPurchesdCredit = credits,
+                    CreatedAt = now,
+                    Plane = planName,
+                    StripeSubscriptionId = stripeSubscriptionId,
+                    SubscriptionNumber = SubcribtionNumber,
+                    Status = "Active",
+                    StartDate = StartDate,
+                    EndDate = EndDate,
+                    Interval = interval,
+                    Amount = amount,
+                    ResetDate = now.AddMonths(1)
+                };
+
+                _context.UserCredits.Add(userCredits);
+                await _context.SaveChangesAsync();
+
+                // ✅ Step 2 — Calculate total active credits for this client
+                var totalActiveCredits = (await _context.UserCredits
+                    .Where(u => u.ClientId == userId && u.Status.ToLower() == "active")
+                    .SumAsync(u => (int?)u.Credits)) ?? 0;
+
+                // ✅ Step 3 — Check if record exists in FinalUserCredit
+                var finalCredit = await _context.FinalUserCredit
+                    .FirstOrDefaultAsync(f => f.ClientId == userId);
+
+                if (finalCredit != null)
+                {
+                    // Update existing record
+                    finalCredit.TotalCredit = totalActiveCredits;
+                    finalCredit.MonthlyLimit = monthlyLimit > 0 ? monthlyLimit : finalCredit.MonthlyLimit;
+                    finalCredit.UpdatedAt = DateTime.UtcNow;
+                    _context.FinalUserCredit.Update(finalCredit);
+                }
+                else
+                {
+                    // Insert new record
+                    finalCredit = new FinalUserCredit
+                    {
+                        ClientId = userId,
+                        TotalCredit = totalActiveCredits,
+                        CreatedAt = DateTime.UtcNow,
+                        MonthlyLimit = monthlyLimit,
+                        UsedCredit = 0, // 👈 yeh line add karo
+                        LimitUsed = 0   // optional if applicable
+                    };
+                    _context.FinalUserCredit.Add(finalCredit);
+                }
+
+                await _context.SaveChangesAsync();
+
+                Console.WriteLine($"✅ FinalUserCredit updated successfully for ClientId: {userId}");
             }
-
-            var now = DateTime.UtcNow;
-
-            var userCredits = new UserCredits
+            catch (Exception ex)
             {
-                ClientId = userId,
-                Credits = credits,
-                CreatedAt = now,
-                Plane = planName,
-                StripeSubscriptionId = stripeSubscriptionId,
-                SubscriptionNumber = SubcribtionNumber,
-                Status = "Active",
-                StartDate = now,
-                EndDate = now.AddMonths(1)
-            };
-
-            _context.UserCredits.Add(userCredits);
-            await _context.SaveChangesAsync();
+                Console.WriteLine($"❌ Error in SaveUserCreditsAsync: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                throw; // rethrow to ensure the caller knows it failed
+            }
         }
+
+
     }
 }

@@ -12,8 +12,10 @@ namespace PitchGenApi.Repositories
         Task HandleInvoicePaidAsync(Event stripeEvent);
         Task HandleSubscriptionCancelledAsync(Event stripeEvent);
         Task HandleWebhookEventAsync(Event stripeEvent);
-        Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId, string SubcribtionNumber, DateTime StartDate, DateTime EndDate);
+        Task HandlePaymentIntentSucceededAsync(Event stripeEvent);
+        Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId, string SubcribtionNumber, DateTime StartDate, DateTime EndDate,string interval, decimal amount);
         Task<StripeInvoiceResponse?> GetInvoiceDetailsAsync(string invoiceId);
+        Task<object?> GetActivePlanStatusAndPlaneAsync(int clientId);
         //Task<StripeSubscriptionResponse> GetAllSubscriptionsByCustomerAsync(string clientId, int limit = 10, string? startingAfter = null);
         Task<PlanHistoryPagedResult<object>> GetPlanHistoryByClientIdAsync(int clientId, int pageNumber = 1, int pageSize = 10);
         Task<string> CreateCreditPurchaseIntentAsync(string userId, int credits);

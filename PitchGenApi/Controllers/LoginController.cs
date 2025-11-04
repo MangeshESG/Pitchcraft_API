@@ -239,7 +239,7 @@ namespace PitchGenApi.Controllers
             var StartDate = DateTime.UtcNow;
             var EndDate = StartDate.AddMonths(1);
 
-            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default", formattedSubNumber, StartDate, EndDate);
+            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default", formattedSubNumber, StartDate, EndDate, "Monthly",0);
 
             // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);

@@ -47,6 +47,17 @@ namespace PitchGenApi.Controllers
             return Ok(result);
         }
 
+        [HttpGet("active/{clientId}")]
+        public async Task<IActionResult> GetActivePlanByClientId(int clientId)
+        {
+            var result = await _stripeRepository.GetActivePlanStatusAndPlaneAsync(clientId);
+
+            if (result == null)
+                return NotFound(new { message = "No active plan found for this client." });
+
+            return Ok(result);
+        }
+
         [HttpPost("create-subscription")]
         public async Task<IActionResult> CreateSubscription([FromBody] CreateSubscriptionRequest req)
         {
