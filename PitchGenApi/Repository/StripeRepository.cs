@@ -499,32 +499,6 @@ namespace PitchGenApi.Repositories
             }
         }
 
-        public async Task<StripeInvoiceResponse?> GetInvoiceDetailsAsync(string invoiceId)
-        {
-            if (string.IsNullOrWhiteSpace(invoiceId))
-                throw new ArgumentException("Invoice ID cannot be null or empty.", nameof(invoiceId));
-
-            var service = new InvoiceService();
-
-            var invoice = await service.GetAsync(invoiceId);
-
-            if (invoice == null)
-                throw new Exception($"Invoice not found for ID: {invoiceId}");
-
-            var response = new StripeInvoiceResponse
-            {
-                InvoiceId = invoice.Id,
-                CustomerEmail = invoice.CustomerEmail,
-                CustomerName = invoice.CustomerName,
-                InvoiceNumber = invoice.Number,
-                InvoiceDate = invoice.Created.ToUniversalTime(),
-                AmountPaid = (decimal)(invoice.AmountPaid / 100.0m),
-                InvoicePdfUrl = invoice.InvoicePdf
-            };
-
-            return response;
-        }
-
         public async Task SaveUserCreditsAsync(
     int userId,
     string planId,

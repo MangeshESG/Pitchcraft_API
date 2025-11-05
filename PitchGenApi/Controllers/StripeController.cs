@@ -70,16 +70,6 @@ namespace PitchGenApi.Controllers
             });
         }
 
-        [HttpGet("{invoiceId}")]
-        public async Task<IActionResult> GetInvoiceUrls(string invoiceId)
-        {
-            var invoice = await _stripeRepository.GetInvoiceDetailsAsync(invoiceId);
-            return Ok(new
-            {
-                InvoiceDwtils = invoice
-            });
-        }
-
         //[HttpGet("customer/{ClientId}/subscriptions")]
         //public async Task<IActionResult> GetAllSubscriptionsByCustomer(
         //string ClientId,

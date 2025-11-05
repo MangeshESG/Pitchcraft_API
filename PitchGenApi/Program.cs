@@ -126,7 +126,6 @@ builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddScoped<EmailTemplateHelper>();
 builder.Services.AddScoped<ContactRepository>();
-builder.Services.AddScoped<ZohoDataService>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
 builder.Services.AddScoped<IRegisterEmailSender, RegisterEmailSender>();
 builder.Services.AddScoped<IStripeRepository, StripeRepository>();
