@@ -31,7 +31,7 @@ public class MonthlyCreditResetJob
 
         foreach (var plan in customCredits)
             plan.Status = "Used";
-        1
+        
         if (expiredPlans.Any())
             Console.WriteLine($"⚠️  Marked {expiredPlans.Count} plans as expired.");
 
