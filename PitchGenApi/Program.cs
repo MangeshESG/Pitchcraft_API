@@ -7,7 +7,6 @@ using System.Text;
 using PitchGenApi.Services;
 using PitchGenApi.Repository;
 using Microsoft.OpenApi.Models;
-using PitchGenApi.Services;
 using PitchGenApi.Model;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using System.Security.Authentication;
@@ -18,15 +17,18 @@ using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ✅ OpenAI settings
 builder.Services.Configure<OpenAISettings>(
     builder.Configuration.GetSection("OpenAI"));
 
+// ✅ Kestrel configuration
 builder.Services.Configure<KestrelServerOptions>(options =>
 {
     options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(10);
     options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(10);
 });
 
+// ✅ Swagger configuration
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -55,45 +57,38 @@ builder.Services.AddSwaggerGen(options =>
     });
 });
 
-// 🔥 Configure HttpClient with TLS enforcement
+// ✅ HTTP Clients
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient<CampaignPromptService>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
     {
         SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
     });
-
 builder.Services.AddHttpClient<WebSearchService>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
     {
         SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
     });
-
-// 🔥 ZOHO SERVICE - CRITICAL CONFIGURATION
 builder.Services.AddHttpClient<ZohoService>(client =>
 {
     client.BaseAddress = new Uri("https://www.zohoapis.com/");
     client.Timeout = TimeSpan.FromSeconds(30);
     client.DefaultRequestHeaders.Add("User-Agent", "PitchGenApi/1.0");
 })
-.ConfigurePrimaryHttpMessageHandler(() =>
+.ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
-    var handler = new HttpClientHandler
-    {
-        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-        ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
-        UseDefaultCredentials = false,
-        AllowAutoRedirect = true,
-        MaxAutomaticRedirections = 10
-    };
-    return handler;
+    SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
+    UseDefaultCredentials = false,
+    AllowAutoRedirect = true,
+    MaxAutomaticRedirections = 10
 });
 
-// DB Context
+// ✅ Database Context
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// JWT Auth
+// ✅ JWT Authentication
 var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]);
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -110,7 +105,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-// CORS
+// ✅ CORS Policy
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("MyCorsPolicy", policy =>
@@ -125,7 +120,7 @@ builder.Services.AddCors(options =>
     });
 });
 
-// Dependency Injection
+// ✅ Dependency Injection
 builder.Services.AddAuthorization();
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IPromptRepository, PromptRepository>();
@@ -135,31 +130,22 @@ builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
 });
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddScoped<EmailTemplateHelper>();
-builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddScoped<ContactRepository>();
-builder.Services.AddScoped<ZohoDataService>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
 builder.Services.AddScoped<IRegisterEmailSender, RegisterEmailSender>();
 builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddSingleton<JwtService>();
 
+// ✅ Add Background Jobs
+builder.Services.AddHostedService<EmailSchedulerService>();
+builder.Services.AddHostedService<MonthlyCreditResetService>();
+
 builder.Services.AddControllers();
-
-// ✅ Register CampaignPromptService and HttpClient
-builder.Services.AddHttpClient<CampaignPromptService>(client =>
-{
-    client.Timeout = TimeSpan.FromMinutes(10);
-});
-
-builder.Services.AddHttpClient<WebSearchService>(client =>
-{
-    client.Timeout = TimeSpan.FromMinutes(5);
-});
 
 var app = builder.Build();
 
-// Swagger configuration
+// ✅ Swagger UI
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
@@ -172,73 +158,20 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// ✅ Serve static files from wwwroot with proper configuration
-var wwwrootPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
-Console.WriteLine($"📁 Serving static files from: {wwwrootPath}");
-Console.WriteLine($"📁 ContentRootPath: {app.Environment.ContentRootPath}");
-
-if (Directory.Exists(wwwrootPath))
-{
-    var indexPath = Path.Combine(wwwrootPath, "index.html");
-    Console.WriteLine($"✅ wwwroot exists. index.html exists: {File.Exists(indexPath)}");
-
-    // Serve default files (index.html)
-    app.UseDefaultFiles(new DefaultFilesOptions
-    {
-        DefaultFileNames = new List<string> { "index.html" },
-        FileProvider = new PhysicalFileProvider(wwwrootPath),
-        RequestPath = ""
-    });
-
-    // Serve static files
-    app.UseStaticFiles(new StaticFileOptions
-    {
-        FileProvider = new PhysicalFileProvider(wwwrootPath),
-        RequestPath = "",
-        OnPrepareResponse = ctx =>
-        {
-            // Add cache headers for static assets
-            if (ctx.File.Name.EndsWith(".js") || ctx.File.Name.EndsWith(".css"))
-            {
-                ctx.Context.Response.Headers.Append("Cache-Control", "public,max-age=31536000");
-            }
-        }
-    });
-}
-else
-{
-    Console.WriteLine($"❌ WARNING: wwwroot directory not found at {wwwrootPath}");
-}
-
-// ✅ Map API controllers FIRST before fallback
+app.UseDefaultFiles();
+app.UseStaticFiles();
 app.MapControllers();
 
-// ✅ SPA Fallback - serve index.html for client-side routing
-app.MapFallback(async context =>
+// ✅ React fallback
+app.MapFallback(context =>
 {
-    // Don't handle API, Swagger, or tracking requests
-    if (context.Request.Path.StartsWithSegments("/api") ||
-        context.Request.Path.StartsWithSegments("/swagger") ||
-        context.Request.Path.StartsWithSegments("/track"))
+    if (context.Request.Path.StartsWithSegments("/swagger"))
     {
         context.Response.StatusCode = 404;
-        return;
+        return Task.CompletedTask;
     }
-
-    // Serve index.html for SPA routing
-    var indexPath = Path.Combine(wwwrootPath, "index.html");
-    if (File.Exists(indexPath))
-    {
-        Console.WriteLine($"🔄 Serving index.html for path: {context.Request.Path}");
-        context.Response.ContentType = "text/html; charset=utf-8";
-        await context.Response.SendFileAsync(indexPath);
-    }
-    else
-    {
-        Console.WriteLine($"❌ index.html not found at: {indexPath}");
-        context.Response.StatusCode = 404;
-        await context.Response.WriteAsync($"index.html not found at {indexPath}");
-    }
+    context.Response.Redirect("/");
+    return Task.CompletedTask;
 });
 
 app.Run();

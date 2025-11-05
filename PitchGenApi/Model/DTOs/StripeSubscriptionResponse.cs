@@ -1,12 +1,9 @@
-﻿namespace PitchGenApi.Model.DTOs
+namespace PitchGenApi.Model.DTOs
 {
     public class StripeSubscriptionResponse
     {
-        public string Id { get; set; }                // subscription id
-        public string CustomerId { get; set; }        // stripe customer id
-        public long CurrentPeriodStart { get; set; }  // unix timestamp
-        public long CurrentPeriodEnd { get; set; }    // unix timestamp
-        public string Status { get; set; }            // active, canceled, etc.
-        public string PlanId { get; set; }
+        public List<object> Data { get; set; } = new List<object>();
+        public bool HasMore { get; set; }
+        public string? NextCursor { get; set; }
     }
 }

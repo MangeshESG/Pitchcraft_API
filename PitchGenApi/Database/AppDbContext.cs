@@ -37,14 +37,12 @@ namespace PitchGenApi.Database
         // ✅ Newly added DbSets (for LoginController, registration, Zoho, etc.)
         public DbSet<ClientDetails> ClientDetails { get; set; }
         public DbSet<UserCredits> UserCredits { get; set; }
-        public DbSet<WebhookLogs> WebhookLogs { get; set; }
         public DbSet<EmailOtpVerification> EmailOtpVerifications { get; set; }
         public DbSet<TempRegisterData> TempRegisterData { get; set; }
-        public DbSet<ZohoCustomer> ZohoCustomer { get; set; }
-        public DbSet<Subscription> Subscription { get; set; }
         public DbSet<Countriesdropdown> Countriesdropdown { get; set; }
         public DbSet<StripeSubscription> StripeSubscription { get; set; }
         public DbSet<EmailTemplates> EmailTemplates { get; set; }
+        public DbSet<FinalUserCredit> FinalUserCredit { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

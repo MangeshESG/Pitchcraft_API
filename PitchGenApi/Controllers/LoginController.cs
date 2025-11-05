@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Helpers;
@@ -10,6 +11,7 @@ using PitchGenApi.Services;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using UglyToad.PdfPig.Graphics.Operations.PathPainting;
 
 namespace PitchGenApi.Controllers
 {
@@ -232,7 +234,12 @@ namespace PitchGenApi.Controllers
             _context.ClientDetails.Add(client);
             _context.SaveChanges(); // Save client to get generated ID
 
-            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default");
+            var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
+            var formattedSubNumber = $"SUB-{nextSubNumber:D4}"; // e.g. SUB-0001
+            var StartDate = DateTime.UtcNow;
+            var EndDate = StartDate.AddMonths(1);
+
+            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default", formattedSubNumber, StartDate, EndDate, "Monthly",0);
 
             // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);
