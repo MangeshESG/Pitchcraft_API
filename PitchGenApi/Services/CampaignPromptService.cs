@@ -175,16 +175,37 @@ namespace PitchGenApi.Services
                 content = m["content"]
             }).ToList();
 
-            if (string.IsNullOrWhiteSpace(model) || model.StartsWith("gpt-5"))
-                model = "gpt-4o";
-
-            var requestData = new
+            if (string.IsNullOrWhiteSpace(model))
             {
-                model,
-                messages = inputMessages,
-                temperature = 0.7,
-                max_tokens = 1500
-            };
+                model = "gpt-4o"; // Default only if not provided
+            }
+
+            // ✅ Detect if the model is GPT-5 (or newer requiring new params)
+            bool isGpt5OrNewer = model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase);
+
+            object requestData;
+            if (isGpt5OrNewer)
+            {
+                // ✅ Use new parameter name for GPT-5 models
+                requestData = new
+                {
+                    model,
+                    messages = inputMessages,
+                    temperature = 1.0,
+                    max_completion_tokens = 15000
+                };
+            }
+            else
+            {
+                // ✅ Legacy GPT-4 and earlier models
+                requestData = new
+                {
+                    model,
+                    messages = inputMessages,
+                    temperature = 1.0,
+                    max_tokens = 15000
+                };
+            }
 
             var requestJson = JsonConvert.SerializeObject(requestData);
             var requestContent = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -245,10 +266,10 @@ namespace PitchGenApi.Services
                 if (_sessions.ContainsKey(userId))
                 {
                     _sessions[userId].Messages.Add(new Dictionary<string, string>
-                    {
-                        { "role", "assistant" },
-                        { "content", aiResponse }
-                    });
+            {
+                { "role", "assistant" },
+                { "content", aiResponse }
+            });
                 }
 
                 return new
