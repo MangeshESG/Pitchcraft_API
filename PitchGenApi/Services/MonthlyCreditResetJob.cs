@@ -25,6 +25,13 @@ public class MonthlyCreditResetJob
         foreach (var plan in expiredPlans)
             plan.Status = "expired";
 
+        var customCredits = await _context.UserCredits
+             .Where(c => c.Plane == "Custom Credit" && c.Credits == 0)
+             .ToListAsync();
+
+        foreach (var plan in customCredits)
+            plan.Status = "Used";
+
         if (expiredPlans.Any())
             Console.WriteLine($"⚠️  Marked {expiredPlans.Count} plans as expired.");
 
@@ -34,7 +41,7 @@ public class MonthlyCreditResetJob
             .ToListAsync();
 
         foreach (var plan in plansToReset)
-            plan.ResetDate = plan.ResetDate.AddMonths(1);
+            plan.ResetDate = (plan.ResetDate ?? DateTime.UtcNow).AddMonths(1);
 
         if (plansToReset.Any())
             Console.WriteLine($"🔄 Found {plansToReset.Count} active plans to reset monthly limit.");

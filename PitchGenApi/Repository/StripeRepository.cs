@@ -371,8 +371,8 @@ namespace PitchGenApi.Repositories
                     Plane = "Custom Credit",
                     Amount = amountUsd,
                     StartDate = DateTime.UtcNow,
-                    SubscriptionNumber = SubcribtionNumber
-
+                    SubscriptionNumber = SubcribtionNumber,
+                    TotalPurchesdCredit = creditsPurchased,
                 };
 
                 await _context.UserCredits.AddAsync(newCredit);

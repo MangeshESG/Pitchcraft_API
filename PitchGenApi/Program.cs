@@ -13,8 +13,6 @@ using System.Security.Authentication;
 using PitchGenApi;
 using PitchGenApi.Repositories;
 using PitchGenApi.Helpers;
-using Hangfire;
-using Hangfire.SqlServer;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -127,7 +125,6 @@ builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
 });
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddScoped<EmailTemplateHelper>();
-builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddScoped<ContactRepository>();
 builder.Services.AddScoped<ZohoDataService>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
@@ -136,20 +133,11 @@ builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddSingleton<JwtService>();
 
+// ✅ Add Background Jobs
+builder.Services.AddHostedService<EmailSchedulerService>();
+builder.Services.AddHostedService<MonthlyCreditResetService>();
+
 builder.Services.AddControllers();
-
-// ✅ Hangfire Configuration
-builder.Services.AddHangfire(config =>
-{
-    config.SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
-          .UseSimpleAssemblyNameTypeSerializer()
-          .UseRecommendedSerializerSettings()
-          .UseSqlServerStorage(builder.Configuration.GetConnectionString("DefaultConnection"));
-});
-builder.Services.AddHangfireServer();
-
-// ✅ Register your background job service
-builder.Services.AddScoped<MonthlyCreditResetJob>();
 
 var app = builder.Build();
 
@@ -165,20 +153,6 @@ app.UseCors("MyCorsPolicy");
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
-
-// ✅ Hangfire Dashboard (optional, disable for prod)
-//app.UseHangfireDashboard("/hangfire");
-
-// ✅ CORRECT CODE — use DI-based RecurringJobManager
-using (var scope = app.Services.CreateScope())
-{
-    var recurringJobs = scope.ServiceProvider.GetRequiredService<IRecurringJobManager>();
-    recurringJobs.AddOrUpdate<MonthlyCreditResetJob>(
-        "minute-credit-reset",
-        job => job.Execute(),
-        Cron.Minutely);
-}
-
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
