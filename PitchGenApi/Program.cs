@@ -143,6 +143,14 @@ builder.Services.AddHostedService<MonthlyCreditResetService>();
 
 builder.Services.AddControllers();
 
+// ✅ Register CampaignPromptService and HttpClient
+builder.Services.AddHttpClient<CampaignPromptService>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
+
+
+
 var app = builder.Build();
 
 // ✅ Swagger UI

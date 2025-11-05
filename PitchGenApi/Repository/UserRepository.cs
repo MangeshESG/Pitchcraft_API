@@ -24,7 +24,7 @@ public class UserRepository : IUserRepository
        
         return await _context.tbl_clientdetails.ToListAsync();
         }
-        catch (Exception ex)
+        catch (Exception )
         {
 
             throw;
