@@ -64,11 +64,11 @@ builder.Services.AddHttpClient<CampaignPromptService>()
     {
         SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
     });
-builder.Services.AddHttpClient<WebSearchService>()
-    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-    {
-        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
-    });
+//builder.Services.AddHttpClient<WebSearchService>()
+//    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+//    {
+//        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+//    });
 builder.Services.AddHttpClient<ZohoService>(client =>
 {
     client.BaseAddress = new Uri("https://www.zohoapis.com/");
