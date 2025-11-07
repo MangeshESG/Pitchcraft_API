@@ -389,68 +389,103 @@ namespace PitchGenApi.Services
             public string FinalPrompt { get; set; } = string.Empty;
         }
 
-        // ✅ Generate example output 
+       
+        // ✅ Generate example output — now fully compatible with GPT-4, GPT-4.1, GPT-5+
         public async Task<string?> GenerateExampleOutputAsync(
             Dictionary<string, string> placeholderValues,
             string masterTemplate,
-            string model = "gpt-5")
+            string model = "gpt-4.1")
         {
             if (placeholderValues == null || placeholderValues.Count == 0)
                 return null;
 
-            // 1️⃣  Fill placeholders
+            // 1️⃣ Fill placeholders
             string filledTemplate = masterTemplate;
             foreach (var (key, value) in placeholderValues)
                 filledTemplate = filledTemplate.Replace($"{{{key}}}", value ?? "", StringComparison.OrdinalIgnoreCase);
 
-            // 2️⃣  Build the Responses‑API payload
-            var requestData = new
+            bool isGpt5 = model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase);
+            bool isGpt41 = model.StartsWith("gpt-4.1", StringComparison.OrdinalIgnoreCase);
+
+            object requestData;
+            string endpoint;
+
+            if (isGpt5)
             {
-                model,
-                input = filledTemplate,                   // ✅ "input" replaces "messages"
-                reasoning = new { effort = "minimal" },   // optional, controls reasoning depth
-                text = new { verbosity = "low" }          // optional, controls output length
-            };
+                endpoint = "https://api.openai.com/v1/responses";
+                requestData = new
+                {
+                    model = model,
+                    input = filledTemplate,
+                    reasoning = new { effort = "high" },
+                    text = new { verbosity = "medium" }
+                    
+                    // max_output_tokens = 2000
+                };
+            }
+            else if (isGpt41)
+            {
+                // ✅ GPT-4.1 also uses Responses API but keeps temperature
+                endpoint = "https://api.openai.com/v1/responses";
+                requestData = new
+                {
+                    model,
+                    input = filledTemplate,
+                    temperature = 1.0,
+                    max_output_tokens = 20000
+                };
+            }
+            else
+            {
+                // ✅ GPT-4 and earlier → Chat Completions API
+                endpoint = "https://api.openai.com/v1/chat/completions";
+                requestData = new
+                {
+                    model,
+                    messages = new[]
+                    {
+                new { role = "system", content = "You are an assistant that formats marketing emails in HTML." },
+                new { role = "user", content = filledTemplate }
+            },
+                    temperature = 1.0,
+                    max_tokens = 20000
+                };
+            }
 
             var json = JsonConvert.SerializeObject(requestData);
             var content = new StringContent(json, Encoding.UTF8, "application/json");
 
             try
             {
-                // ✅ NEW ENDPOINT
-                var response = await _httpClient.PostAsync("https://api.openai.com/v1/responses", content);
+                var response = await _httpClient.PostAsync(endpoint, content);
                 var body = await response.Content.ReadAsStringAsync();
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    Console.WriteLine($"[GenerateExampleOutputAsync] API Error {response.StatusCode}: {body}");
+                    Console.WriteLine($"[GenerateExampleOutputAsync] ❌ API Error {response.StatusCode}: {body}");
                     return null;
                 }
 
                 dynamic parsed = JsonConvert.DeserializeObject(body);
+                string html = null;
 
-                // 1️⃣ Prefer the direct field
-                string html = parsed?.output_text?.ToString();
+                // ✅ Responses API (GPT-4.1 & GPT-5)
+                html = parsed?.output_text?.ToString()
+                    ?? parsed?.output?[0]?.content?[0]?.text?.ToString();
 
-                // 2️⃣ Fallback: extract from the new output array if null
+                // ✅ Chat Completions fallback (GPT-4)
                 if (string.IsNullOrWhiteSpace(html))
-                {
-                    try
-                    {
-                        // output → list → message → content → text
-                        html = parsed?.output?[1]?.content?[0]?.text?.ToString();
-                    }
-                    catch { /* ignored */ }
-                }
+                    html = parsed?.choices?[0]?.message?.content?.ToString();
 
                 return string.IsNullOrWhiteSpace(html) ? null : html.Trim();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[GenerateExampleOutputAsync] Exception: {ex.Message}");
+                Console.WriteLine($"[GenerateExampleOutputAsync] Exception: {ex.Message}");
                 return null;
             }
         }
+
         public class WebSearchService
         {
             public class WebSearchResponse
