@@ -14,6 +14,7 @@ using PitchGenApi;
 using PitchGenApi.Repositories;
 using PitchGenApi.Helpers;
 using Microsoft.Extensions.FileProviders;
+using static PitchGenApi.Services.CampaignPromptService;
 
 var builder = WebApplication.CreateBuilder(args);
 

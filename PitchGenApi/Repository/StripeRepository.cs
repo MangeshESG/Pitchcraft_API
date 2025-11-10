@@ -4,6 +4,8 @@ using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using Stripe;
+using System.Numerics;
+using UglyToad.PdfPig.Graphics.Operations.PathPainting;
 
 namespace PitchGenApi.Repositories
 {
@@ -110,13 +112,13 @@ namespace PitchGenApi.Repositories
                 {
                     new SubscriptionItemOptions { Price = req.PriceId }
                 },
-                        PaymentBehavior = "default_incomplete",
-                        Expand = new List<string>
+                PaymentBehavior = "default_incomplete",
+                Expand = new List<string>
                         {
                             "latest_invoice.payment_intent",
                             "latest_invoice.payments"
                         },
-                        Metadata = new Dictionary<string, string>
+                Metadata = new Dictionary<string, string>
                 {
                         { "app_user_id", req.UserId },
                         { "plan", req.PriceId },
@@ -272,8 +274,8 @@ namespace PitchGenApi.Repositories
                     PlanName = x.Plane ?? "N/A",
                     PlanAmount = x.Amount == null ? 0 : x.Amount,
                     x.Interval,
-                    x.StartDate ,
-                    x.EndDate ,
+                    x.StartDate,
+                    x.EndDate,
 
                 })
                 .ToListAsync();
@@ -360,23 +362,10 @@ namespace PitchGenApi.Repositories
                     Console.WriteLine($"❌ No client found for ID: {clientId}");
                     return;
                 }
+                var StartDate = DateTime.UtcNow;
+                var intcredit = Convert.ToInt32(creditsStr);
 
-                // ✅ Always insert new UserCredits record
-                var newCredit = new UserCredits
-                {
-                    ClientId = clientId,
-                    Credits = creditsPurchased,
-                    CreatedAt = DateTime.UtcNow,
-                    Status = "Active",
-                    Plane = "Custom Credit",
-                    Amount = amountUsd,
-                    StartDate = DateTime.UtcNow,
-                    SubscriptionNumber = SubcribtionNumber,
-                    TotalPurchesdCredit = creditsPurchased,
-                };
-
-                await _context.UserCredits.AddAsync(newCredit);
-                await _context.SaveChangesAsync();
+                await SaveUserCreditsAsync(clientId, "Custom Credit", null, SubcribtionNumber, StartDate, null, null, amountUsd, intcredit);
 
                 Console.WriteLine($"🆕 Added new credit record for user {clientId} — {creditsPurchased} credits (${amountUsd}).");
             }
@@ -462,7 +451,7 @@ namespace PitchGenApi.Repositories
 
             await _context.SaveChangesAsync();
 
-            await SaveUserCreditsAsync(clientId, planId, subscriptionId, SubcribtionNumber, StartDate, EndDate, interval, amountPaid);
+            await SaveUserCreditsAsync(clientId, planId, subscriptionId, SubcribtionNumber, StartDate, EndDate, interval, amountPaid, null);
         }
 
         public async Task HandleSubscriptionCancelledAsync(Event stripeEvent)
@@ -484,7 +473,7 @@ namespace PitchGenApi.Repositories
             {
                 Console.WriteLine($"⚠️ Subscription {subscription.Id} not found in database.");
             }
-            
+
             var CreditsExpiry = await _context.UserCredits
                 .FirstOrDefaultAsync(x => x.StripeSubscriptionId == subscription.Id);
 
@@ -499,19 +488,11 @@ namespace PitchGenApi.Repositories
             }
         }
 
-        public async Task SaveUserCreditsAsync(
-    int userId,
-    string planId,
-    string stripeSubscriptionId,
-    string SubcribtionNumber,
-    DateTime StartDate,
-    DateTime EndDate,
-    string interval,
-    decimal amount)
+        public async Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId, string SubcribtionNumber, DateTime StartDate, DateTime? EndDate, string interval, decimal amount, int? CreditsCount)
         {
             try
             {
-                int credits = 0;
+                int? credits = 0;
                 string planName = "Unknown";
                 int monthlyLimit = 0;
 
@@ -551,6 +532,11 @@ namespace PitchGenApi.Repositories
                         monthlyLimit = 2000;
                         break;
 
+                    case "Custom Credit":
+                        credits = CreditsCount;
+                        planName = "Custom Credit";
+                        break;
+
                     default:
                         Console.WriteLine($"⚠️ Unknown plan ID: {planId}");
                         return;
@@ -558,7 +544,7 @@ namespace PitchGenApi.Repositories
 
                 var now = DateTime.UtcNow;
 
-                // ✅ Step 1 — Add new user credit record
+                // ✅ Step 1 — Create UserCredits record
                 var userCredits = new UserCredits
                 {
                     ClientId = userId,
@@ -572,43 +558,74 @@ namespace PitchGenApi.Repositories
                     StartDate = StartDate,
                     EndDate = EndDate,
                     Interval = interval,
-                    Amount = amount,
-                    ResetDate = now.AddMonths(1)
+                    Amount = amount
                 };
+
+                // ✅ Only set ResetDate for non-custom plans
+                if (planId != "Custom Credit")
+                {
+                    userCredits.ResetDate = now.AddMonths(1);
+                }
 
                 _context.UserCredits.Add(userCredits);
                 await _context.SaveChangesAsync();
 
-                // ✅ Step 2 — Calculate total active credits for this client
-                var totalActiveCredits = (await _context.UserCredits
-                    .Where(u => u.ClientId == userId && u.Status.ToLower() == "active")
-                    .SumAsync(u => (int?)u.Credits)) ?? 0;
-
-                // ✅ Step 3 — Check if record exists in FinalUserCredit
+                // ✅ Step 2 — Fetch or create FinalUserCredit
                 var finalCredit = await _context.FinalUserCredit
                     .FirstOrDefaultAsync(f => f.ClientId == userId);
 
-                if (finalCredit != null)
+                if (planId == "Custom Credit")
                 {
-                    // Update existing record
-                    finalCredit.TotalCredit = totalActiveCredits;
-                    finalCredit.MonthlyLimit = monthlyLimit > 0 ? monthlyLimit : finalCredit.MonthlyLimit;
-                    finalCredit.UpdatedAt = DateTime.UtcNow;
-                    _context.FinalUserCredit.Update(finalCredit);
+                    // 🔹 Custom Credit Logic: only increase total credit
+                    if (finalCredit != null)
+                    {
+                        finalCredit.UpdatedAt = DateTime.UtcNow;
+                        finalCredit.CustomLimit = (finalCredit.CustomLimit ?? 0) + CreditsCount;
+                        _context.FinalUserCredit.Update(finalCredit);
+                    }
+                    else
+                    {
+                        // If no record exists, create new one
+                        finalCredit = new FinalUserCredit
+                        {
+                            ClientId = userId,
+                            TotalCredit = 0,
+                            CreatedAt = DateTime.UtcNow,
+                            MonthlyLimit = 0,
+                            CustomLimit = CreditsCount,
+                            UsedCredit = 0,
+                            LimitUsed = 0
+                        };
+                        _context.FinalUserCredit.Add(finalCredit);
+                    }
                 }
                 else
                 {
-                    // Insert new record
-                    finalCredit = new FinalUserCredit
+                    // 🔹 Regular Plan Logic
+                    var totalActiveCredits = (await _context.FinalUserCredit
+                        .Where(u => u.ClientId == userId )
+                        .SumAsync(u => (int?)u.TotalCredit)) ?? 0;
+
+                    if (finalCredit != null)
                     {
-                        ClientId = userId,
-                        TotalCredit = totalActiveCredits,
-                        CreatedAt = DateTime.UtcNow,
-                        MonthlyLimit = monthlyLimit,
-                        UsedCredit = 0, // 👈 yeh line add karo
-                        LimitUsed = 0   // optional if applicable
-                    };
-                    _context.FinalUserCredit.Add(finalCredit);
+                        finalCredit.TotalCredit += credits;
+                        finalCredit.MonthlyLimit = monthlyLimit > 0 ? monthlyLimit : finalCredit.MonthlyLimit;
+                        finalCredit.UpdatedAt = DateTime.UtcNow;
+                        _context.FinalUserCredit.Update(finalCredit);
+                    }
+                    else
+                    {
+                        finalCredit = new FinalUserCredit
+                        {
+                            ClientId = userId,
+                            TotalCredit = credits,
+                            CreatedAt = DateTime.UtcNow,
+                            MonthlyLimit = monthlyLimit,
+                            UsedCredit = 0,
+                            LimitUsed = 0
+                        };
+                        _context.FinalUserCredit.Add(finalCredit);
+                    }
                 }
 
                 await _context.SaveChangesAsync();
@@ -619,10 +636,8 @@ namespace PitchGenApi.Repositories
             {
                 Console.WriteLine($"❌ Error in SaveUserCreditsAsync: {ex.Message}");
                 Console.WriteLine(ex.StackTrace);
-                throw; // rethrow to ensure the caller knows it failed
+                throw;
             }
         }
-
-
     }
 }
