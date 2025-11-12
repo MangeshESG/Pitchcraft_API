@@ -976,66 +976,87 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                // Validate the model
                 if (!ModelState.IsValid)
-                {
                     return BadRequest(ModelState);
-                }
 
-                // Validate mutual exclusivity: either ZohoViewId OR SegmentId (not both, not neither)
+                // ✅ Validate ZohoViewId vs SegmentId mutual exclusivity
                 if ((model.ZohoViewId == null && model.SegmentId == null) ||
                     (model.ZohoViewId != null && model.SegmentId != null))
                 {
                     return BadRequest(new { Message = "Campaign must have either ZohoViewId or SegmentId, but not both." });
                 }
 
-                // Verify that PromptId exists
-                var promptExists = await _context.Prompts.AnyAsync(p => p.Id == model.PromptId);
-                if (!promptExists)
+                // ✅ Validate: Must have either PromptId or TemplateId
+                if (!model.PromptId.HasValue && !model.TemplateId.HasValue)
                 {
-                    return BadRequest(new { Message = "Invalid PromptId. The specified prompt does not exist." });
+                    return BadRequest(new { Message = "Either PromptId or TemplateId must be provided." });
                 }
 
-                // If SegmentId is provided, validate it belongs to the same client
-                if (model.SegmentId.HasValue)
+                // ✅ If TemplateId provided, verify it exists
+                string campaignBlueprint = null;
+                if (model.TemplateId.HasValue)
                 {
-                    var segment = await _context.segments.FindAsync(model.SegmentId.Value); // ✅ Using lowercase 'segments'
-                    if (segment == null)
+                    var template = await _context.CampaignTemplates.FindAsync(model.TemplateId.Value);
+                    if (template == null)
                     {
-                        return BadRequest(new { Message = "Invalid SegmentId. The specified segment does not exist." });
+                        return BadRequest(new { Message = "Invalid TemplateId. Template not found." });
                     }
 
-                    if (segment.ClientId != model.ClientId)
+                    // ✅ Extract the campaign blueprint text
+                    campaignBlueprint = template.CampaignBlueprint;
+                }
+
+                // ✅ If PromptId provided, verify it exists
+                if (model.PromptId.HasValue)
+                {
+                    var promptExists = await _context.Prompts.AnyAsync(p => p.Id == model.PromptId.Value);
+                    if (!promptExists)
                     {
-                        return BadRequest(new { Message = "Segment does not belong to the specified client." });
+                        return BadRequest(new { Message = "Invalid PromptId." });
                     }
                 }
 
-                // Create new campaign object
+                // ✅ Create campaign
                 var newCampaign = new Campaign
                 {
                     CampaignName = model.CampaignName,
                     PromptId = model.PromptId,
                     ZohoViewId = model.ZohoViewId,
                     SegmentId = model.SegmentId,
-                    ClientId = model.ClientId
+                    ClientId = model.ClientId,
+                    Description = model.Description,
+                    TemplateId = model.TemplateId
                 };
 
-                // Add to database
-                await _context.Campaigns.AddAsync(newCampaign);
+                _context.Campaigns.Add(newCampaign);
                 await _context.SaveChangesAsync();
 
-                // Return the created object
-                return CreatedAtAction(nameof(GetCampaignById),
-                    new { id = newCampaign.Id },
-                    newCampaign);
+                // ✅ Return blueprint content with campaign info
+                return Ok(new
+                {
+                    newCampaign.Id,
+                    newCampaign.CampaignName,
+                    newCampaign.TemplateId,
+                    campaignBlueprint,
+                    Message = "Campaign created successfully!"
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error creating campaign");
-                return StatusCode(500, new { Message = "An error occurred while creating the campaign", Error = ex.Message });
+                var innerMessage = ex.InnerException?.Message ?? ex.Message;
+                _logger.LogError(ex, "Error creating campaign. Inner: {InnerMessage}", innerMessage);
+
+                return StatusCode(500, new
+                {
+                    Message = "Error creating campaign",
+                    Error = innerMessage
+                });
             }
+
         }
+
+
+
         /// Update an existing campaign
 
         [HttpPost("updatecampaign")]
