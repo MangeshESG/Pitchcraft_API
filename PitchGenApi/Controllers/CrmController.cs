@@ -468,10 +468,10 @@ namespace PitchGenApi.Controllers
                 var dataFileExists = await _context.data_files
                     .AnyAsync(df => df.id == dto.DataFileId && df.client_id == ClientId);
 
-                if (!dataFileExists)
-                {
-                    return BadRequest(new { message = "Invalid ClientId or DataFileId. No matching data file found." });
-                }
+                //if (!dataFileExists)
+                //{
+                //    return BadRequest(new { message = "Invalid ClientId or DataFileId. No matching data file found." });
+                //}
 
                 // Create a comma-separated list of contact IDs for SQL query
                 var contactIdsList = dto.ContactIds.Distinct().ToList();
