@@ -222,15 +222,15 @@ namespace PitchGenApi.Controllers
             if (request.ClientId <= 0 || request.ContactId <= 0)
                 return BadRequest("ClientId and ContactId are required.");
 
-            // First, verify the contact belongs to this client
+            // Verify contact belongs to the client
             var contact = await _context.contacts
-                .Include(c => c.data_file)  // ✅ Changed from DataFile to data_file
+                .Include(c => c.data_file)
                 .FirstOrDefaultAsync(c => c.id == request.ContactId && c.data_file.client_id == request.ClientId);
 
             if (contact == null)
                 return NotFound("Contact not found for this client.");
 
-            // Update only if values are provided
+            // Update fields if provided
             if (!string.IsNullOrWhiteSpace(request.EmailSubject))
                 contact.email_subject = request.EmailSubject;
 
@@ -238,6 +238,50 @@ namespace PitchGenApi.Controllers
                 contact.email_body = request.EmailBody;
 
             contact.updated_at = DateTime.UtcNow;
+
+            // 🧠 Deduct credit only from FinalUserCredit when GPTGenerate = true
+            if (request.GPTGenerate == true)
+            {
+                var finalCredit = await _context.FinalUserCredit
+                .FirstOrDefaultAsync(f => f.ClientId == request.ClientId);
+
+                if (finalCredit != null)
+                {
+                    // Case 1: Use TotalCredit if available and monthly limit not reached
+                    if ((finalCredit.TotalCredit ?? 0) > 0 && (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
+                    {
+                        finalCredit.TotalCredit -= 1;
+                        finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + 1;
+                        finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + 1;
+                    }
+                    // Case 2: Use CustomLimit when monthly limit is reached or TotalCredit is 0
+                    else if ((finalCredit.CustomLimit ?? 0) > 0)
+                    {
+                        finalCredit.CustomLimit -= 1;
+                        finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + 1;
+
+                        // 🔹 Also deduct from latest active UserCredits plan
+                        var latestActivePlan = await _context.UserCredits
+                            .Where(u => u.ClientId == request.ClientId &&
+                                        u.Status.ToLower() == "active" &&
+                                        u.Plane == "Custom Credit")
+                            .OrderByDescending(u => u.CreatedAt)
+                            .FirstOrDefaultAsync();
+
+                        if (latestActivePlan != null && latestActivePlan.Credits > 0)
+                        {
+                            latestActivePlan.Credits -= 1;
+                            _context.UserCredits.Update(latestActivePlan);
+                        }
+                    }
+
+                    finalCredit.UpdatedAt = DateTime.UtcNow;
+                    _context.FinalUserCredit.Update(finalCredit);
+                    await _context.SaveChangesAsync();
+                }
+
+
+            }
 
             await _context.SaveChangesAsync();
 
@@ -248,9 +292,6 @@ namespace PitchGenApi.Controllers
                 contactId = contact.id
             });
         }
-
-
-
 
         [HttpGet("datafile-byclientid")]
         public async Task<IActionResult> GetDataFilesByClientId(int clientId)
@@ -427,10 +468,10 @@ namespace PitchGenApi.Controllers
                 var dataFileExists = await _context.data_files
                     .AnyAsync(df => df.id == dto.DataFileId && df.client_id == ClientId);
 
-                if (!dataFileExists)
-                {
-                    return BadRequest(new { message = "Invalid ClientId or DataFileId. No matching data file found." });
-                }
+                //if (!dataFileExists)
+                //{
+                //    return BadRequest(new { message = "Invalid ClientId or DataFileId. No matching data file found." });
+                //}
 
                 // Create a comma-separated list of contact IDs for SQL query
                 var contactIdsList = dto.ContactIds.Distinct().ToList();
@@ -636,9 +677,74 @@ namespace PitchGenApi.Controllers
 
             try
             {
-                var total = await _context.UserCredits
-                        .Where(x => x.ClientId == clientId && x.Status == "Active")
-                        .SumAsync(x => (int?)x.Credits ?? 0);
+                var credit = await _context.FinalUserCredit
+                    .FirstOrDefaultAsync(x => x.ClientId == clientId);
+
+                if (credit == null)
+                {
+                    return Ok(new
+                    {
+                        total = 0,
+                        canGenerate = false,
+                        monthlyLimitExceeded = false
+                    });
+                }
+
+                // 🧩 Calculate total available credit
+                var total = (credit.TotalCredit ?? 0) + (credit.CustomLimit ?? 0);
+
+                // 🧠 Logic for "can generate"
+                bool canGenerate = true;
+                bool monthlyLimitExceeded = false;
+
+                // 📌 Case 1: No credits at all
+                if ((credit.TotalCredit ?? 0) == 0 && (credit.CustomLimit ?? 0) == 0)
+                {
+                    canGenerate = false;
+                }
+
+                // 📌 Case 2: Monthly limit reached and no custom credits left
+                if ((credit.LimitUsed ?? 0) >= (credit.MonthlyLimit ?? 0) && (credit.CustomLimit ?? 0) == 0)
+                {
+                    canGenerate = false;
+                    monthlyLimitExceeded = true;
+                }
+
+                return Ok(new
+                {
+                    total,
+                    canGenerate,
+                    monthlyLimitExceeded
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Internal server error: {ex.Message}");
+            }
+        }
+
+        [HttpGet("Check_credit")]
+        public async Task<IActionResult> CheckCredit([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+            {
+                return BadRequest("clientId is required");
+            }
+
+            try
+            {
+                var total = await _context.FinalUserCredit
+                  .Where(x => x.ClientId == clientId)
+                  .Select(x => new
+                  {
+                      x.TotalCredit,
+                      x.MonthlyLimit,
+                      x.LimitUsed,
+                      x.CustomCreditUsed,
+                      x.CustomLimit
+                  })
+                  .FirstOrDefaultAsync();
+
 
                 if (total == null)
                 {
