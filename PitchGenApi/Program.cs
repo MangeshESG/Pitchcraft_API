@@ -172,15 +172,8 @@ app.UseStaticFiles();
 app.MapControllers();
 
 // ✅ React fallback
-app.MapFallback(context =>
-{
-    if (context.Request.Path.StartsWithSegments("/swagger"))
-    {
-        context.Response.StatusCode = 404;
-        return Task.CompletedTask;
-    }
-    context.Response.Redirect("/");
-    return Task.CompletedTask;
-});
+// ✅ Correct React fallback
+app.MapFallbackToFile("index.html");
+
 
 app.Run();
