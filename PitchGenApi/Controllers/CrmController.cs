@@ -145,6 +145,7 @@ namespace PitchGenApi.Controllers
             }
         }
 
+
         [HttpGet("contacts/by-client-datafile")]
         public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId)
         {
@@ -160,29 +161,31 @@ namespace PitchGenApi.Controllers
 
             // Fetch contacts for that data file
             var contacts = await _context.contacts
-                .Where(c => c.DataFileId == dataFileId)
-                .Select(c => new
-                {
-                    c.id,
-                    c.full_name,
-                    c.email,
-                    c.website,
-                    c.company_name,
-                    c.job_title,
-                    c.linkedin_url,
-                    c.country_or_address,
-                    c.email_subject,
-                    c.email_body,
-                    c.created_at,
-                    c.updated_at,
-                    c.email_sent_at,
-                    c.CompanyTelephone,
-                    c.CompanyEmployeeCount,
-                    c.CompanyIndustry,
-                    c.CompanyLinkedInURL,
-                    c.CompanyEventLink
-                })
-                .ToListAsync();
+                  .Where(c => c.DataFileId == dataFileId)
+                  .OrderBy(c => c.id)
+                  .Select(c => new
+                  {
+                      c.id,
+                      c.full_name,
+                      c.email,
+                      c.website,
+                      c.company_name,
+                      c.job_title,
+                      c.linkedin_url,
+                      c.country_or_address,
+                      c.email_subject,
+                      c.email_body,
+                      c.created_at,
+                      c.updated_at,
+                      c.email_sent_at,
+                      c.CompanyTelephone,
+                      c.CompanyEmployeeCount,
+                      c.CompanyIndustry,
+                      c.CompanyLinkedInURL,
+                      c.CompanyEventLink
+                  })
+                  .ToListAsync();
+
 
             return Ok(new
             {
@@ -190,6 +193,7 @@ namespace PitchGenApi.Controllers
                 contacts
             });
         }
+
 
 
         [HttpPost("update-datafile")]
