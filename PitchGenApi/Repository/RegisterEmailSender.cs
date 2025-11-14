@@ -73,11 +73,11 @@ namespace PitchGenApi.Helpers
             // Prepare dynamic data for placeholders
             var data = new Dictionary<string, string>
             {
-                { "firstName", firstName },
-                { "otp", otp },
-                { "ipAddress", ip },
-                { "browserName", browser },
-                { "toEmail", to }
+                { "FirstName", firstName },
+                { "OTP", otp },
+                { "IPAddress", ip },
+                { "BrowserName", browser },
+                { "UserEmail", to }
             };
 
             // Replace placeholders in subject and body
@@ -102,11 +102,11 @@ namespace PitchGenApi.Helpers
             // Prepare dynamic data for placeholders
             var data = new Dictionary<string, string>
             {
-                { "firstName", firstName },
-                { "otp", otp },
-                { "ipAddress", ip },
-                { "browserName", browser },
-                { "toEmail", to }
+                { "FirstName", firstName },
+                { "OTP", otp },
+                { "IPAddress", ip },
+                { "BrowserName", browser },
+                { "UserEmail", to }
             };
 
             // Replace placeholders in subject and body
@@ -128,11 +128,11 @@ namespace PitchGenApi.Helpers
             // Prepare dynamic data for placeholders
             var data = new Dictionary<string, string>
             {
-                { "firstName", firstName },
-                { "otp", otp },
-                { "ipAddress", ip },
-                { "browserName", browser },
-                { "toEmail", to }
+                { "FirstName", firstName },
+                { "OTP", otp },
+                { "IPAddress", ip },
+                { "BrowserName", browser },
+                { "UserEmail", to }
             };
 
             // Replace placeholders in subject and body
