@@ -50,7 +50,7 @@ namespace PitchGenApi.Services
             var claims = new[] {
             new Claim(ClaimTypes.Name, username), // Keep username
             new Claim("UserId", userId.ToString()), // Add UserId as a custom claim
-            new Claim("firtname", firstname.ToString()), // Add UserId as a custom claim
+            new Claim("firstname", firstname.ToString()), // Add UserId as a custom claim
             new Claim ("lastname", lastname.ToString()),
             // ... any other claims
         };
