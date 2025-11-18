@@ -603,7 +603,7 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("update-segment")]
-        public async Task<IActionResult> UpdateSegmentById([FromQuery] int id, [FromQuery] string name, [FromQuery] string description)
+        public async Task<IActionResult> UpdateSegmentById([FromQuery] int id, [FromQuery] string name, [FromQuery] string? description)
         {
             if (id == 0)
                 return BadRequest("Invalid Segment Id");

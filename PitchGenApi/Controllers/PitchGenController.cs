@@ -930,6 +930,7 @@ namespace PitchGenApi.Controllers
                                    cs.Campaign.ZohoViewId,
                                    cs.Campaign.SegmentId,
                                    cs.Campaign.ClientId,
+                                   cs.Campaign.Description,
                                    SegmentName = s != null ? s.Name : null,
                                    DataSource = s != null ? "Segment" : "DataFile"
                                })
