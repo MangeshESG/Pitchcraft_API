@@ -304,15 +304,30 @@ namespace PitchGenApi.Controllers
             {
                 var result = await _context.data_files
                     .Where(x => x.client_id == clientId)
+                    .Select(x => new
+                    {
+                        x.id,
+                        x.client_id,
+                        x.name,
+                        x.data_file_name,
+                        x.description,
+                        x.created_at,
+                        x.updated_at,
+
+                        // 👇 Only contact count
+                        contactCount = _context.contacts
+                            .Count(c => c.DataFileId == x.id)
+                    })
                     .ToListAsync();
 
-                return Ok(result); // 🔁 Returns full list of DataFile objects
+                return Ok(result);
             }
             catch (Exception ex)
             {
                 return BadRequest("Error: " + ex.Message);
             }
         }
+
         [HttpGet("getlogs")]
         public async Task<IActionResult> GetLogs([FromQuery] int clientId, [FromQuery] int dataFileId)
         {
@@ -568,7 +583,6 @@ namespace PitchGenApi.Controllers
         }
 
 
-
         [HttpGet("get-segments-by-client")]
         public async Task<IActionResult> GetSegmentsByClientId([FromQuery] int clientId)
         {
@@ -582,7 +596,11 @@ namespace PitchGenApi.Controllers
                     s.DataFileId,
                     s.ClientId,
                     s.CreatedAt,
-                    s.UpdatedAt
+                    s.UpdatedAt,
+
+                    // 👇 Count contacts mapped to this segment
+                    contactCount = _context.segmentContacts
+                        .Count(c => c.SegmentId == s.Id)
                 })
                 .ToListAsync();
 
@@ -593,6 +611,60 @@ namespace PitchGenApi.Controllers
 
             return Ok(segments);
         }
+
+        [HttpPost("delete-Datafile-contact")]
+        public async Task<IActionResult> DeleteContact([FromQuery] int contactId)
+        {
+            try
+            {
+                var contact = await _context.contacts
+                    .FirstOrDefaultAsync(c => c.id == contactId);
+
+                if (contact == null)
+                {
+                    return NotFound(new { message = "Contact not found." });
+                }
+
+                _context.contacts.Remove(contact);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { message = "Contact deleted successfully." });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("delete-by-segment")]
+        public async Task<IActionResult> DeleteByContactIds([FromQuery] int contactId)
+        {
+            if (contactId <= 0)
+                return BadRequest("contactId is required");
+
+            try
+            {
+                var contacts = await _context.segmentContacts
+                    .Where(c => c.ContactId == contactId)
+                    .ToListAsync();
+
+                if (!contacts.Any())
+                {
+                    return NotFound(new { message = "Contact not found." });
+                }
+
+                _context.segmentContacts.RemoveRange(contacts);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { message = "Contact deleted successfully.", deletedCount = contacts.Count });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, ex.Message);
+            }
+        }
+
+
 
         [HttpGet("segment/{segmentId}/contacts")]
         public async Task<IActionResult> GetContactsBySegmentId(int segmentId)
