@@ -38,6 +38,9 @@ namespace PitchGenApi.Models
 
         public DateTime? UpdatedAt { get; set; }
 
+        public int? SearchURLCount { get; set; }
+        public string? SubjectInstructions { get; set; }
+
         // Navigation properties
         [ForeignKey(nameof(TemplateDefinitionId))]
         public virtual CampaignTemplateDefinition? TemplateDefinition { get; set; }

@@ -51,7 +51,9 @@ namespace PitchGenApi.Controllers
                     MasterBlueprintUnpopulated = request.MasterBlueprintUnpopulated,
                     CreatedBy = request.CreatedBy,
                     CreatedAt = DateTime.UtcNow,
-                    IsActive = true
+                    IsActive = true,
+                    SearchURLCount = request.SearchURLCount,
+                    SubjectInstructions = request.SubjectInstructions
                 };
 
                 _dbContext.CampaignTemplateDefinitions.Add(templateDef);
@@ -141,6 +143,9 @@ namespace PitchGenApi.Controllers
                 definition.PlaceholderListExtensive = request.PlaceholderListExtensive;
                 definition.MasterBlueprintUnpopulated = request.MasterBlueprintUnpopulated;
                 definition.UpdatedAt = DateTime.UtcNow;
+                definition.SearchURLCount = request.SearchURLCount;
+                definition.SubjectInstructions = request.SubjectInstructions;
+
 
                 await _dbContext.SaveChangesAsync();
 
@@ -182,6 +187,7 @@ namespace PitchGenApi.Controllers
         #region Client Campaign Templates Endpoints
 
         // Save client's filled campaign template
+        // Save client's filled campaign template
         [HttpPost("template/save")]
         public async Task<IActionResult> SaveCampaignTemplate([FromBody] SaveCampaignTemplateRequest request)
         {
@@ -198,9 +204,9 @@ namespace PitchGenApi.Controllers
                     .AnyAsync(t => t.Id == request.TemplateDefinitionId && t.IsActive);
 
                 if (!definitionExists)
-                    return BadRequest(new { Message = "Template definition not found or inactive" });
+                    return  BadRequest(new { Message = "Template definition not found or inactive" });
 
-                // Create campaign template
+                // Create campaign template  ← UPDATED
                 var campaignTemplate = new CampaignTemplate
                 {
                     ClientId = request.ClientId,
@@ -211,7 +217,12 @@ namespace PitchGenApi.Controllers
                         ? JsonSerializer.Serialize(request.PlaceholderValues)
                         : null,
                     SelectedModel = request.SelectedModel,
-                    CreatedAt = DateTime.UtcNow
+                    CreatedAt = DateTime.UtcNow,
+
+                    // ⭐ NEW FIELDS START
+                    SearchURLCount = request.SearchURLCount,
+                    SubjectInstructions = request.SubjectInstructions
+                    // ⭐ NEW FIELDS END
                 };
 
                 _dbContext.CampaignTemplates.Add(campaignTemplate);
@@ -360,6 +371,7 @@ namespace PitchGenApi.Controllers
         }
 
         // Update client's campaign template
+        // Update client's campaign template
         [HttpPost("template/update")]
         public async Task<IActionResult> UpdateCampaignTemplate([FromBody] UpdateCampaignTemplateRequest request)
         {
@@ -383,6 +395,15 @@ namespace PitchGenApi.Controllers
 
                 if (!string.IsNullOrEmpty(request.SelectedModel))
                     template.SelectedModel = request.SelectedModel;
+
+
+                // ⭐ NEW FIELDS — minimal patch
+                if (request.SearchURLCount.HasValue)
+                    template.SearchURLCount = request.SearchURLCount;
+
+                if (request.SubjectInstructions != null)
+                    template.SubjectInstructions = request.SubjectInstructions;
+
 
                 template.UpdatedAt = DateTime.UtcNow;
 
@@ -532,7 +553,9 @@ namespace PitchGenApi.Controllers
                 TemplateName = req.TemplateName,
                 PlaceholderValues = "{}",
                 SelectedModel = req.Model ?? "gpt-4o",
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                SearchURLCount = templateDef.SearchURLCount,
+                SubjectInstructions = templateDef.SubjectInstructions
             };
 
             _dbContext.CampaignTemplates.Add(campaign);
