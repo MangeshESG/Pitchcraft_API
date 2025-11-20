@@ -8,6 +8,10 @@ using Newtonsoft.Json;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
 using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace PitchGenApi.Services
 {
@@ -15,7 +19,7 @@ namespace PitchGenApi.Services
     {
         private readonly HttpClient _httpClient;
         private readonly string _apiKey;
-        private readonly IServiceScopeFactory _scopeFactory;   // ✅ scope factory for DbContext
+        private readonly IServiceScopeFactory _scopeFactory; // scope factory for DbContext
 
         // Store sessions (chat history per user)
         public static Dictionary<string, CampaignSession> _sessions = new();
@@ -27,31 +31,33 @@ namespace PitchGenApi.Services
             public List<Dictionary<string, string>> Messages { get; set; } = new();
         }
 
-        // ✅ Constructor with IServiceScopeFactory
         public CampaignPromptService(
             HttpClient httpClient,
             IOptions<OpenAISettings> options,
             IServiceScopeFactory scopeFactory)
         {
-            _httpClient = httpClient;
-            _apiKey = options.Value.ApiKey;
-            _scopeFactory = scopeFactory;
+            _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
+            _apiKey = options?.Value?.ApiKey ?? throw new ArgumentNullException(nameof(options));
+            _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
 
             _httpClient.Timeout = TimeSpan.FromMinutes(5);
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
+            _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
         }
 
-        // ✅ Single method to handle both start and continue
+        // Single method to handle both start and continue
         public async Task<object> ProcessChatAsync(string userId, string message, string systemPrompt, string model)
         {
-            // 🧠 Step 1. Restore session if it's missing
+            if (string.IsNullOrWhiteSpace(userId))
+                return new { assistantText = "⚠️ UserId is required", error = true };
+
+            // Restore or create session
             if (!_sessions.ContainsKey(userId))
             {
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                // Try to find most recent campaign for this client
                 var lastCampaign = await db.CampaignTemplates
                     .OrderByDescending(c => c.CreatedAt)
                     .FirstOrDefaultAsync(c => c.ClientId == userId);
@@ -64,12 +70,9 @@ namespace PitchGenApi.Services
                         CampaignTemplateId = lastCampaign.Id,
                         Messages = new List<Dictionary<string, string>>()
                     };
-
-                    Console.WriteLine($"🧩 Restored campaign session for {userId} using campaign {lastCampaign.Id}");
                 }
                 else
                 {
-                    // 🪫 No previous campaign — need system prompt to start a new one
                     if (string.IsNullOrWhiteSpace(systemPrompt))
                     {
                         return new
@@ -84,16 +87,13 @@ namespace PitchGenApi.Services
                         UserId = userId,
                         CampaignTemplateId = 0,
                         Messages = new List<Dictionary<string, string>>
-                {
-                    new() { { "role", "system" }, { "content", systemPrompt } }
-                }
+                        {
+                            new() { { "role", "system" }, { "content", systemPrompt } }
+                        }
                     };
-
-                    Console.WriteLine($"🆕 Created brand-new session for {userId} (no campaign found).");
                 }
             }
 
-            // 🗣 Step 2. Handle message flow
             if (string.IsNullOrWhiteSpace(message))
             {
                 return new
@@ -104,30 +104,29 @@ namespace PitchGenApi.Services
 
             var session = _sessions[userId];
 
-            // Add message to history
-            if (session.Messages.All(m => m["role"] != "system"))
+            // Add system prompt only once
+            if (session.Messages.All(m => !m.ContainsKey("role") || m["role"] != "system"))
             {
-                // add system prompt only once if missing
                 if (!string.IsNullOrWhiteSpace(systemPrompt))
                 {
                     session.Messages.Insert(0, new Dictionary<string, string>
-            {
-                { "role", "system" },
-                { "content", systemPrompt }
-            });
+                    {
+                        { "role", "system" },
+                        { "content", systemPrompt }
+                    });
                 }
             }
 
             session.Messages.Add(new Dictionary<string, string>
-    {
-        { "role", "user" },
-        { "content", message }
-    });
+            {
+                { "role", "user" },
+                { "content", message }
+            });
 
-            // 🚀 Step 3. Send to GPT
+            // Send to GPT (Responses API with web-search preview)
             var response = await SendToGptAsync(session.Messages, model, userId);
 
-            // 🧩 Step 4. Ensure we have campaign linkage
+            // Ensure campaign linkage if missing
             if (session.CampaignTemplateId == 0)
             {
                 using var scope = _scopeFactory.CreateScope();
@@ -139,13 +138,13 @@ namespace PitchGenApi.Services
                 if (campaign != null)
                 {
                     session.CampaignTemplateId = campaign.Id;
-                    Console.WriteLine($"🔗 Linked session for {userId} to campaign {campaign.Id}");
                 }
             }
 
             return response;
         }
-        // ✅ Get chat history
+
+        // Get chat history
         public object GetChatHistory(string userId)
         {
             if (!_sessions.ContainsKey(userId))
@@ -159,126 +158,140 @@ namespace PitchGenApi.Services
             };
         }
 
-        // ✅ Clear chat history
+        // Clear chat history
         public void ClearChatHistory(string userId)
         {
             if (_sessions.ContainsKey(userId))
                 _sessions.Remove(userId);
         }
 
-        // ✅ Send to GPT and capture assistant + tool calls
+        // --------------------------
+        // Responses API integration
+        // --------------------------
         private async Task<object> SendToGptAsync(List<Dictionary<string, string>> messages, string model, string userId)
         {
-            var inputMessages = messages.Select(m => new
-            {
-                role = m["role"],
-                content = m["content"]
-            }).ToList();
-
             if (string.IsNullOrWhiteSpace(model))
-            {
-                model = "gpt-4o"; // Default only if not provided
-            }
+                model = "gpt-4o";
 
-            // ✅ Detect if the model is GPT-5 (or newer requiring new params)
-            bool isGpt5OrNewer = model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase);
+            // Build a single role-prefixed input string for Responses API
+            var sbInput = new StringBuilder();
 
-            object requestData;
-            if (isGpt5OrNewer)
+            if (messages == null || messages.Count == 0)
             {
-                // ✅ Use new parameter name for GPT-5 models
-                requestData = new
-                {
-                    model,
-                    messages = inputMessages,
-                    temperature = 1.0,
-                    max_completion_tokens = 15000
-                };
+                sbInput.AppendLine("user: ");
             }
             else
             {
-                // ✅ Legacy GPT-4 and earlier models
-                requestData = new
+                foreach (var m in messages)
                 {
-                    model,
-                    messages = inputMessages,
-                    temperature = 1.0,
-                    max_tokens = 15000
-                };
+                    var role = m.ContainsKey("role") ? m["role"] : "user";
+                    var msgContent = m.ContainsKey("content") ? m["content"] ?? string.Empty : string.Empty;
+                    sbInput.AppendLine($"{role}: {msgContent}");
+                }
             }
 
-            var requestJson = JsonConvert.SerializeObject(requestData);
-            var requestContent = new StringContent(requestJson, Encoding.UTF8, "application/json");
+            var requestBody = new Dictionary<string, object>
+            {
+                { "model", model },
+                { "input", sbInput.ToString() },
+                { "temperature", 1.0 },
+                { "max_output_tokens", 15000 },
+                { "tools", new object[] { new { type = "web_search_preview" } } }
+            };
+
+            var requestJson = JsonConvert.SerializeObject(requestBody);
+            var httpContent = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
             try
             {
-                var response = await _httpClient.PostAsync(
-                    "https://api.openai.com/v1/chat/completions",
-                    requestContent);
+                var endpoint = "https://api.openai.com/v1/responses";
+                var httpResponse = await _httpClient.PostAsync(endpoint, httpContent);
+                var raw = await httpResponse.Content.ReadAsStringAsync();
 
-                var jsonResponse = await response.Content.ReadAsStringAsync();
-
-                if (!response.IsSuccessStatusCode)
+                if (!httpResponse.IsSuccessStatusCode)
                 {
-                    Console.WriteLine($"[GPT ERROR] {response.StatusCode}\n{jsonResponse}");
-                    return new { assistantText = $"API Error: {response.StatusCode}", rawResponse = jsonResponse, error = true };
+                    return new { assistantText = $"API Error: {httpResponse.StatusCode}", rawResponse = raw, error = true };
                 }
 
-                dynamic result = JsonConvert.DeserializeObject<dynamic>(jsonResponse);
-                string aiResponse = result?.choices?[0]?.message?.content?.ToString();
+                var parsed = JsonConvert.DeserializeObject<JObject>(raw)!; // non-null after success
 
-                if (!string.IsNullOrWhiteSpace(aiResponse))
+                // Prefer output_text
+                string aiResponse = parsed["output_text"]?.ToString() ?? string.Empty;
+
+                if (string.IsNullOrWhiteSpace(aiResponse))
                 {
-                    var updatedPlaceholders = ExtractPlaceholders(aiResponse);
-                    if (updatedPlaceholders.Count > 0)
-                    {
-                        try
-                        {
-                            await SavePlaceholderValuesToDb(userId, updatedPlaceholders);
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"[DB SAVE ERROR] {ex.Message}");
-                        }
-                    }
+                    aiResponse = ExtractTextFromOutputs(parsed);
                 }
 
                 if (string.IsNullOrWhiteSpace(aiResponse))
                     aiResponse = "⚠️ No response from GPT (empty content).";
 
-                bool isComplete = aiResponse.Contains("==PLACEHOLDER_VALUES_START==") &&
-                                  aiResponse.Contains("==PLACEHOLDER_VALUES_END==") &&
-                                  aiResponse.Contains("\"complete\"");
-
-                if (isComplete)
+                // Extract placeholders & save to DB if present
+                var updatedPlaceholders = ExtractPlaceholders(aiResponse);
+                if (updatedPlaceholders.Count > 0)
                 {
-                    ClearChatHistory(userId);
-                    return new
+                    try
                     {
-                        isComplete = true,
-                        assistantText = aiResponse,
-                        fullResponse = result,
-                        sessionActive = false,
-                        messageCount = 0
-                    };
+                        await SavePlaceholderValuesToDb(userId, updatedPlaceholders);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[DB SAVE ERROR] {ex.Message}");
+                    }
                 }
 
-                if (_sessions.ContainsKey(userId))
+                // Ensure session exists
+                if (!_sessions.ContainsKey(userId))
                 {
-                    _sessions[userId].Messages.Add(new Dictionary<string, string>
-            {
-                { "role", "assistant" },
-                { "content", aiResponse }
-            });
+                    _sessions[userId] = new CampaignSession { UserId = userId, CampaignTemplateId = 0, Messages = new List<Dictionary<string, string>>() };
+                }
+
+                _sessions[userId].Messages.Add(new Dictionary<string, string>
+                {
+                    { "role", "assistant" },
+                    { "content", aiResponse }
+                });
+
+                // Collect web search sources if present
+                var webSearchResults = new List<object>();
+                try
+                {
+                    var outputs = parsed["output"] as JArray;
+                    if (outputs != null)
+                    {
+                        foreach (var outItem in outputs)
+                        {
+                            var action = outItem["action"];
+                            if (action != null && action["sources"] is JArray sources)
+                            {
+                                foreach (var s in sources)
+                                {
+                                    webSearchResults.Add(new
+                                    {
+                                        url = s["url"]?.ToString(),
+                                        title = s["title"]?.ToString(),
+                                        snippet = s["snippet"]?.ToString()
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[WEB PARSE ERROR] {ex.Message}");
                 }
 
                 return new
                 {
-                    isComplete = false,
+                    isComplete = aiResponse.Contains("==PLACEHOLDER_VALUES_START==") &&
+                                 aiResponse.Contains("==PLACEHOLDER_VALUES_END==") &&
+                                 aiResponse.Contains("\"complete\""),
                     assistantText = aiResponse,
-                    fullResponse = result,
+                    fullResponse = parsed,
                     sessionActive = true,
-                    messageCount = _sessions[userId].Messages.Count
+                    messageCount = _sessions[userId].Messages.Count,
+                    webSearchResults
                 };
             }
             catch (Exception ex)
@@ -288,10 +301,36 @@ namespace PitchGenApi.Services
             }
         }
 
-        // ✅ Parse placeholder markers
+        private string ExtractTextFromOutputs(JObject parsed)
+        {
+            var outputs = parsed["output"] as JArray;
+            if (outputs == null) return string.Empty;
+
+            var sb = new StringBuilder();
+
+            foreach (var outItem in outputs)
+            {
+                var contentArray = outItem["content"] as JArray;
+                if (contentArray != null)
+                {
+                    foreach (var c in contentArray)
+                    {
+                        var text = c["text"]?.ToString();
+                        if (!string.IsNullOrWhiteSpace(text))
+                            sb.AppendLine(text.Trim());
+                    }
+                }
+            }
+
+            return sb.ToString().Trim();
+        }
+
+        // Parse placeholder markers
         private Dictionary<string, string> ExtractPlaceholders(string aiResponse)
         {
             var dict = new Dictionary<string, string>();
+            if (string.IsNullOrWhiteSpace(aiResponse)) return dict;
+
             var blockMatch = Regex.Match(aiResponse,
                 "==PLACEHOLDER_VALUES_START==(.*?)==PLACEHOLDER_VALUES_END==",
                 RegexOptions.Singleline);
@@ -306,15 +345,16 @@ namespace PitchGenApi.Services
                 var kv = Regex.Match(line, @"\{([^}]+)\}\s*=\s*(.*)");
                 if (kv.Success)
                 {
-                    dict[kv.Groups[1].Value.Trim()] = kv.Groups[2].Value.Trim();
+                    var key = kv.Groups[1].Value.Trim();
+                    var val = kv.Groups[2].Value.Trim();
+                    dict[key] = val;
                 }
             }
 
             return dict;
         }
 
-        // ✅ Save to DB using injected IServiceScopeFactory
-        // ✅ Save placeholder values, build filled placeholder list and final campaign blueprint
+        // Save to DB using injected IServiceScopeFactory
         private async Task SavePlaceholderValuesToDb(string userId, Dictionary<string, string> newValues)
         {
             var session = _sessions.ContainsKey(userId) ? _sessions[userId] : null;
@@ -337,20 +377,16 @@ namespace PitchGenApi.Services
                 return;
             }
 
-            // 🧠 1️⃣ Merge placeholder values
             var existing = string.IsNullOrEmpty(campaign.PlaceholderValues)
                 ? new Dictionary<string, string>()
-                : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues) ?? new();
+                : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues) ?? new Dictionary<string, string>();
 
             foreach (var kv in newValues)
                 existing[kv.Key] = kv.Value;
 
             campaign.PlaceholderValues = JsonConvert.SerializeObject(existing);
-
-            // 🏗️ 2️⃣ Build "placeholder list with values" (human readable)
             campaign.PlaceholderListWithValue = string.Join("\n", existing.Select(kv => $"{{{kv.Key}}} = {kv.Value}"));
 
-            // 💌 3️⃣ Build filled campaign blueprint
             try
             {
                 string unpopulated = campaign.TemplateDefinition?.MasterBlueprintUnpopulated ?? string.Empty;
@@ -359,11 +395,10 @@ namespace PitchGenApi.Services
                 foreach (var (key, value) in existing)
                 {
                     if (string.IsNullOrWhiteSpace(key)) continue;
-                    // case‑insensitive placeholder replacement
                     filledBlueprint = Regex.Replace(
                         filledBlueprint,
                         $"{{{Regex.Escape(key)}}}",
-                        value ?? "",
+                        value ?? string.Empty,
                         RegexOptions.IgnoreCase);
                 }
 
@@ -374,11 +409,8 @@ namespace PitchGenApi.Services
                 Console.WriteLine($"[Blueprint Build Error] {ex.Message}");
             }
 
-            // 🕒 4️⃣ Save time stamp and persist
             campaign.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
-
-            Console.WriteLine($"💾  Campaign {campaign.Id} updated: {existing.Count} placeholders saved, list + blueprint generated.");
         }
 
         public class CompletionResponse
@@ -389,7 +421,7 @@ namespace PitchGenApi.Services
             public string FinalPrompt { get; set; } = string.Empty;
         }
 
-        // ✅ Generate example output 
+        // Generate example output using Responses API (with web search) - always uses input
         public async Task<string?> GenerateExampleOutputAsync(
             Dictionary<string, string> placeholderValues,
             string masterTemplate,
@@ -398,94 +430,106 @@ namespace PitchGenApi.Services
             if (placeholderValues == null || placeholderValues.Count == 0)
                 return null;
 
-            // 1️⃣  Fill placeholders
-            string filledTemplate = masterTemplate;
+            // 1) Fill placeholders
+            string filledTemplate = masterTemplate ?? string.Empty;
             foreach (var (key, value) in placeholderValues)
-                filledTemplate = filledTemplate.Replace($"{{{key}}}", value ?? "", StringComparison.OrdinalIgnoreCase);
+                filledTemplate = filledTemplate.Replace($"{{{key}}}", value ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
-            // 2️⃣  Build the Responses‑API payload
-            var requestData = new
+            // 2) Build role-prefixed input (same style as SendToGptAsync)
+            var sbInput = new StringBuilder();
+            sbInput.AppendLine("system: You are the example output generator. Produce clean HTML only.");
+            sbInput.AppendLine($"user: {filledTemplate}");
+
+            // 3) Attempt with tools first, then without tools
+            foreach (var useTools in new[] { true, false })
             {
-                model,
-                input = filledTemplate,                   // ✅ "input" replaces "messages"
-                reasoning = new { effort = "minimal" },   // optional, controls reasoning depth
-                text = new { verbosity = "low" }          // optional, controls output length
-            };
+                var requestData = new Dictionary<string, object>
+        {
+            { "model", model },
+            { "input", sbInput.ToString() },
+            { "temperature", 0.3 },
+            { "max_output_tokens", 15000 }
+        };
 
-            var json = JsonConvert.SerializeObject(requestData);
-            var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-            try
-            {
-                // ✅ NEW ENDPOINT
-                var response = await _httpClient.PostAsync("https://api.openai.com/v1/responses", content);
-                var body = await response.Content.ReadAsStringAsync();
-
-                if (!response.IsSuccessStatusCode)
+                if (useTools)
                 {
-                    Console.WriteLine($"[GenerateExampleOutputAsync] API Error {response.StatusCode}: {body}");
+                    requestData["tools"] = new object[] { new { type = "web_search_preview" } };
+                    requestData["text"] = new { verbosity = "low" };
+                    Console.WriteLine($"[GenerateExampleOutputAsync] Attempt WITH tools for model={model}");
+                }
+                else
+                {
+                    Console.WriteLine($"[GenerateExampleOutputAsync] Attempt WITHOUT tools for model={model}");
+                }
+
+                var json = JsonConvert.SerializeObject(requestData);
+                var httpContent = new StringContent(json, Encoding.UTF8, "application/json");
+
+                try
+                {
+                    var response = await _httpClient.PostAsync("https://api.openai.com/v1/responses", httpContent);
+                    var raw = await response.Content.ReadAsStringAsync();
+
+                    // Log the raw response for debugging (important for model-specific quirks)
+                    Console.WriteLine($"[GenerateExampleOutputAsync] RAW ({model}, tools={useTools}): {raw}");
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        // If tools were used and API complains about unsupported parameter, retry without tools
+                        if (useTools && raw.IndexOf("Unsupported parameter", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            Console.WriteLine($"[GenerateExampleOutputAsync] Tools unsupported by model={model}; retrying without tools.");
+                            continue; // try next iteration without tools
+                        }
+
+                        Console.WriteLine($"[GenerateExampleOutputAsync] API Error {response.StatusCode} (tools={useTools}). Raw: {raw}");
+                        if (!useTools) return null;
+                        continue;
+                    }
+
+                    // Parse success
+                    var parsed = JsonConvert.DeserializeObject<JObject>(raw)!;
+                    string resultText = parsed["output_text"]?.ToString() ?? string.Empty;
+
+                    if (string.IsNullOrWhiteSpace(resultText))
+                        resultText = ExtractTextFromOutputs(parsed);
+
+                    // If we got content, return it
+                    if (!string.IsNullOrWhiteSpace(resultText))
+                    {
+                        Console.WriteLine($"[GenerateExampleOutputAsync] Received output (tools={useTools})");
+                        return resultText.Trim();
+                    }
+
+                    // If 200 OK but empty and we used tools — retry without tools
+                    if (useTools)
+                    {
+                        Console.WriteLine($"[GenerateExampleOutputAsync] Empty output with tools for model={model}. Retrying without tools.");
+                        continue;
+                    }
+
+                    // No tools and still empty => give up
+                    Console.WriteLine($"[GenerateExampleOutputAsync] Empty output without tools for model={model}. Giving up.");
                     return null;
                 }
-
-                dynamic parsed = JsonConvert.DeserializeObject(body);
-
-                // 1️⃣ Prefer the direct field
-                string html = parsed?.output_text?.ToString();
-
-                // 2️⃣ Fallback: extract from the new output array if null
-                if (string.IsNullOrWhiteSpace(html))
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        // output → list → message → content → text
-                        html = parsed?.output?[1]?.content?[0]?.text?.ToString();
-                    }
-                    catch { /* ignored */ }
+                    Console.WriteLine($"[GenerateExampleOutputAsync] Exception (tools={useTools}): {ex.Message}");
+                    if (useTools) continue;
+                    return null;
                 }
+            }
 
-                return string.IsNullOrWhiteSpace(html) ? null : html.Trim();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[GenerateExampleOutputAsync] Exception: {ex.Message}");
-                return null;
-            }
+            return null;
         }
-        public class WebSearchService
+
+
+        // Simple model detection helper (if you need it elsewhere)
+        private bool IsGpt5OrNewerModel(string model)
         {
-            public class WebSearchResponse
-            {
-                [JsonProperty("output")]
-                public List<OutputItem> Output { get; set; } = new();
-            }
-
-            public class OutputItem
-            {
-                [JsonProperty("content")] public List<OutputContent> Content { get; set; } = new();
-                [JsonProperty("type")] public string Type { get; set; } = string.Empty;
-                [JsonProperty("status")] public string Status { get; set; } = string.Empty;
-                [JsonProperty("action")] public SearchAction Action { get; set; } = new();
-            }
-
-            public class OutputContent
-            {
-                [JsonProperty("type")] public string Type { get; set; } = string.Empty;
-                [JsonProperty("text")] public string Text { get; set; } = string.Empty;
-            }
-
-            public class SearchAction
-            {
-                [JsonProperty("query")] public string Query { get; set; } = string.Empty;
-                [JsonProperty("domains")] public List<string> Domains { get; set; } = new();
-                [JsonProperty("sources")] public List<WebSource> Sources { get; set; } = new();
-            }
-
-            public class WebSource
-            {
-                [JsonProperty("url")] public string Url { get; set; } = string.Empty;
-                [JsonProperty("title")] public string Title { get; set; } = string.Empty;
-                [JsonProperty("snippet")] public string Snippet { get; set; } = string.Empty;
-            }
+            if (string.IsNullOrWhiteSpace(model)) return false;
+            return model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase) ||
+                   model.StartsWith("gpt-5.1", StringComparison.OrdinalIgnoreCase);
         }
     }
 }
