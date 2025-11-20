@@ -8,6 +8,8 @@ using System.Linq;
 using System.Threading.Tasks;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Model;
+using System.Net.Mail;
+using System.Net;
 
 
 namespace PitchGenApi.Controllers
@@ -745,5 +747,101 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpPost("send-file-download-mail")]
+        public async Task<IActionResult> SendFileDownloadMail([FromQuery] int clientId, [FromQuery] string fileName)
+        {
+            ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
+
+            if (clientId <= 0)
+                return BadRequest("ClientId is required.");
+
+            if (string.IsNullOrWhiteSpace(fileName))
+                return BadRequest("FileName is required.");
+
+            // Get User from DB
+            var user = await _context.tbl_clientdetails
+                .FirstOrDefaultAsync(x => x.ClientID == clientId);
+
+            if (user == null)
+                return NotFound("User not found");
+
+            // Extract system details
+            string ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Unknown";
+
+            string userAgent = Request.Headers["User-Agent"].ToString();
+            var browserInfo = ParseBrowserInfo(userAgent);
+
+            string macAddress = "Not Available";
+
+            // Prepare email body
+            string htmlBody = $@"
+                Hello {user.FirstName}<br><br>
+                This is to confirm that you have downloaded the following file from Pitch Kraft (https://app.pitchkraft.ai/) from Pitchkraft:
+                <ul>
+                    <li>File name : {fileName}</li>
+                    <li>Date downloaded : {DateTime.UtcNow:yyyy-MM-dd}</li>
+                    <li>Time downloaded : {DateTime.UtcNow:HH:mm:ss}</li>
+                </ul>
+                The file was downloaded on the following machine:
+                <ul>
+                    <li>IP address: {ipAddress}</li>
+                    <li>MAC address: {macAddress}</li>
+                </ul>
+                The browser used to download the file was:
+                <ul>
+                    <li>Browser: {browserInfo.Name}</li>
+                    <li>Browser version: {browserInfo.Version}</li>
+                </ul>
+                <br>
+                If you have any doubt that this was you that downloaded the file to the above then please contact us immediately using the contact methods on https://app.pitchkraft.ai//contact-us so that we can investigate.<br>
+                ";
+
+            // SEND EMAIL USING SMTP
+            using (var smtp = new SmtpClient("213.171.222.69", 587))
+            {
+                smtp.EnableSsl = true;
+                smtp.Credentials = new NetworkCredential("pitchcraft@dataji.co", "z7d&73W2f");
+
+                var mail = new MailMessage();
+                mail.From = new MailAddress("pitchcraft@dataji.co", "Pitchkraft");
+                mail.To.Add(user.Email);
+                mail.CC.Add("info@dataji.co");   // Add CC
+
+                mail.Subject = "Pitchkraft - file downloaded successfully";
+                mail.Body = htmlBody;
+                mail.IsBodyHtml = true;
+
+                await smtp.SendMailAsync(mail);
+            }
+
+            return Ok(new
+            {
+                Message = "Email sent successfully",
+                SentTo = user.Email
+            });
+        }
+        private (string Name, string Version) ParseBrowserInfo(string userAgent)
+        {
+            try
+            {
+                var ua = userAgent.ToLower();
+
+                if (ua.Contains("edg"))
+                    return ("Edge", ua.Split("edg/")[1].Split(" ")[0]);
+
+                if (ua.Contains("chrome") && !ua.Contains("edg"))
+                    return ("Chrome", ua.Split("chrome/")[1].Split(" ")[0]);
+
+                if (ua.Contains("firefox"))
+                    return ("Firefox", ua.Split("firefox/")[1]);
+
+                if (ua.Contains("safari") && !ua.Contains("chrome"))
+                    return ("Safari", ua.Split("version/")[1].Split(" ")[0]);
+            }
+            catch { }
+
+            return ("Unknown", "Unknown");
+        }
     }
+
 }
