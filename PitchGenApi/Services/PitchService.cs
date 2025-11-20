@@ -4,10 +4,10 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model;
-using static PitchGenApi.Model.ChatGptResponse;
 
 namespace PitchGenApi.Services
 {
@@ -15,21 +15,21 @@ namespace PitchGenApi.Services
     {
         private readonly HttpClient _httpClient;
         private readonly AppDbContext _context;
-        private readonly string _apiKey; // ✅ Declare the field
+        private readonly string _apiKey;
 
-
-
-        public PitchService(HttpClient httpClient, AppDbContext context, IOptions<OpenAISettings> openAIOptions)
+        public PitchService(
+            HttpClient httpClient,
+            AppDbContext context,
+            IOptions<OpenAISettings> openAIOptions)
         {
             _httpClient = httpClient;
             _context = context;
             _apiKey = openAIOptions.Value.ApiKey;
 
-            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}"); // ✅ Set the header with the key
+            _httpClient.DefaultRequestHeaders.Clear();
+            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
+            _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
         }
-
-
-
 
         public async Task<PitchResult> GeneratePitchAsync(EnquiryRequest request)
         {
@@ -39,77 +39,71 @@ namespace PitchGenApi.Services
             if (string.IsNullOrWhiteSpace(request.ModelName))
                 return new PitchResult { Content = "Model name is required.", IsSuccess = false };
 
-            string systemContent = request.ScrappedData.Length > 1000 ? request.ScrappedData.Substring(0, 999) : request.ScrappedData;
+            // Trim scrapped data
+            string systemContent =
+                request.ScrappedData.Length > 1000 ? request.ScrappedData[..999] : request.ScrappedData;
 
-            var rate = await _context.ModelRates
-                             .FirstOrDefaultAsync(m => m.ModelName == request.ModelName);
+            // Get model pricing
+            var rate = await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == request.ModelName);
             if (rate == null)
             {
-                // Default to "gpt-4o-mini" if the model is not found
                 rate = await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == "gpt-5");
-
                 if (rate == null)
-                {
-                    
-                    return new PitchResult { Content = "Model not found, and fallback 'gpt-5' is missing.", IsSuccess = false };
-                }
+                    return new PitchResult { Content = "Invalid model and fallback model not found.", IsSuccess = false };
 
                 request.ModelName = "gpt-5";
-
             }
 
-            var requestData = new
+            // Build role-tagged input for Responses API
+            var sbInput = new StringBuilder();
+            sbInput.AppendLine($"system: {systemContent}");
+            sbInput.AppendLine($"user: {request.Prompt}");
+
+            var requestData = new Dictionary<string, object>
             {
-                //model = "gpt-4o-mini",
-                model = request.ModelName,
-                messages = new[]
-                {
-            new { role = "system", content = systemContent },
-            new { role = "user", content = request.Prompt }
-        },
-                temperature = rate.Temperature,
-                max_completion_tokens = rate.MaxTokens,
-                top_p = 1,
-                frequency_penalty = 0,
-                presence_penalty = 0
+                { "model", request.ModelName },       // Supports GPT-4 & GPT-5
+                { "input", sbInput.ToString() },
+                { "temperature", rate.Temperature },
+                { "max_output_tokens", rate.MaxTokens },
+                { "tools", new object[] { new { type = "web_search_preview" } } }
             };
 
             var requestBody = JsonConvert.SerializeObject(requestData);
             var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
 
-            
-
             try
             {
-
-                var response = await _httpClient.PostAsync("https://api.openai.com/v1/chat/completions", content);
-                var jsonResponse = await response.Content.ReadAsStringAsync();
+                var response = await _httpClient.PostAsync("https://api.openai.com/v1/responses", content);
+                var json = await response.Content.ReadAsStringAsync();
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    var errorResponse = await response.Content.ReadAsStringAsync();
-                    return new PitchResult { Content = $"OpenAI API Error: {errorResponse}", IsSuccess = false };
+                    return new PitchResult
+                    {
+                        Content = $"OpenAI API Error: {json}",
+                        IsSuccess = false
+                    };
                 }
 
-                var result = JsonConvert.DeserializeObject<ChatCompletionResponse>(jsonResponse);
+                var parsed = JsonConvert.DeserializeObject<JObject>(json)!;
 
-                if (result?.Choices == null || result.Choices.Length == 0)
-                {
-                    return new PitchResult { Content = "No valid response from OpenAI.", IsSuccess = true };
-                }
+                // Extract assistant response
+                string output = parsed["output_text"]?.ToString() ?? "";
+                if (string.IsNullOrWhiteSpace(output))
+                    output = ExtractText(parsed);
 
-                var promptTokens = result.Usage.prompt_tokens;
-                var completionTokens = result.Usage.completion_tokens;
-                var totalTokens = result.Usage.total_tokens;
+                // Extract usage cost
+                int promptTokens = parsed["usage"]?["input_tokens"]?.Value<int>() ?? 0;
+                int completionTokens = parsed["usage"]?["output_tokens"]?.Value<int>() ?? 0;
+                int totalTokens = promptTokens + completionTokens;
 
-                // Use the input and output prices from the database
                 decimal inputCost = rate.InputPrice;
                 decimal outputCost = rate.OutputPrice;
                 decimal currentCost = (promptTokens * inputCost / 1000) + (completionTokens * outputCost / 1000);
 
                 return new PitchResult
                 {
-                    Content = result.Choices[0].Message.Content,
+                    Content = output,
                     PromptTokens = promptTokens,
                     CompletionTokens = completionTokens,
                     TotalTokens = totalTokens,
@@ -117,15 +111,36 @@ namespace PitchGenApi.Services
                     IsSuccess = true
                 };
             }
-            catch (HttpRequestException ex)
+            catch (Exception ex)
             {
-                return new PitchResult { Content = $"Request to OpenAI failed: {ex.Message}", IsSuccess = false };
+                return new PitchResult
+                {
+                    Content = $"Request failed: {ex.Message}",
+                    IsSuccess = false
+                };
             }
         }
 
-       
+        private string ExtractText(JObject parsed)
+        {
+            var outputs = parsed["output"] as JArray;
+            if (outputs == null) return "";
 
+            var sb = new StringBuilder();
+            foreach (var item in outputs)
+            {
+                var contentArray = item["content"] as JArray;
+                if (contentArray == null) continue;
 
+                foreach (var c in contentArray)
+                {
+                    string? text = c["text"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                        sb.AppendLine(text.Trim());
+                }
+            }
 
+            return sb.ToString().Trim();
+        }
     }
 }

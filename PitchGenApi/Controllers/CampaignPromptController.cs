@@ -354,6 +354,8 @@ namespace PitchGenApi.Controllers
                     SelectedModel = template.SelectedModel,
                     CreatedAt = template.CreatedAt,
                     UpdatedAt = template.UpdatedAt,
+                    SearchURLCount = template.SearchURLCount,
+                    SubjectInstructions = template.SubjectInstructions,
                     Conversation = template.Conversation == null ? null : new ConversationData
                     {
                         Messages = messages ?? new List<ConversationMessage>(),
