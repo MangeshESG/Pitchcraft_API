@@ -338,17 +338,20 @@ namespace PitchGenApi.Services
             if (!blockMatch.Success) return dict;
 
             var block = blockMatch.Groups[1].Value;
-            var lines = block.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
-            foreach (var line in lines)
+            // Matches:
+            // {placeholder} = any text INCLUDING newline until next {xxx} OR END
+            var regex = new Regex(@"\{([^}]+)\}\s*=\s*((?s).*?)(?=\n\{[^}]+\}\s*=|$)", RegexOptions.Singleline);
+
+            foreach (Match m in regex.Matches(block))
             {
-                var kv = Regex.Match(line, @"\{([^}]+)\}\s*=\s*(.*)");
-                if (kv.Success)
-                {
-                    var key = kv.Groups[1].Value.Trim();
-                    var val = kv.Groups[2].Value.Trim();
-                    dict[key] = val;
-                }
+                var key = m.Groups[1].Value.Trim();
+                var val = m.Groups[2].Value.Trim();
+
+                val = val.Replace("\\n", "\n"); // convert escaped \n to real newlines
+
+                dict[key] = val;
+
             }
 
             return dict;
