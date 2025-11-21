@@ -378,7 +378,11 @@ namespace PitchGenApi.Repositories
         public async Task<object?> GetActivePlanStatusAndPlaneAsync(int clientId)
         {
             var record = await _context.UserCredits
-                .Where(u => u.ClientId == clientId && u.Status == "active")
+                .Where(u =>
+                    u.ClientId == clientId &&
+                    u.Status == "active" &&
+                    u.Plane != "Custom Credit"     // ← Custom credit ignore
+                )
                 .OrderByDescending(u => u.CreatedAt)
                 .Select(u => new
                 {
@@ -390,6 +394,7 @@ namespace PitchGenApi.Repositories
 
             return record;
         }
+
 
         public async Task HandleInvoicePaidAsync(Event stripeEvent)
         {

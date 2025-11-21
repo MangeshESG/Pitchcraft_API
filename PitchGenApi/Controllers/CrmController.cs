@@ -89,6 +89,72 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
+        [HttpPost("add-single-contact")]
+        public async Task<IActionResult> AddSingleContact([FromQuery] int DataFileId, ContactDto request)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                // Check DataFile exist karti hai ya nahi
+                var dataFile = await _context.data_files
+                    .FirstOrDefaultAsync(df => df.id == DataFileId);
+
+                if (dataFile == null)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "DataFile not found"
+                    });
+                }
+
+                // Create contact from DTO
+                var contact = new Contact
+                {
+                    DataFileId = DataFileId,
+                    full_name = request.fullName,
+                    email = request.email,
+                    website = request.website,
+                    company_name = request.companyName,
+                    job_title = request.jobTitle,
+                    linkedin_url = request.linkedInUrl,
+                    country_or_address = request.countryOrAddress,
+                    email_subject = request.emailSubject,
+                    email_body = request.emailBody,
+                    CompanyTelephone = request.CompanyTelephone,
+                    CompanyEmployeeCount = request.CompanyEmployeeCount,
+                    CompanyIndustry = request.CompanyIndustry,
+                    CompanyLinkedInURL = request.CompanyLinkedInURL,
+                    CompanyEventLink = request.CompanyEventLink,
+                    created_at = DateTime.UtcNow,
+                    updated_at = null
+                };
+
+                _context.contacts.Add(contact);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Contact added successfully",
+                    dataFileId = DataFileId,
+                    contactId = contact.id
+                });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Failed to add contact",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
 
         [HttpGet]
         public async Task<IActionResult> GetContacts([FromQuery] int? dataFileId)
