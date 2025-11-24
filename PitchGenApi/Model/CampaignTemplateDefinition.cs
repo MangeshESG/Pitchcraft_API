@@ -33,6 +33,8 @@ namespace PitchGenApi.Models
         public bool IsActive { get; set; } = true;
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
+        public string SelectedModel { get; set; }
+
 
         // Navigation property
         public ICollection<CampaignTemplate> CampaignTemplates { get; set; } = new List<CampaignTemplate>();

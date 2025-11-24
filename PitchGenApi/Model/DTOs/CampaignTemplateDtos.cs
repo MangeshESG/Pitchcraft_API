@@ -15,6 +15,9 @@ namespace PitchGenApi.Model.DTOs
         public string? CreatedBy { get; set; }
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
+        public string SelectedModel { get; set; }
+
+
     }
 
     // DTO for updating template definition
@@ -29,6 +32,8 @@ namespace PitchGenApi.Model.DTOs
         public string? MasterBlueprintUnpopulated { get; set; }
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
+        public string SelectedModel { get; set; }
+
 
     }
 
@@ -48,6 +53,7 @@ namespace PitchGenApi.Model.DTOs
 
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
+
     }
 
     // DTO for updating client's campaign
@@ -60,6 +66,7 @@ namespace PitchGenApi.Model.DTOs
         public string? SelectedModel { get; set; }
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
+
     }
 
     // Response DTO with full details

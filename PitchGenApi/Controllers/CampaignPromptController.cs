@@ -53,7 +53,10 @@ namespace PitchGenApi.Controllers
                     CreatedAt = DateTime.UtcNow,
                     IsActive = true,
                     SearchURLCount = request.SearchURLCount,
-                    SubjectInstructions = request.SubjectInstructions
+                    SubjectInstructions = request.SubjectInstructions,
+                    SelectedModel = request.SelectedModel   // ⭐ ADD THIS
+
+
                 };
 
                 _dbContext.CampaignTemplateDefinitions.Add(templateDef);
@@ -145,6 +148,9 @@ namespace PitchGenApi.Controllers
                 definition.UpdatedAt = DateTime.UtcNow;
                 definition.SearchURLCount = request.SearchURLCount;
                 definition.SubjectInstructions = request.SubjectInstructions;
+                definition.SelectedModel = request.SelectedModel;
+
+
 
 
                 await _dbContext.SaveChangesAsync();
@@ -554,7 +560,7 @@ namespace PitchGenApi.Controllers
                 TemplateDefinitionId = req.TemplateDefinitionId,
                 TemplateName = req.TemplateName,
                 PlaceholderValues = "{}",
-                SelectedModel = req.Model ?? "gpt-4o",
+                SelectedModel = templateDef.SelectedModel,
                 CreatedAt = DateTime.UtcNow,
                 SearchURLCount = templateDef.SearchURLCount,
                 SubjectInstructions = templateDef.SubjectInstructions
