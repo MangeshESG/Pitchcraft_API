@@ -349,6 +349,55 @@ public class OpenTrackingController : ControllerBase
             return NotFound("No data found for the given segmentId and clientId.");
     }
 
+    [HttpGet("missing-log-contacts")]
+    public async Task<IActionResult> GetMissingLogContacts(
+    [FromQuery] DateTime startDate,
+    [FromQuery] DateTime endDate,
+    [FromQuery] int dataFileId)
+    {
+        if (dataFileId <= 0)
+            return BadRequest("dataFileId is required");
+
+        // Force end date to full day 
+        endDate = endDate.Date.AddDays(1).AddTicks(-1);
+
+        // Get all contacts of data file
+        var contacts = await _context.contacts
+            .Where(c => c.DataFileId == dataFileId)
+            .ToListAsync();
+
+        // Get logs of this data file within date range
+        var loggedContactIds = await _context.EmailLogs
+            .Where(l => l.DataFileId == dataFileId
+                    && l.SentAt >= startDate
+                    && l.SentAt <= endDate)
+            .Select(l => l.ContactId)
+            .Distinct()
+            .ToListAsync();
+
+        // Filter missing contacts
+        var missingContacts = contacts
+            .Where(c => !loggedContactIds.Contains(c.id))
+            .Select(c => new
+            {
+                c.full_name,
+                c.email,
+                c.company_name,
+                c.job_title,
+                c.country_or_address,
+                c.email_subject,
+                c.linkedin_url,
+                c.website
+            })
+            .ToList();
+
+        return Ok(new
+        {
+            missingContacts = missingContacts
+        });
+    }
+
+
     private string GetBrowserName(string userAgent)
     {
         userAgent = userAgent.ToLower();
