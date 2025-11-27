@@ -397,6 +397,50 @@ public class OpenTrackingController : ControllerBase
         });
     }
 
+    [HttpPost("delete-tracking-contact")]
+    public async Task<IActionResult> DeleteContact([FromQuery] int contactId)
+    {
+        try
+        {
+            var contact = await _context.contacts
+                .FirstOrDefaultAsync(c => c.id == contactId);
+
+            if (contact == null)
+            {
+                return NotFound(new { message = "Contact not found." });
+            }
+
+            // Get all tracking logs for this contact
+            var trackLogs = await _context.EmailTrackingLogs
+                .Where(t => t.ContactId == contactId)
+                .ToListAsync();
+
+            // Get all email logs for this contact
+            var emailLogs = await _context.EmailLogs
+                .Where(e => e.ContactId == contactId)
+                .ToListAsync();
+
+            // Remove tracking logs
+            if (trackLogs.Any())
+                _context.EmailTrackingLogs.RemoveRange(trackLogs);
+
+            // Remove email logs
+            if (emailLogs.Any())
+                _context.EmailLogs.RemoveRange(emailLogs);
+
+            // Remove the main contact
+            _context.contacts.Remove(contact);
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Contact and related logs deleted successfully." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
+
 
     private string GetBrowserName(string userAgent)
     {
