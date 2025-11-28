@@ -16,7 +16,7 @@ public static class EmailTrackingHelper
         string B64Int(int? num) =>
             Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes((num ?? 0).ToString()));
 
-        return $@"<img src=""https://localhost:7216/track/open?
+        return $@"<img src=""https://app.pitchkraft.ai/track/open?
 email={B64(email)}
 &clientId={B64Int(clientId)}
 &SegmentId={B64Int(segmentId)}
@@ -72,7 +72,7 @@ width=""1"" height=""1"" style=""display:none;max-height:0;overflow:hidden;"" al
             var encodedDataFileId = B64Int(DataFileId);
             var encodedSegmentId = B64Int(SegmentId);
 
-            var trackingUrl = $"https://localhost:7216/track/click?trackingId={encodedTrackingId}&email={encodedEmail}&url={encodedUrl}&clientId={encodedclientId}&contactId={encodedcontactId}&DataFileId={encodedDataFileId}&SegmentId={encodedSegmentId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}";
+            var trackingUrl = $"https://app.pitchkraft.ai/track/click?trackingId={encodedTrackingId}&email={encodedEmail}&url={encodedUrl}&clientId={encodedclientId}&contactId={encodedcontactId}&DataFileId={encodedDataFileId}&SegmentId={encodedSegmentId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}";
 
             link.SetAttributeValue("href", trackingUrl);
         }
