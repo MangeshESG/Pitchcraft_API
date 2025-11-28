@@ -210,7 +210,7 @@ namespace PitchGenApi.Controllers
                     .AnyAsync(t => t.Id == request.TemplateDefinitionId && t.IsActive);
 
                 if (!definitionExists)
-                    return  BadRequest(new { Message = "Template definition not found or inactive" });
+                    return BadRequest(new { Message = "Template definition not found or inactive" });
 
                 // Create campaign template  ← UPDATED
                 var campaignTemplate = new CampaignTemplate
@@ -362,12 +362,7 @@ namespace PitchGenApi.Controllers
                     UpdatedAt = template.UpdatedAt,
                     SearchURLCount = template.SearchURLCount,
                     SubjectInstructions = template.SubjectInstructions,
-                    Conversation = template.Conversation == null ? null : new ConversationData
-                    {
-                        Messages = messages ?? new List<ConversationMessage>(),
-                        StartedAt = template.Conversation.StartedAt,
-                        CompletedAt = template.Conversation.CompletedAt
-                    }
+                    Conversation = null
                 };
 
                 return Ok(result);
@@ -542,18 +537,23 @@ namespace PitchGenApi.Controllers
         {
             if (string.IsNullOrWhiteSpace(req.ClientId))
                 return BadRequest(new { Message = "ClientId required" });
+
             if (req.TemplateDefinitionId <= 0)
                 return BadRequest(new { Message = "Valid TemplateDefinitionId required" });
+
             if (string.IsNullOrWhiteSpace(req.TemplateName))
                 return BadRequest(new { Message = "Template name required" });
 
-            // ✅ Load template definition
+            // Load template definition
             var templateDef = await _dbContext.CampaignTemplateDefinitions
                 .FirstOrDefaultAsync(t => t.Id == req.TemplateDefinitionId);
 
             if (templateDef == null)
                 return BadRequest(new { Message = "Template definition not found" });
 
+            // =====================================================
+            // ⭐ Create new campaign instance
+            // =====================================================
             var campaign = new CampaignTemplate
             {
                 ClientId = req.ClientId,
@@ -569,7 +569,26 @@ namespace PitchGenApi.Controllers
             _dbContext.CampaignTemplates.Add(campaign);
             await _dbContext.SaveChangesAsync();
 
-            // ✅ Store session in memory with loaded template definition data
+            // =====================================================
+            // ⭐ Create initial conversation row (Mode = NEW)
+            // =====================================================
+            var conversation = new CampaignConversation
+            {
+                ClientId = req.ClientId,
+                CampaignTemplateId = campaign.Id,
+                StartedAt = DateTime.UtcNow,
+
+                // NEW FIELDS
+                Mode = "new",
+                EditNumber = 0
+            };
+
+            _dbContext.CampaignConversations.Add(conversation);
+            await _dbContext.SaveChangesAsync();
+
+            // =====================================================
+            // ⭐ Create in-memory session for live chat
+            // =====================================================
             CampaignPromptService._sessions[req.ClientId] = new CampaignPromptService.CampaignSession
             {
                 UserId = req.ClientId,
@@ -577,6 +596,9 @@ namespace PitchGenApi.Controllers
                 Messages = new()
             };
 
+            // =====================================================
+            // Return response
+            // =====================================================
             return Ok(new
             {
                 Success = true,
@@ -587,6 +609,23 @@ namespace PitchGenApi.Controllers
             });
         }
         #endregion
+
+
+
+        [HttpPost("edit/start")]
+        public async Task<IActionResult> StartEditConversation([FromBody] StartEditConversationRequest req)
+        {
+            var result = await _campaignService.StartEditModeAsync(req);
+            return Ok(new { response = result });
+        }
+
+        [HttpPost("edit/chat")]
+        public async Task<IActionResult> EditChat([FromBody] EditChatRequest req)
+        {
+            var result = await _campaignService.ContinueEditModeAsync(req);
+            return Ok(new { response = result });
+        }
+
 
     }
 }

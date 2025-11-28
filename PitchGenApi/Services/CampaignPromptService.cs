@@ -12,6 +12,8 @@ using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using PitchGenApi.Model.DTOs;
+using PitchGenApi.Models;
 
 namespace PitchGenApi.Services
 {
@@ -281,6 +283,7 @@ namespace PitchGenApi.Services
                 {
                     Console.WriteLine($"[WEB PARSE ERROR] {ex.Message}");
                 }
+                await SaveConversationToDb(userId);
 
                 return new
                 {
@@ -294,8 +297,11 @@ namespace PitchGenApi.Services
                     webSearchResults
                 };
             }
+
             catch (Exception ex)
             {
+                await SaveConversationToDb(userId);
+
                 Console.WriteLine($"[SEND_TO_GPT ERROR] {ex.Message}");
                 return new { assistantText = $"⚠️ GPT request failed - {ex.Message}", error = true };
             }
@@ -527,12 +533,214 @@ namespace PitchGenApi.Services
         }
 
 
-        // Simple model detection helper (if you need it elsewhere)
-        private bool IsGpt5OrNewerModel(string model)
+        private async Task SaveConversationToDb(string userId)
         {
-            if (string.IsNullOrWhiteSpace(model)) return false;
-            return model.StartsWith("gpt-5", StringComparison.OrdinalIgnoreCase) ||
-                   model.StartsWith("gpt-5.1", StringComparison.OrdinalIgnoreCase);
+            if (!_sessions.ContainsKey(userId)) return;
+
+            var session = _sessions[userId];
+            if (session.CampaignTemplateId == 0) return;
+
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            // Load existing conversation row
+            var existing = await db.CampaignConversations
+                .FirstOrDefaultAsync(x => x.CampaignTemplateId == session.CampaignTemplateId);
+
+            // Convert NEW messages coming from in-memory session
+            var newMessages = session.Messages.Select(m => new
+            {
+                Role = m.ContainsKey("role") ? m["role"] : "assistant",
+                Content = m.ContainsKey("content") ? m["content"] : string.Empty,
+                Timestamp = DateTime.UtcNow
+            }).ToList();
+
+            // If no conversation exists, create a new conversation row
+            if (existing == null)
+            {
+                var json = JsonConvert.SerializeObject(newMessages);
+
+                existing = new CampaignConversation
+                {
+                    ClientId = session.UserId,
+                    CampaignTemplateId = session.CampaignTemplateId,
+                    ConversationData = json,
+                    Model = "gpt-5",
+                    StartedAt = DateTime.UtcNow,
+                    Mode = "new",
+                    EditNumber = 0,
+                    IsComplete = false
+                };
+
+                db.CampaignConversations.Add(existing);
+            }
+            else
+            {
+                // APPEND MODE — MERGE OLD + NEW
+                List<object> oldMessages = new();
+
+                if (!string.IsNullOrWhiteSpace(existing.ConversationData))
+                {
+                    try
+                    {
+                        oldMessages = JsonConvert.DeserializeObject<List<object>>(existing.ConversationData)
+                                      ?? new List<object>();
+                    }
+                    catch
+                    {
+                        oldMessages = new List<object>();
+                    }
+                }
+
+                // Combine old + new
+                var combined = oldMessages.Concat(newMessages).ToList();
+
+                // Save back
+                existing.ConversationData = JsonConvert.SerializeObject(combined);
+                existing.CompletedAt = DateTime.UtcNow;
+            }
+
+            await db.SaveChangesAsync();
         }
+
+
+        public async Task<object> StartEditModeAsync(StartEditConversationRequest req)
+        {
+            if (string.IsNullOrWhiteSpace(req.UserId))
+                return new { assistantText = "UserId is required", error = true };
+
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            // Load campaign + definition + conversation
+            var campaign = await db.CampaignTemplates
+                .Include(c => c.TemplateDefinition)
+                .Include(c => c.Conversation)
+                .FirstOrDefaultAsync(c => c.Id == req.CampaignTemplateId);
+
+            if (campaign == null)
+                return new { assistantText = "Campaign not found", error = true };
+
+            // Load placeholder values
+            var placeholders = string.IsNullOrEmpty(campaign.PlaceholderValues)
+                ? new Dictionary<string, string>()
+                : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues)
+                  ?? new Dictionary<string, string>();
+
+            // Load previous conversation (NOT SENT TO GPT anymore)
+            var oldMsgs = string.IsNullOrWhiteSpace(campaign.Conversation?.ConversationData)
+                ? new List<ConversationMessage>()
+                : JsonConvert.DeserializeObject<List<ConversationMessage>>(campaign.Conversation.ConversationData)
+                  ?? new List<ConversationMessage>();
+
+            // ========================================================
+            // ⭐ STEP 3 — Handle Conversation Mode + Increment EditNumber
+            // ========================================================
+            CampaignConversation? conversation = campaign.Conversation;
+
+            if (conversation == null)
+            {
+                // First-ever conversation row
+                conversation = new CampaignConversation
+                {
+                    ClientId = req.UserId,
+                    CampaignTemplateId = req.CampaignTemplateId,
+                    StartedAt = DateTime.UtcNow,
+                    Mode = "edit",
+                    EditNumber = 1
+                };
+                db.CampaignConversations.Add(conversation);
+            }
+            else
+            {
+                // New edit round
+                conversation.Mode = "edit";
+                conversation.EditNumber += 1;
+                conversation.StartedAt = DateTime.UtcNow;
+            }
+
+            await db.SaveChangesAsync();
+
+            // ========================================================
+            // Create new session memory for edit mode
+            // ========================================================
+            _sessions[req.UserId] = new CampaignSession
+            {
+                UserId = req.UserId,
+                CampaignTemplateId = req.CampaignTemplateId,
+                Messages = new List<Dictionary<string, string>>()
+            };
+
+            // ========================================================
+            // Build system prompt for edit (NO past conversation)
+            // ========================================================
+            var sys = new StringBuilder();
+            sys.AppendLine(campaign.TemplateDefinition.AIInstructionsForEdit);
+            sys.AppendLine("\nHere are the existing placeholder values:");
+
+            foreach (var p in placeholders)
+                sys.AppendLine($"{{{p.Key}}} = {p.Value}");
+
+            // ❌ Removed: Injecting old conversation (we do NOT want this)
+            // foreach (var m in oldMsgs) { ... }  ← DELETED
+
+            // Push system message
+            _sessions[req.UserId].Messages.Add(new Dictionary<string, string>
+    {
+        { "role", "system" },
+        { "content", sys.ToString() }
+    });
+
+            // Tell AI which placeholder we're editing
+            _sessions[req.UserId].Messages.Add(new Dictionary<string, string>
+    {
+        { "role", "user" },
+        { "content", $"I want to edit the placeholder: {req.Placeholder}.\nCurrent value: {req.CurrentValue}" }
+    });
+
+            // ========================================================
+            // Call GPT
+            // ========================================================
+            return await SendToGptAsync(_sessions[req.UserId].Messages, req.Model ?? "gpt-5", req.UserId);
+        }
+
+
+        public async Task<object> ContinueEditModeAsync(EditChatRequest req)
+        {
+            if (!_sessions.ContainsKey(req.UserId))
+                return new { assistantText = "No active edit session. Call /edit/start first.", error = true };
+
+            if (string.IsNullOrWhiteSpace(req.Message))
+                return new { assistantText = "Message is required", error = true };
+
+            var session = _sessions[req.UserId];
+
+            // If edit flow already completed, do NOT continue the conversation
+            var lastMessage = session.Messages.LastOrDefault();
+            if (lastMessage != null &&
+                lastMessage.ContainsKey("content") &&
+                lastMessage["content"].Contains("==PLACEHOLDER_VALUES_START==") &&
+                lastMessage["content"].Contains("\"complete\""))
+            {
+                return new
+                {
+                    assistantText = "This edit session is already completed. Start a new edit to modify another placeholder.",
+                    isComplete = true,
+                    error = false
+                };
+            }
+
+            // Push user message into session
+            session.Messages.Add(new Dictionary<string, string>
+    {
+        { "role", "user" },
+        { "content", req.Message }
+    });
+
+            // Send to GPT
+            return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5", req.UserId);
+        }
+
     }
+
 }

@@ -15,10 +15,9 @@ namespace PitchGenApi.Model.DTOs
         public string? CreatedBy { get; set; }
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
-        public string SelectedModel { get; set; }
-
-
+        public required string SelectedModel { get; set; }
     }
+
 
     // DTO for updating template definition
     public class UpdateTemplateDefinitionRequest
@@ -32,18 +31,16 @@ namespace PitchGenApi.Model.DTOs
         public string? MasterBlueprintUnpopulated { get; set; }
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
-        public string SelectedModel { get; set; }
-
-
+        public required string SelectedModel { get; set; }
     }
+
 
     // DTO for saving client's filled campaign
     public class SaveCampaignTemplateRequest
     {
-        public string ClientId { get; set; } = string.Empty;
+        public required string ClientId { get; set; }
         public int TemplateDefinitionId { get; set; }
 
-        // Filled data
         public string? PlaceholderListWithValue { get; set; }
         public string? CampaignBlueprint { get; set; }
         public Dictionary<string, string>? PlaceholderValues { get; set; }
@@ -53,8 +50,8 @@ namespace PitchGenApi.Model.DTOs
 
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
-
     }
+
 
     // DTO for updating client's campaign
     public class UpdateCampaignTemplateRequest
@@ -102,14 +99,15 @@ namespace PitchGenApi.Model.DTOs
     public class ConversationData
     {
         public List<ConversationMessage> Messages { get; set; } = new();
-        public DateTime StartedAt { get; set; }
+        public DateTime? StartedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
     }
 
     public class ConversationMessage
     {
-        public string Type { get; set; } = string.Empty;
-        public string Content { get; set; } = string.Empty;
-        public DateTime Timestamp { get; set; }
+        public string? Role { get; set; }        // new format
+        public string? Type { get; set; }        // old format support
+        public string? Content { get; set; }
+        public DateTime? Timestamp { get; set; }
     }
 }
