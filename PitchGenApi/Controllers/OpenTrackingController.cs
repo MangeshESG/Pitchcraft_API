@@ -77,7 +77,7 @@ public class OpenTrackingController : ControllerBase
 
         // Bot detection
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
-        var suspiciousAgents = new[] { "googleimageproxy", "thunderbird", "yahoo", "bot", "crawler", "preview", "proxy", "scanner", "monitor" };
+        var suspiciousAgents = new[] {"thunderbird", "yahoo", "bot", "crawler", "preview", "scanner", "monitor" };
         if (suspiciousAgents.Any(agent => userAgent.Contains(agent)))
         {
             byte[] botPixelBytes = Convert.FromBase64String(
