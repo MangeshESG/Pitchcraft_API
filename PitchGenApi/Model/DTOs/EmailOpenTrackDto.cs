@@ -6,21 +6,21 @@ public class EmailOpenTrackDto
     public string Email { get; set; }
 
     [NoEncodedChars]
-    public Guid TrackingId { get; set; }
+    public string TrackingId { get; set; }
 
     [NoEncodedChars]
-    public int contactId { get; set; }
+    public string contactId { get; set; }
 
     [NoEncodedChars]
-    public int ClientId { get; set; }
+    public string ClientId { get; set; }
 
     [NoEncodedChars]
     public string? ZohoViewName { get; set; }
     [NoEncodedChars]
-    public int? DataFileId { get; set; }
-    
+    public string? DataFileId { get; set; }
+
     [NoEncodedChars]
-    public int? SegmentId { get; set; }
+    public string? SegmentId { get; set; }
 
     [NoEncodedChars]
     public string? FullName { get; set; }
