@@ -17,12 +17,13 @@ namespace PitchGenApi.Models
 
         public string? Model { get; set; }
 
-        public DateTime StartedAt { get; set; } = DateTime.UtcNow;
-
+        public DateTime? StartedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
 
-        public bool IsComplete { get; set; } = false;
 
+        public bool IsComplete { get; set; } = false;
+        public string Mode { get; set; } = "new";  // new or edit
+        public int EditNumber { get; set; } = 0;   // increments on each edit
         // Navigation property
         [ForeignKey("CampaignTemplateId")]
         public CampaignTemplate? CampaignTemplate { get; set; }

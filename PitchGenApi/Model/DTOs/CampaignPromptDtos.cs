@@ -10,11 +10,11 @@
 
     public class StartEditConversationRequest
     {
-        public string UserId { get; set; }
+        public required string UserId { get; set; }
         public int CampaignTemplateId { get; set; }
-        public string Placeholder { get; set; }
-        public string CurrentValue { get; set; }
-        public string Model { get; set; }
+        public required string Placeholder { get; set; }
+        public required string CurrentValue { get; set; }
+        public string? Model { get; set; }
     }
 
     public class EditChatRequest
