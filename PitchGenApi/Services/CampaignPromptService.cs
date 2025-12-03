@@ -54,48 +54,36 @@ namespace PitchGenApi.Services
             if (string.IsNullOrWhiteSpace(userId))
                 return new { assistantText = "⚠️ UserId is required", error = true };
 
-            // Restore or create session
+            // Create a clean session if not exists
             if (!_sessions.ContainsKey(userId))
             {
-                using var scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-                var lastCampaign = await db.CampaignTemplates
-                    .OrderByDescending(c => c.CreatedAt)
-                    .FirstOrDefaultAsync(c => c.ClientId == userId);
-
-                if (lastCampaign != null)
+                _sessions[userId] = new CampaignSession
                 {
-                    _sessions[userId] = new CampaignSession
-                    {
-                        UserId = userId,
-                        CampaignTemplateId = lastCampaign.Id,
-                        Messages = new List<Dictionary<string, string>>()
-                    };
+                    UserId = userId,
+                    CampaignTemplateId = 0,   // ❌ DO NOT RESTORE OLD CAMPAIGN
+                    Messages = new List<Dictionary<string, string>>()
+                };
+
+                // If system prompt provided → add it once
+                if (!string.IsNullOrWhiteSpace(systemPrompt))
+                {
+                    _sessions[userId].Messages.Add(new Dictionary<string, string>
+            {
+                { "role", "system" },
+                { "content", systemPrompt }
+            });
                 }
                 else
                 {
-                    if (string.IsNullOrWhiteSpace(systemPrompt))
+                    return new
                     {
-                        return new
-                        {
-                            assistantText = "⚠️ System prompt is required for starting a new campaign.",
-                            requiresSystemPrompt = true
-                        };
-                    }
-
-                    _sessions[userId] = new CampaignSession
-                    {
-                        UserId = userId,
-                        CampaignTemplateId = 0,
-                        Messages = new List<Dictionary<string, string>>
-                        {
-                            new() { { "role", "system" }, { "content", systemPrompt } }
-                        }
+                        assistantText = "⚠️ System prompt is required to start a new conversation.",
+                        requiresSystemPrompt = true
                     };
                 }
             }
 
+            // Validate message
             if (string.IsNullOrWhiteSpace(message))
             {
                 return new
@@ -106,42 +94,15 @@ namespace PitchGenApi.Services
 
             var session = _sessions[userId];
 
-            // Add system prompt only once
-            if (session.Messages.All(m => !m.ContainsKey("role") || m["role"] != "system"))
-            {
-                if (!string.IsNullOrWhiteSpace(systemPrompt))
-                {
-                    session.Messages.Insert(0, new Dictionary<string, string>
-                    {
-                        { "role", "system" },
-                        { "content", systemPrompt }
-                    });
-                }
-            }
-
+            // Add user message
             session.Messages.Add(new Dictionary<string, string>
-            {
-                { "role", "user" },
-                { "content", message }
-            });
+    {
+        { "role", "user" },
+        { "content", message }
+    });
 
-            // Send to GPT (Responses API with web-search preview)
+            // Send to GPT
             var response = await SendToGptAsync(session.Messages, model, userId);
-
-            // Ensure campaign linkage if missing
-            if (session.CampaignTemplateId == 0)
-            {
-                using var scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var campaign = await db.CampaignTemplates
-                    .OrderByDescending(c => c.CreatedAt)
-                    .FirstOrDefaultAsync(c => c.ClientId == userId);
-
-                if (campaign != null)
-                {
-                    session.CampaignTemplateId = campaign.Id;
-                }
-            }
 
             return response;
         }
@@ -283,7 +244,6 @@ namespace PitchGenApi.Services
                 {
                     Console.WriteLine($"[WEB PARSE ERROR] {ex.Message}");
                 }
-                await SaveConversationToDb(userId);
 
                 return new
                 {
@@ -612,10 +572,9 @@ namespace PitchGenApi.Services
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-            // Load campaign + definition + conversation
+            // Load ONLY template + definition (❌ no conversation)
             var campaign = await db.CampaignTemplates
                 .Include(c => c.TemplateDefinition)
-                .Include(c => c.Conversation)
                 .FirstOrDefaultAsync(c => c.Id == req.CampaignTemplateId);
 
             if (campaign == null)
@@ -627,43 +586,11 @@ namespace PitchGenApi.Services
                 : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues)
                   ?? new Dictionary<string, string>();
 
-            // Load previous conversation (NOT SENT TO GPT anymore)
-            var oldMsgs = string.IsNullOrWhiteSpace(campaign.Conversation?.ConversationData)
-                ? new List<ConversationMessage>()
-                : JsonConvert.DeserializeObject<List<ConversationMessage>>(campaign.Conversation.ConversationData)
-                  ?? new List<ConversationMessage>();
+            // ❌ Do NOT load or update conversation table
+            // ❌ Do NOT increment EditNumber
+            // ❌ Do NOT open or fetch old conversation
 
-            // ========================================================
-            // ⭐ STEP 3 — Handle Conversation Mode + Increment EditNumber
-            // ========================================================
-            CampaignConversation? conversation = campaign.Conversation;
-
-            if (conversation == null)
-            {
-                // First-ever conversation row
-                conversation = new CampaignConversation
-                {
-                    ClientId = req.UserId,
-                    CampaignTemplateId = req.CampaignTemplateId,
-                    StartedAt = DateTime.UtcNow,
-                    Mode = "edit",
-                    EditNumber = 1
-                };
-                db.CampaignConversations.Add(conversation);
-            }
-            else
-            {
-                // New edit round
-                conversation.Mode = "edit";
-                conversation.EditNumber += 1;
-                conversation.StartedAt = DateTime.UtcNow;
-            }
-
-            await db.SaveChangesAsync();
-
-            // ========================================================
-            // Create new session memory for edit mode
-            // ========================================================
+            // Create clean in-memory session
             _sessions[req.UserId] = new CampaignSession
             {
                 UserId = req.UserId,
@@ -671,9 +598,7 @@ namespace PitchGenApi.Services
                 Messages = new List<Dictionary<string, string>>()
             };
 
-            // ========================================================
-            // Build system prompt for edit (NO past conversation)
-            // ========================================================
+            // Build system prompt with AIInstructionsForEdit + placeholder values
             var sys = new StringBuilder();
             sys.AppendLine(campaign.TemplateDefinition.AIInstructionsForEdit);
             sys.AppendLine("\nHere are the existing placeholder values:");
@@ -681,29 +606,23 @@ namespace PitchGenApi.Services
             foreach (var p in placeholders)
                 sys.AppendLine($"{{{p.Key}}} = {p.Value}");
 
-            // ❌ Removed: Injecting old conversation (we do NOT want this)
-            // foreach (var m in oldMsgs) { ... }  ← DELETED
-
-            // Push system message
+            // Add system message to session
             _sessions[req.UserId].Messages.Add(new Dictionary<string, string>
     {
         { "role", "system" },
         { "content", sys.ToString() }
     });
 
-            // Tell AI which placeholder we're editing
+            // Add user edit request
             _sessions[req.UserId].Messages.Add(new Dictionary<string, string>
     {
         { "role", "user" },
         { "content", $"I want to edit the placeholder: {req.Placeholder}.\nCurrent value: {req.CurrentValue}" }
     });
 
-            // ========================================================
-            // Call GPT
-            // ========================================================
-            return await SendToGptAsync(_sessions[req.UserId].Messages, req.Model ?? "gpt-5", req.UserId);
+            // Send to GPT
+            return await SendToGptAsync(_sessions[req.UserId].Messages, req.Model ?? "gpt-5.1", req.UserId);
         }
-
 
         public async Task<object> ContinueEditModeAsync(EditChatRequest req)
         {
@@ -732,13 +651,13 @@ namespace PitchGenApi.Services
 
             // Push user message into session
             session.Messages.Add(new Dictionary<string, string>
-    {
-        { "role", "user" },
-        { "content", req.Message }
-    });
+                {
+                    { "role", "user" },
+                    { "content", req.Message }
+                });
 
             // Send to GPT
-            return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5", req.UserId);
+            return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5.1", req.UserId);
         }
 
     }

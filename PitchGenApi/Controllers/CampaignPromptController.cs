@@ -313,14 +313,13 @@ namespace PitchGenApi.Controllers
         }
 
         // Get specific campaign template with full details
-        [HttpGet("campaign/{templateId}")] // ✅ Changed route to avoid conflict
+        [HttpGet("campaign/{templateId}")]
         public async Task<IActionResult> GetCampaignTemplateDetails(int templateId)
         {
             try
             {
                 var template = await _dbContext.CampaignTemplates
                     .Include(t => t.TemplateDefinition)
-                    .Include(t => t.Conversation)
                     .FirstOrDefaultAsync(t => t.Id == templateId);
 
                 if (template == null)
@@ -329,19 +328,10 @@ namespace PitchGenApi.Controllers
                 if (template.TemplateDefinition == null)
                     return StatusCode(500, new { Message = "Template definition is missing" });
 
-                // Parse placeholder values
                 Dictionary<string, string>? placeholderValues = null;
-                if (!string.IsNullOrEmpty(template.PlaceholderValues))
-                {
-                    placeholderValues = JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues);
-                }
 
-                // Parse conversation messages
-                List<ConversationMessage>? messages = null;
-                if (template.Conversation?.ConversationData != null)
-                {
-                    messages = JsonSerializer.Deserialize<List<ConversationMessage>>(template.Conversation.ConversationData);
-                }
+                if (!string.IsNullOrEmpty(template.PlaceholderValues))
+                    placeholderValues = JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues);
 
                 var result = new CampaignTemplateDetailResponse
                 {
@@ -373,7 +363,6 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        // Update client's campaign template
         // Update client's campaign template
         [HttpPost("template/update")]
         public async Task<IActionResult> UpdateCampaignTemplate([FromBody] UpdateCampaignTemplateRequest request)
