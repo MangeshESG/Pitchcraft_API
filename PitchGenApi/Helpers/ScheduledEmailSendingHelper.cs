@@ -89,7 +89,36 @@ public class ScheduledEmailSendingHelper
         {
             if (Contact == null || string.IsNullOrWhiteSpace(Contact.email))
                 continue;
+            bool isUnsubscribed = await context.UnsubscribedContacts
+                .AnyAsync(x => x.ClientId == step.ClientId &&
+                      x.Email.ToLower() == Contact.email.ToLower(),
+                      cancellationToken);
 
+            if (isUnsubscribed)
+            {
+                Console.WriteLine($"🚫 Skipping email to {Contact.email} - User Unsubscribed.");
+
+                // Add failure log with unsubscribed reason
+                context.EmailLogs.Add(new EmailLog
+                {
+                    StepId = step.Id,
+                    ToEmail = Contact.email,
+                    ContactId = Contact.id,
+                    Subject = Contact.email_subject,
+                    Body = Contact.email_body,
+                    IsSuccess = false,
+                    ErrorMessage = "Unsubscribed",
+                    zohoViewName = "from pitch craft",
+                    DataFileId = step.DataFileId,
+                    SegmentId = step.SegmentId,
+                    SentAt = DateTime.UtcNow,
+                    ClientId = step.ClientId,
+                    TrackingId = Guid.NewGuid(),
+                    process_name = "Bulk"
+                });
+
+                continue; // ❗SKIP sending email
+            }
             if (sentEmails.Contains(Contact.email))
                 continue;
             string trackingId = Guid.NewGuid().ToString();

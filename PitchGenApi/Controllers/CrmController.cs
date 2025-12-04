@@ -225,9 +225,11 @@ namespace PitchGenApi.Controllers
             if (!dataFileExists)
                 return NotFound("No data file found for this client.");
 
-            // Fetch contacts for that data file
+            // Fetch contacts for that data file EXCEPT unsubscribed ones
             var contacts = await _context.contacts
-                  .Where(c => c.DataFileId == dataFileId)
+                  .Where(c => c.DataFileId == dataFileId &&
+                         !_context.UnsubscribedContacts
+                             .Any(uc => uc.ClientId == clientId && uc.Email == c.email))
                   .OrderBy(c => c.id)
                   .Select(c => new
                   {
@@ -252,7 +254,6 @@ namespace PitchGenApi.Controllers
                   })
                   .ToListAsync();
 
-
             return Ok(new
             {
                 contactCount = contacts.Count,
@@ -260,6 +261,108 @@ namespace PitchGenApi.Controllers
             });
         }
 
+
+        [HttpGet("contacts/List-by-CleinteId")]
+        public async Task<IActionResult> GetContactsByClientAndDataFileIdList(
+    [FromQuery] int clientId,
+    [FromQuery] int dataFileId)
+        {
+            try
+            {
+                if (clientId <= 0 || dataFileId <= 0)
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Both clientId and dataFileId must be greater than 0."
+                    });
+
+                var dataFileExists = await _context.data_files
+                    .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+                if (!dataFileExists)
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "No data file found for this client."
+                    });
+
+                // Load unsubscribed emails
+                var unsubscribedEmails = await _context.UnsubscribedContacts
+                    .Where(u => u.ClientId == clientId)
+                    .Select(u => u.Email)
+                    .ToListAsync();
+
+                // 1️⃣ Step 1: Load contacts from SQL (simple projection)
+                var contactsRaw = await _context.contacts
+                    .Where(c => c.DataFileId == dataFileId)
+                    .OrderBy(c => c.id)
+                    .Select(c => new
+                    {
+                        c.id,
+                        c.full_name,
+                        c.email,
+                        c.website,
+                        c.company_name,
+                        c.job_title,
+                        c.linkedin_url,
+                        c.country_or_address,
+                        c.email_subject,
+                        c.email_body,
+                        c.created_at,
+                        c.updated_at,
+                        c.email_sent_at,
+                        c.CompanyTelephone,
+                        c.CompanyEmployeeCount,
+                        c.CompanyIndustry,
+                        c.CompanyLinkedInURL,
+                        c.CompanyEventLink
+                    })
+                    .ToListAsync();
+
+                // 2️⃣ Step 2: Add unsubscribe flag in C#
+                var contacts = contactsRaw
+                    .Select(c => new
+                    {
+                        c.id,
+                        c.full_name,
+                        c.email,
+                        c.website,
+                        c.company_name,
+                        c.job_title,
+                        c.linkedin_url,
+                        c.country_or_address,
+                        c.email_subject,
+                        c.email_body,
+                        c.created_at,
+                        c.updated_at,
+                        c.email_sent_at,
+                        c.CompanyTelephone,
+                        c.CompanyEmployeeCount,
+                        c.CompanyIndustry,
+                        c.CompanyLinkedInURL,
+                        c.CompanyEventLink,
+
+                        unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
+                    })
+                    .ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    contactCount = contacts.Count,
+                    contacts
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "An unexpected server error occurred.",
+                    error = ex.Message
+                });
+            }
+        }
 
 
         [HttpPost("update-datafile")]
@@ -1019,6 +1122,13 @@ namespace PitchGenApi.Controllers
             {
                 return StatusCode(500, new { message = "Internal server error", error = ex.Message });
             }
+        }
+
+        [HttpGet("UnsubscribeContacts")]
+        public async Task<IActionResult> UnsubscribeContacts([FromQuery] int ClientId, [FromQuery] string email)
+        {
+            var response = await _repository.AddUnsubscribedAsync(ClientId, email);
+            return Ok(response);
         }
 
     }

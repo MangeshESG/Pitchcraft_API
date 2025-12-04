@@ -1,4 +1,5 @@
-﻿using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
@@ -67,6 +68,29 @@ public class ContactRepository
                .Include(sc => sc.Contact)
                .Select(sc => sc.Contact)
                .ToListAsync();
+    }
+
+
+
+    public async Task<string> AddUnsubscribedAsync(int clientId, string email)
+    {
+        var existing = await _context.UnsubscribedContacts
+            .FirstOrDefaultAsync(x => x.ClientId == clientId && x.Email == email);
+
+        if (existing != null)
+            return "Already Unsubscribed";
+
+        var item = new UnsubscribedContacts
+        {
+            ClientId = clientId,
+            Email = email,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _context.UnsubscribedContacts.Add(item);
+        await _context.SaveChangesAsync();
+
+        return "Unsubscribed Added Successfully";
     }
 
 

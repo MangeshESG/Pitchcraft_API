@@ -264,6 +264,11 @@ namespace PitchGenApi.Controllers
                 ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
                 var nowUtc = DateTime.UtcNow;
+                var unsubscribedcontact = await _context.UnsubscribedContacts.FirstOrDefaultAsync(x => x.ClientId == dto.clientId && x.Email == dto.ToEmail);
+
+                if (unsubscribedcontact != null)
+                    return BadRequest("Unsubscribed Contact");   // ✅ correct
+
 
                 // 1) Send email
                 var success = await _emailHelper.SendEmailUsingSmtp(
