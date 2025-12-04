@@ -54,54 +54,113 @@ namespace PitchGenApi.Services
             if (string.IsNullOrWhiteSpace(userId))
                 return new { assistantText = "⚠️ UserId is required", error = true };
 
-            // Create a clean session if not exists
+            // ------------------------------------------------------
+            // 🟢 1. Create session if not exists
+            // ------------------------------------------------------
             if (!_sessions.ContainsKey(userId))
             {
-                _sessions[userId] = new CampaignSession
-                {
-                    UserId = userId,
-                    CampaignTemplateId = 0,   // ❌ DO NOT RESTORE OLD CAMPAIGN
-                    Messages = new List<Dictionary<string, string>>()
-                };
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                // If system prompt provided → add it once
-                if (!string.IsNullOrWhiteSpace(systemPrompt))
-                {
-                    _sessions[userId].Messages.Add(new Dictionary<string, string>
-            {
-                { "role", "system" },
-                { "content", systemPrompt }
-            });
-                }
-                else
+                // Load latest created campaign for this user
+                var campaign = await db.CampaignTemplates
+                    .Where(c => c.ClientId == userId)
+                    .OrderByDescending(c => c.CreatedAt)
+                    .Select(c => new
+                    {
+                        c.Id,
+                        TemplateDefinition = db.CampaignTemplateDefinitions
+                            .Where(t => t.Id == c.TemplateDefinitionId)
+                            .Select(t => new
+                            {
+                                t.AIInstructions,
+                                t.AIInstructionsForEdit,
+                                t.PlaceholderList,
+                                t.PlaceholderListExtensive,
+                                t.MasterBlueprintUnpopulated
+                            })
+                            .FirstOrDefault()
+                    })
+                    .FirstOrDefaultAsync();
+
+
+                if (campaign == null)
                 {
                     return new
                     {
-                        assistantText = "⚠️ System prompt is required to start a new conversation.",
-                        requiresSystemPrompt = true
+                        assistantText = "⚠️ No campaign found. Call /campaign/start first.",
+                        error = true
                     };
                 }
-            }
 
-            // Validate message
-            if (string.IsNullOrWhiteSpace(message))
-            {
-                return new
+                // Build system prompt from DB (IGNORE frontend systemPrompt)
+                string systemPromptToUse = campaign.TemplateDefinition?.AIInstructions ?? "";
+
+                if (string.IsNullOrWhiteSpace(systemPromptToUse))
                 {
-                    assistantText = "⚠️ Message is required for continuing the conversation."
+                    systemPromptToUse = campaign.TemplateDefinition?.PlaceholderListExtensive
+                                        ?? campaign.TemplateDefinition?.PlaceholderList
+                                        ?? "";
+                }
+
+                // Initialize session
+                _sessions[userId] = new CampaignSession
+                {
+                    UserId = userId,
+                    CampaignTemplateId = campaign.Id,
+                    Messages = new List<Dictionary<string, string>>
+            {
+                new()
+                {
+                    { "role", "system" },
+                    { "content", systemPromptToUse }
+                }
+            }
                 };
             }
 
+            // ------------------------------------------------------
+            // 🟢 2. Attach campaign ID if missing (rare case)
+            // ------------------------------------------------------
             var session = _sessions[userId];
 
-            // Add user message
+            if (session.CampaignTemplateId == 0)
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                var lastCampaign = await db.CampaignTemplates
+                    .OrderByDescending(c => c.CreatedAt)
+                    .FirstOrDefaultAsync(c => c.ClientId == userId);
+
+                if (lastCampaign != null)
+                {
+                    session.CampaignTemplateId = lastCampaign.Id;
+                }
+                else
+                {
+                    return new { assistantText = "⚠️ No campaign found. Start one first.", error = true };
+                }
+            }
+
+            // ------------------------------------------------------
+            // 🟢 3. Validate message
+            // ------------------------------------------------------
+            if (string.IsNullOrWhiteSpace(message))
+                return new { assistantText = "⚠️ Message is required.", error = true };
+
+            // ------------------------------------------------------
+            // 🟢 4. Append user message
+            // ------------------------------------------------------
             session.Messages.Add(new Dictionary<string, string>
     {
         { "role", "user" },
         { "content", message }
     });
 
-            // Send to GPT
+            // ------------------------------------------------------
+            // 🟢 5. Call GPT
+            // ------------------------------------------------------
             var response = await SendToGptAsync(session.Messages, model, userId);
 
             return response;

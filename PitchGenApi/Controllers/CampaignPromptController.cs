@@ -582,8 +582,20 @@ namespace PitchGenApi.Controllers
             {
                 UserId = req.ClientId,
                 CampaignTemplateId = campaign.Id,
-                Messages = new()
-            };
+                Messages = new List<Dictionary<string, string>>
+                {
+                    new()
+                    {
+                        { "role", "system" },
+                        { "content", templateDef.AIInstructions
+                                     ?? templateDef.PlaceholderListExtensive
+                                     ?? templateDef.PlaceholderList
+                                     ?? "" }
+                    }
+                }
+                        };
+
+
 
             // =====================================================
             // Return response
