@@ -490,7 +490,7 @@ namespace PitchGenApi.Controllers
             if (template == null)
                 return NotFound(new { Message = "Template not found" });
 
-            // ✅ Merge values from database & frontend
+            // ✅ Merge placeholder values from DB + frontend
             var vals = string.IsNullOrEmpty(template.PlaceholderValues)
                 ? new Dictionary<string, string>()
                 : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
@@ -504,9 +504,34 @@ namespace PitchGenApi.Controllers
 
             string master = template.TemplateDefinition.MasterBlueprintUnpopulated ?? "";
 
-            // ✅ Generate with merged placeholders
-            var html = await _campaignService.GenerateExampleOutputAsync(vals, master, req.Model ?? "gpt-4o");
+            // ⭐ Call service → returns: "__FILLED_TEMPLATE_START__ ... __FILLED_TEMPLATE_END__ ...html..."
+            var rawResult = await _campaignService.GenerateExampleOutputAsync(
+                vals,
+                master,
+                req.Model ?? "gpt-4o"
+            );
 
+            string filledTemplate = "";
+            string html = rawResult ?? "";
+
+            // ⭐ Extract both parts from rawResult
+            if (!string.IsNullOrEmpty(rawResult))
+            {
+                int s = rawResult.IndexOf("__FILLED_TEMPLATE_START__");
+                int e = rawResult.IndexOf("__FILLED_TEMPLATE_END__");
+
+                if (s >= 0 && e > s)
+                {
+                    filledTemplate = rawResult.Substring(
+                        s + "__FILLED_TEMPLATE_START__".Length,
+                        e - (s + "__FILLED_TEMPLATE_START__".Length)
+                    );
+
+                    html = rawResult.Substring(e + "__FILLED_TEMPLATE_END__".Length);
+                }
+            }
+
+            // ⭐ Save only HTML and placeholder values to DB
             if (!string.IsNullOrEmpty(html))
             {
                 template.ExampleOutput = html;
@@ -515,7 +540,12 @@ namespace PitchGenApi.Controllers
                 await _dbContext.SaveChangesAsync();
             }
 
-            return Ok(new { Success = true, ExampleOutput = html });
+            return Ok(new
+            {
+                Success = true,
+                ExampleOutput = html,     // final HTML
+                FilledTemplate = filledTemplate // ⭐ the full final prompt (email body before GPT)
+            });
         }
 
         // =====================================================

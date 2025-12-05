@@ -453,17 +453,23 @@ namespace PitchGenApi.Services
         public async Task<string?> GenerateExampleOutputAsync(
             Dictionary<string, string> placeholderValues,
             string masterTemplate,
-            string model = "gpt-5")
+            string model = "gpt-5.1")
         {
             if (placeholderValues == null || placeholderValues.Count == 0)
                 return null;
+
+            // ⭐ NEW — store filled template
+            string lastFilledTemplate = "";
 
             // 1) Fill placeholders
             string filledTemplate = masterTemplate ?? string.Empty;
             foreach (var (key, value) in placeholderValues)
                 filledTemplate = filledTemplate.Replace($"{{{key}}}", value ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
-            // 2) Build role-prefixed input (same style as SendToGptAsync)
+            // ⭐ NEW — capture filled template
+            lastFilledTemplate = filledTemplate;
+
+            // 2) Build role-prefixed input
             var sbInput = new StringBuilder();
             sbInput.AppendLine("system: You are the example output generator. Produce clean HTML only.");
             sbInput.AppendLine($"user: {filledTemplate}");
@@ -475,7 +481,7 @@ namespace PitchGenApi.Services
         {
             { "model", model },
             { "input", sbInput.ToString() },
-            { "temperature", 0.3 },
+            { "temperature", 0.1 },
             { "max_output_tokens", 15000 }
         };
 
@@ -483,11 +489,6 @@ namespace PitchGenApi.Services
                 {
                     requestData["tools"] = new object[] { new { type = "web_search_preview" } };
                     requestData["text"] = new { verbosity = "low" };
-                    Console.WriteLine($"[GenerateExampleOutputAsync] Attempt WITH tools for model={model}");
-                }
-                else
-                {
-                    Console.WriteLine($"[GenerateExampleOutputAsync] Attempt WITHOUT tools for model={model}");
                 }
 
                 var json = JsonConvert.SerializeObject(requestData);
@@ -498,51 +499,32 @@ namespace PitchGenApi.Services
                     var response = await _httpClient.PostAsync("https://api.openai.com/v1/responses", httpContent);
                     var raw = await response.Content.ReadAsStringAsync();
 
-                    // Log the raw response for debugging (important for model-specific quirks)
-                    Console.WriteLine($"[GenerateExampleOutputAsync] RAW ({model}, tools={useTools}): {raw}");
-
                     if (!response.IsSuccessStatusCode)
                     {
-                        // If tools were used and API complains about unsupported parameter, retry without tools
                         if (useTools && raw.IndexOf("Unsupported parameter", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            Console.WriteLine($"[GenerateExampleOutputAsync] Tools unsupported by model={model}; retrying without tools.");
-                            continue; // try next iteration without tools
-                        }
+                            continue;
 
-                        Console.WriteLine($"[GenerateExampleOutputAsync] API Error {response.StatusCode} (tools={useTools}). Raw: {raw}");
                         if (!useTools) return null;
                         continue;
                     }
 
-                    // Parse success
                     var parsed = JsonConvert.DeserializeObject<JObject>(raw)!;
                     string resultText = parsed["output_text"]?.ToString() ?? string.Empty;
 
                     if (string.IsNullOrWhiteSpace(resultText))
                         resultText = ExtractTextFromOutputs(parsed);
 
-                    // If we got content, return it
                     if (!string.IsNullOrWhiteSpace(resultText))
                     {
-                        Console.WriteLine($"[GenerateExampleOutputAsync] Received output (tools={useTools})");
-                        return resultText.Trim();
+                        // ⭐ NEW — return filled template + HTML in single string
+                        return $"__FILLED_TEMPLATE_START__{lastFilledTemplate}__FILLED_TEMPLATE_END__{resultText.Trim()}";
                     }
 
-                    // If 200 OK but empty and we used tools — retry without tools
-                    if (useTools)
-                    {
-                        Console.WriteLine($"[GenerateExampleOutputAsync] Empty output with tools for model={model}. Retrying without tools.");
-                        continue;
-                    }
-
-                    // No tools and still empty => give up
-                    Console.WriteLine($"[GenerateExampleOutputAsync] Empty output without tools for model={model}. Giving up.");
+                    if (useTools) continue;
                     return null;
                 }
-                catch (Exception ex)
+                catch
                 {
-                    Console.WriteLine($"[GenerateExampleOutputAsync] Exception (tools={useTools}): {ex.Message}");
                     if (useTools) continue;
                     return null;
                 }
@@ -645,10 +627,7 @@ namespace PitchGenApi.Services
                 : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues)
                   ?? new Dictionary<string, string>();
 
-            // ❌ Do NOT load or update conversation table
-            // ❌ Do NOT increment EditNumber
-            // ❌ Do NOT open or fetch old conversation
-
+          
             // Create clean in-memory session
             _sessions[req.UserId] = new CampaignSession
             {
@@ -667,17 +646,17 @@ namespace PitchGenApi.Services
 
             // Add system message to session
             _sessions[req.UserId].Messages.Add(new Dictionary<string, string>
-    {
-        { "role", "system" },
-        { "content", sys.ToString() }
-    });
+                {
+                    { "role", "system" },
+                    { "content", sys.ToString() }
+                });
 
             // Add user edit request
             _sessions[req.UserId].Messages.Add(new Dictionary<string, string>
-    {
-        { "role", "user" },
-        { "content", $"I want to edit the placeholder: {req.Placeholder}.\nCurrent value: {req.CurrentValue}" }
-    });
+                {
+                    { "role", "user" },
+                    { "content", $"I want to edit the placeholder: {req.Placeholder}.\nCurrent value: {req.CurrentValue}" }
+                });
 
             // Send to GPT
             return await SendToGptAsync(_sessions[req.UserId].Messages, req.Model ?? "gpt-5.1", req.UserId);

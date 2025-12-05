@@ -8,4 +8,11 @@
         public Dictionary<string, string>? PlaceholderValues { get; set; }   // ✅ NEW
 
     }
+
+    public class ExampleOutputResult
+    {
+        public string FilledTemplate { get; set; } = "";
+        public string? HtmlOutput { get; set; }
+    }
+
 }
