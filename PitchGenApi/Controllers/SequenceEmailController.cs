@@ -278,7 +278,7 @@ namespace PitchGenApi.Controllers
                     dto.SegmentId ?? 0,
                     dto.ToEmail,
                     dto.Subject,
-                    dto.Body,
+                    dto.isFollowUp,
                     dto.BccEmail,
                     dto.SmtpId,
                     dto.FullName,
