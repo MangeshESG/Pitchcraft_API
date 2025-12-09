@@ -245,7 +245,7 @@ namespace PitchGenApi.Controllers
 
                 if (isFollowUp)
                 {
-                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, c.id);
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, c.id, null);
 
                     finalEmailBody =
         $@"{c.email_body}
@@ -864,102 +864,101 @@ namespace PitchGenApi.Controllers
             return Ok(contacts);
         }
 
-        //        [HttpGet("contacts/by-client-segment")]
-        //        public async Task<IActionResult> GetContactsBySegmentId(
-        //    [FromQuery] int clientId,
-        //    [FromQuery] int segmentId,
-        //    [FromQuery] bool isFollowUp)
-        //        {
-        //            if (clientId <= 0 || segmentId <= 0)
-        //                return BadRequest("clientId aur segmentId dono 0 se bade hone chahiye.");
+        [HttpGet("contacts/by-client-segment")]
+        public async Task<IActionResult> GetContactsBySegmentId(
+    [FromQuery] int clientId,
+    [FromQuery] int segmentId,
+    [FromQuery] bool isFollowUp)
+        {
+            if (clientId <= 0 || segmentId <= 0)
+                return BadRequest("clientId aur segmentId dono 0 se bade hone chahiye.");
 
-        //            // Step 1: Check Segment exists and belongs to same client
-        //            var segment = await _context.segments
-        //                .FirstOrDefaultAsync(s => s.Id == segmentId && s.ClientId == clientId);
+            // Step 1: Check Segment exists and belongs to same client
+            var segment = await _context.segments
+                .FirstOrDefaultAsync(s => s.Id == segmentId && s.ClientId == clientId);
 
-        //            if (segment == null)
-        //                return NotFound("Is client ke liye segment nahi mila.");
+            if (segment == null)
+                return NotFound("Is client ke liye segment nahi mila.");
 
-        //            // Step 2: Get contact IDs from SegmentContacts
-        //            var contactIds = await _context.segmentContacts
-        //                .Where(sc => sc.SegmentId == segmentId)
-        //                .Select(sc => sc.ContactId)
-        //                .ToListAsync();
+            // Step 2: Get contact IDs from SegmentContacts
+            var contactIds = await _context.segmentContacts
+                .Where(sc => sc.SegmentId == segmentId)
+                .Select(sc => sc.ContactId)
+                .ToListAsync();
 
-        //            if (!contactIds.Any())
-        //                return Ok(new { contactCount = 0, contacts = new List<object>() });
+            if (!contactIds.Any())
+                return Ok(new { contactCount = 0, contacts = new List<object>() });
 
-        //            // Step 3: Load contacts one-by-one using foreach (SQL error fix)
-        //            var contactsRaw = new List<Contact>();
+            // Step 3: Load contacts one-by-one using foreach (SQL error fix)
+            var contactsRaw = new List<Contact>();
 
-        //            foreach (var cid in contactIds)
-        //            {
-        //                if (cid <= 0)
-        //                    continue;
+            foreach (var cid in contactIds)
+            {
+                if (cid <= 0)
+                    continue;
 
-        //                var contact = await _context.contacts
-        //                    .FirstOrDefaultAsync(c => c.id == cid);
+                var contact = await _context.contacts
+                    .FirstOrDefaultAsync(c => c.id == cid);
 
-        //                if (contact != null)
-        //                    contactsRaw.Add(contact);
-        //            }
+                if (contact != null)
+                    contactsRaw.Add(contact);
+            }
 
-        //            // Step 4: Load unsubscribed emails
-        //            var unsubscribedEmails = await _context.UnsubscribedContacts
-        //                .Where(u => u.ClientId == clientId)
-        //                .Select(u => u.Email)
-        //                .ToListAsync();
+            // Step 4: Load unsubscribed emails
+            var unsubscribedEmails = await _context.UnsubscribedContacts
+                .Where(u => u.ClientId == clientId)
+                .Select(u => u.Email)
+                .ToListAsync();
 
-        //            var result = new List<object>();
+            var result = new List<object>();
+            // Step 5: Build final response
+            foreach (var c in contactsRaw)
+            {
+                // skip unsubscribed emails
+                if (unsubscribedEmails.Contains(c.email))
+                    continue;
 
-        //            // Step 5: Build final response
-        //            foreach (var c in contactsRaw)
-        //            {
-        //                // skip unsubscribed emails
-        //                if (unsubscribedEmails.Contains(c.email))
-        //                    continue;
+                string finalEmailBody = c.email_body;
 
-        //                string finalEmailBody = c.email_body;
+                // Add follow-up thread
+                if (isFollowUp)
+                {
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
+                    finalEmailBody =
+                    $@"{c.email_body}
 
-        //                // Add follow-up thread
-        //                if (isFollowUp)
-        //                {
-        //                    string oldThread = await BuildEmailThreadAsync(clientId, c.DataFileId ?? 0);
-        //                    finalEmailBody =
-        //        $@"{c.email_body}
+                    {oldThread}";
+                }
 
-        //{oldThread}";
-        //                }
+                result.Add(new
+                {
+                    c.id,
+                    c.full_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    c.email_subject,
+                    email_body = finalEmailBody,
+                    c.created_at,
+                    c.updated_at,
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    c.CompanyEventLink
+                });
+            }
 
-        //                result.Add(new
-        //                {
-        //                    c.id,
-        //                    c.full_name,
-        //                    c.email,
-        //                    c.website,
-        //                    c.company_name,
-        //                    c.job_title,
-        //                    c.linkedin_url,
-        //                    c.country_or_address,
-        //                    c.email_subject,
-        //                    email_body = finalEmailBody,
-        //                    c.created_at,
-        //                    c.updated_at,
-        //                    c.email_sent_at,
-        //                    c.CompanyTelephone,
-        //                    c.CompanyEmployeeCount,
-        //                    c.CompanyIndustry,
-        //                    c.CompanyLinkedInURL,
-        //                    c.CompanyEventLink
-        //                });
-        //            }
-
-        //            return Ok(new
-        //            {
-        //                contactCount = result.Count,
-        //                contacts = result
-        //            });
-        //        }
+            return Ok(new
+            {
+                contactCount = result.Count,
+                contacts = result
+            });
+        }
 
         [HttpGet("segment-contacts")]
         public async Task<IActionResult> GetContactsBySegmentId([FromQuery] int clientId, [FromQuery] int segmentId)

@@ -4,6 +4,7 @@ using System.Net.Mail;
 using System.Threading.Tasks;
 using PitchGenApi.Database;
 using Microsoft.EntityFrameworkCore;
+using PitchGenApi.Model;
 
 public class EmailSendingHelper
 {
@@ -73,9 +74,30 @@ public class EmailSendingHelper
 
             string finalEmailBody = EmailDetails.email_body;
 
+
+            if (dataFileId == null)
+            {
+                var list = await _context.segments
+                    .FirstOrDefaultAsync(s => s.Id == SegmentId && s.ClientId == clientId);
+
+                
+
+
+                if (isFollowUp)
+                {
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, list.DataFileId, EmailDetails.id, SegmentId);
+
+                    finalEmailBody =
+                    $@"{EmailDetails.email_body}
+
+                {oldThread}";
+                }
+            }
+
+
             if (isFollowUp)
             {
-                string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, EmailDetails.id);
+                string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, EmailDetails.id, SegmentId);
 
                 finalEmailBody =
                 $@"{EmailDetails.email_body}
