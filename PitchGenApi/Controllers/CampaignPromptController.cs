@@ -5,6 +5,7 @@ using PitchGenApi.Models;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace PitchGenApi.Controllers
 {
@@ -623,7 +624,7 @@ namespace PitchGenApi.Controllers
                                      ?? "" }
                     }
                 }
-                        };
+            };
 
 
 
@@ -656,6 +657,71 @@ namespace PitchGenApi.Controllers
             var result = await _campaignService.ContinueEditModeAsync(req);
             return Ok(new { response = result });
         }
+
+
+        [HttpPost("template/update-placeholders")]
+        public async Task<IActionResult> UpdatePlaceholders(
+    [FromBody] UpdatePlaceholdersRequest req)
+        {
+            if (req.TemplateId <= 0)
+                return BadRequest(new { Message = "TemplateId required" });
+
+            var campaign = await _dbContext.CampaignTemplates
+                .Include(c => c.TemplateDefinition)
+                .FirstOrDefaultAsync(c => c.Id == req.TemplateId);
+
+            if (campaign == null)
+                return NotFound(new { Message = "Campaign not found" });
+
+            if (campaign.TemplateDefinition == null)
+                return StatusCode(500, new { Message = "Template definition missing" });
+
+            // ✅ Read existing placeholder values safely
+            Dictionary<string, string> existing =
+                string.IsNullOrEmpty(campaign.PlaceholderValues)
+                    ? new Dictionary<string, string>()
+                    : JsonSerializer.Deserialize<Dictionary<string, string>>(campaign.PlaceholderValues)
+                      ?? new Dictionary<string, string>();
+
+            // ✅ Merge / replace values
+            if (req.PlaceholderValues != null)
+            {
+                foreach (var kv in req.PlaceholderValues)
+                    existing[kv.Key] = kv.Value;
+            }
+
+            // ✅ Save JSON
+            campaign.PlaceholderValues = JsonSerializer.Serialize(existing);
+
+            // ✅ Human-readable version
+            campaign.PlaceholderListWithValue =
+                string.Join("\n", existing.Select(kv => $"{{{kv.Key}}} = {kv.Value}"));
+
+            // ✅ Rebuild CampaignBlueprint from MASTER
+            string blueprint = campaign.TemplateDefinition.MasterBlueprintUnpopulated ?? "";
+
+            foreach (var kv in existing)
+            {
+                blueprint = Regex.Replace(
+                    blueprint,
+                    $"{{{Regex.Escape(kv.Key)}}}",
+                    kv.Value ?? "",
+                    RegexOptions.IgnoreCase
+                );
+            }
+
+            campaign.CampaignBlueprint = blueprint;
+            campaign.UpdatedAt = DateTime.UtcNow;
+
+            await _dbContext.SaveChangesAsync();
+
+            return Ok(new
+            {
+                Success = true,
+                Message = "Placeholders updated successfully"
+            });
+        }
+
 
 
     }

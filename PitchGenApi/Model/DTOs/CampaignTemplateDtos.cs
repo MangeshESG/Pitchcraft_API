@@ -110,4 +110,11 @@ namespace PitchGenApi.Model.DTOs
         public string? Content { get; set; }
         public DateTime? Timestamp { get; set; }
     }
+
+    public class UpdatePlaceholdersRequest
+    {
+        public int TemplateId { get; set; }
+        public Dictionary<string, string> PlaceholderValues { get; set; } = new();
+    }
+
 }
