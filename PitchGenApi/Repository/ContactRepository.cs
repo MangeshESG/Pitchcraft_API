@@ -4,6 +4,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
+using System.Text;
 
 public class ContactRepository
 {
@@ -70,6 +71,46 @@ public class ContactRepository
                .ToListAsync();
     }
 
+    public async Task<string> BuildEmailThreadAsync(int clientId, int? datafileid, int contactid, int? segmentid)
+    {
+        var logsQuery = _context.EmailLogs
+            .Where(x => x.ClientId == clientId
+                        && x.ContactId == contactid
+                        && x.IsSuccess == true);
+
+        if (datafileid != null && segmentid == null)
+        {
+            logsQuery = logsQuery.Where(x => x.DataFileId == datafileid && x.SegmentId == null);
+        }
+        else if (segmentid != null)
+        {
+            logsQuery = logsQuery.Where(x =>
+                x.SegmentId == segmentid ||
+                (datafileid != null && x.DataFileId == datafileid && x.SegmentId == null)
+            );
+        }
+
+        var logs = await logsQuery
+            .OrderByDescending(x => x.SentAt)
+            .ToListAsync();
+
+        if (!logs.Any())
+            return "";
+
+        StringBuilder sb = new StringBuilder();
+
+        foreach (var log in logs)
+        {
+            sb.AppendLine("<hr style='border:0; border-top:0.5px solid #999; width:100%;' />");
+            sb.AppendLine($"<b>From:</b> {log.EmailSenderName} &lt;{log.SenderEmailId}&gt;<br/>");
+            sb.AppendLine($"<b>Sent:</b> {log.SentAt:dddd, MMMM d, yyyy h:mm tt}<br/>");
+            sb.AppendLine($"<b>To:</b> {log.EmailRecipientName} &lt;{log.ToEmail}&gt;<br/>");
+            sb.AppendLine($"<b>Subject:</b> {log.Subject}<br/><br/>");
+            sb.AppendLine($"{log.Body}<br/><br/>");
+        }
+
+        return sb.ToString();
+    }
 
 
     public async Task<string> AddUnsubscribedAsync(int clientId, string email)

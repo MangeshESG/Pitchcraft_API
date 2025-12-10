@@ -4,6 +4,7 @@ using PitchGenApi.Services;
 using System.Net.Mail;
 using System.Net;
 using PitchGenApi.Models;
+using PitchGenApi.Model;
 
 public class ScheduledEmailSendingHelper
 {
@@ -131,6 +132,17 @@ public class ScheduledEmailSendingHelper
                 Console.WriteLine($"ℹ️ Already sent to: {Contact.email} — skipping.");
                 continue;
             }
+            string finalEmailBody = Contact.email_body;
+
+            if (step.IsFollowUp == true)
+            {
+                string oldThread = await _contactRepository.BuildEmailThreadAsync(step.ClientId, step.DataFileId, Contact.id, step.SegmentId);
+
+                finalEmailBody =
+                $@"{Contact.email_body}
+
+                {oldThread}";
+            }
 
             sentEmails.Add(Contact.email);
             string subject = Contact.email_subject ?? "No Subject";
@@ -243,7 +255,7 @@ public class ScheduledEmailSendingHelper
                     ToEmail = toEmail,
                     ContactId = Contact.id,
                     Subject = subject,
-                    Body = bodyWithTracking,
+                    Body = Contact.email_body,
                     IsSuccess = true,
                     ErrorMessage = null,
                     zohoViewName = "from pitch craft",
@@ -265,7 +277,7 @@ public class ScheduledEmailSendingHelper
                     ToEmail = toEmail,
                     ContactId = Contact.id,
                     Subject = subject,
-                    Body = bodyWithTracking,
+                    Body = Contact.email_body,
                     IsSuccess = false,
                     ErrorMessage = ex.Message,
                     zohoViewName = "from pitch craft",

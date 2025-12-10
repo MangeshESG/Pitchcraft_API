@@ -10,7 +10,7 @@ namespace PitchGenApi.Models
     {
         public int id { get; set; }
         [Column("data_file_id")]
-        public int DataFileId { get; set; }
+        public int? DataFileId { get; set; }
 
         public string? full_name { get; set; }
         public string? email { get; set; }

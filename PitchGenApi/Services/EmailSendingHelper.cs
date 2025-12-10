@@ -4,14 +4,17 @@ using System.Net.Mail;
 using System.Threading.Tasks;
 using PitchGenApi.Database;
 using Microsoft.EntityFrameworkCore;
+using PitchGenApi.Model;
 
 public class EmailSendingHelper
 {
     private readonly AppDbContext _context;
+    private readonly ContactRepository _repository;
 
-    public EmailSendingHelper(AppDbContext context)
+    public EmailSendingHelper(AppDbContext context, ContactRepository repository)
     {
         _context = context;
+        _repository = repository;
     }
 
     public async Task<bool> SendEmailUsingSmtp(
@@ -21,7 +24,7 @@ public class EmailSendingHelper
         int? SegmentId,
         string toEmail,
         string subject,
-        string body,
+        bool isFollowUp,
         string BccEmail = "",
         int SmtpID = 0,
         string fullName = "",
@@ -31,7 +34,11 @@ public class EmailSendingHelper
         string linkedin = "",
         string jobtitle = "")
     {
+        var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
+
+
         var smtpCredential = await _context.SmtpCredentials.FirstOrDefaultAsync(x => x.Id == SmtpID);
+
         if (smtpCredential == null || string.IsNullOrEmpty(smtpCredential.Server))
         {
             _context.EmailLogs.Add(new EmailLog
@@ -42,7 +49,7 @@ public class EmailSendingHelper
                 SegmentId = SegmentId,
                 ToEmail = toEmail,
                 Subject = subject,
-                Body = body,
+                Body = EmailDetails.email_body,
                 IsSuccess = false,
                 ErrorMessage = "SMTP credentials not found or invalid.",
                 zohoViewName = "from pichkraft",
@@ -51,6 +58,8 @@ public class EmailSendingHelper
             await _context.SaveChangesAsync();
             return false;
         }
+
+        var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
 
         try
         {
@@ -63,10 +72,43 @@ public class EmailSendingHelper
                 EnableSsl = smtpCredential.UseSsl,
             };
 
+            string finalEmailBody = EmailDetails.email_body;
+
+
+            if (dataFileId == null)
+            {
+                var list = await _context.segments
+                    .FirstOrDefaultAsync(s => s.Id == SegmentId && s.ClientId == clientId);
+
+                
+
+
+                if (isFollowUp)
+                {
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, list.DataFileId, EmailDetails.id, SegmentId);
+
+                    finalEmailBody =
+                    $@"{EmailDetails.email_body}
+
+                {oldThread}";
+                }
+            }
+
+
+            if (isFollowUp)
+            {
+                string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, EmailDetails.id, SegmentId);
+
+                finalEmailBody =
+                $@"{EmailDetails.email_body}
+
+                {oldThread}";
+            }
+
             // Send main email
             if (!string.IsNullOrWhiteSpace(toEmail))
             {
-                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, body, clientId,contactId, dataFileId, SegmentId, fullName, location, company, website, linkedin, jobtitle, trackingId);
+                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, finalEmailBody, clientId,contactId, dataFileId, SegmentId, fullName, location, company, website, linkedin, jobtitle, trackingId);
                 bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullName, location, company, website, linkedin, jobtitle, trackingId);
 
                 using var toMessage = new MailMessage
@@ -86,7 +128,10 @@ public class EmailSendingHelper
                     ContactId = contactId,
                     ToEmail = toEmail,
                     Subject = subject,
-                    Body = bodyWithTracking,
+                    Body = EmailDetails.email_body,
+                    EmailRecipientName = fullName,
+                    EmailSenderName = $"{user.FirstName} {user.LastName}",
+                    SenderEmailId = smtpCredential.FromEmail,
                     zohoViewName = "from pitch craft",
                     DataFileId = dataFileId,
                     SegmentId = SegmentId,
@@ -104,7 +149,7 @@ public class EmailSendingHelper
                 {
                     From = new MailAddress(smtpCredential.FromEmail),
                     Subject = subject,
-                    Body = body,
+                    Body = EmailDetails.email_body,
                     IsBodyHtml = true
                 };
 
@@ -125,7 +170,10 @@ public class EmailSendingHelper
                 ContactId = contactId,
                 ToEmail = toEmail,
                 Subject = subject,
-                Body = body,
+                Body = EmailDetails.email_body,
+                EmailRecipientName = fullName,
+                EmailSenderName = $"{user.FirstName} {user.LastName}",
+                SenderEmailId = smtpCredential.FromEmail,
                 IsSuccess = false,
                 ErrorMessage = ex.Message,
                 zohoViewName = "from pitch craft",

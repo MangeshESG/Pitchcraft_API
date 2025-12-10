@@ -14,6 +14,9 @@
     public bool IsSuccess { get; set; }
 
     public string? ErrorMessage { get; set; }
+    public string? SenderEmailId { get; set; }
+    public string? EmailSenderName { get; set; }
+    public string? EmailRecipientName { get; set; }
     public string? zohoViewName { get; set; }
     public int? DataFileId { get; set; }
     public int? SegmentId { get; set; }

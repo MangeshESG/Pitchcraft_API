@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Model;
+using System.Text;
 
 
 namespace PitchGenApi.Controllers
@@ -213,51 +214,72 @@ namespace PitchGenApi.Controllers
 
 
         [HttpGet("contacts/by-client-datafile")]
-        public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId)
+        public async Task<IActionResult> GetContactsByClientAndDataFileId(
+     [FromQuery] int clientId,
+     [FromQuery] int dataFileId,
+     [FromQuery] bool isFollowUp)
         {
             if (clientId <= 0 || dataFileId <= 0)
                 return BadRequest("Both clientId and dataFileId must be greater than 0.");
 
-            // Check if data file exists and belongs to this client
             var dataFileExists = await _context.data_files
                 .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
 
             if (!dataFileExists)
                 return NotFound("No data file found for this client.");
 
-            // Fetch contacts for that data file EXCEPT unsubscribed ones
+            // Fetch contacts except unsubscribed
             var contacts = await _context.contacts
-                  .Where(c => c.DataFileId == dataFileId &&
-                         !_context.UnsubscribedContacts
-                             .Any(uc => uc.ClientId == clientId && uc.Email == c.email))
-                  .OrderBy(c => c.id)
-                  .Select(c => new
-                  {
-                      c.id,
-                      c.full_name,
-                      c.email,
-                      c.website,
-                      c.company_name,
-                      c.job_title,
-                      c.linkedin_url,
-                      c.country_or_address,
-                      c.email_subject,
-                      c.email_body,
-                      c.created_at,
-                      c.updated_at,
-                      c.email_sent_at,
-                      c.CompanyTelephone,
-                      c.CompanyEmployeeCount,
-                      c.CompanyIndustry,
-                      c.CompanyLinkedInURL,
-                      c.CompanyEventLink
-                  })
-                  .ToListAsync();
+                .Where(c => c.DataFileId == dataFileId &&
+                    !_context.UnsubscribedContacts
+                        .Any(uc => uc.ClientId == clientId && uc.Email == c.email))
+                .OrderBy(c => c.id)
+                .ToListAsync();
+
+            // Yaha follow-up logic apply hoga
+            var result = new List<object>();
+
+            foreach (var c in contacts)
+            {
+                string finalEmailBody = c.email_body;
+
+                if (isFollowUp)
+                {
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, c.id, null);
+
+                    finalEmailBody =
+        $@"{c.email_body}
+
+                {oldThread}";
+                }
+
+                result.Add(new
+                {
+                    c.id,
+                    c.full_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    c.email_subject,
+                    email_body = finalEmailBody,
+                    c.created_at,
+                    c.updated_at,
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    c.CompanyEventLink
+                });
+            }
 
             return Ok(new
             {
-                contactCount = contacts.Count,
-                contacts
+                contactCount = result.Count,
+                contacts = result
             });
         }
 
@@ -842,6 +864,195 @@ namespace PitchGenApi.Controllers
             return Ok(contacts);
         }
 
+        [HttpGet("contacts/by-client-segment")]
+        public async Task<IActionResult> GetContactsBySegmentId(
+    [FromQuery] int clientId,
+    [FromQuery] int segmentId,
+    [FromQuery] bool isFollowUp)
+        {
+            if (clientId <= 0 || segmentId <= 0)
+                return BadRequest("clientId aur segmentId dono 0 se bade hone chahiye.");
+
+            // Step 1: Check Segment exists and belongs to same client
+            var segment = await _context.segments
+                .FirstOrDefaultAsync(s => s.Id == segmentId && s.ClientId == clientId);
+
+            if (segment == null)
+                return NotFound("Is client ke liye segment nahi mila.");
+
+            // Step 2: Get contact IDs from SegmentContacts
+            var contactIds = await _context.segmentContacts
+                .Where(sc => sc.SegmentId == segmentId)
+                .Select(sc => sc.ContactId)
+                .ToListAsync();
+
+            if (!contactIds.Any())
+                return Ok(new { contactCount = 0, contacts = new List<object>() });
+
+            // Step 3: Load contacts one-by-one using foreach (SQL error fix)
+            var contactsRaw = new List<Contact>();
+
+            foreach (var cid in contactIds)
+            {
+                if (cid <= 0)
+                    continue;
+
+                var contact = await _context.contacts
+                    .FirstOrDefaultAsync(c => c.id == cid);
+
+                if (contact != null)
+                    contactsRaw.Add(contact);
+            }
+
+            // Step 4: Load unsubscribed emails
+            var unsubscribedEmails = await _context.UnsubscribedContacts
+                .Where(u => u.ClientId == clientId)
+                .Select(u => u.Email)
+                .ToListAsync();
+
+            var result = new List<object>();
+            // Step 5: Build final response
+            foreach (var c in contactsRaw)
+            {
+                // skip unsubscribed emails
+                if (unsubscribedEmails.Contains(c.email))
+                    continue;
+
+                string finalEmailBody = c.email_body;
+
+                // Add follow-up thread
+                if (isFollowUp)
+                {
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
+                    finalEmailBody =
+                    $@"{c.email_body}
+
+                    {oldThread}";
+                }
+
+                result.Add(new
+                {
+                    c.id,
+                    c.full_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    c.email_subject,
+                    email_body = finalEmailBody,
+                    c.created_at,
+                    c.updated_at,
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    c.CompanyEventLink
+                });
+            }
+
+            return Ok(new
+            {
+                contactCount = result.Count,
+                contacts = result
+            });
+        }
+
+        [HttpGet("segment-contacts")]
+        public async Task<IActionResult> GetContactsBySegmentId([FromQuery] int clientId, [FromQuery] int segmentId)
+        {
+            try
+            {
+                if (clientId <= 0 || segmentId <= 0)
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "clientId aur segmentId dono 0 se bade hone chahiye."
+                    });
+
+                // Step 1: Check Segment exists
+                var seg = await _context.segments
+                    .FirstOrDefaultAsync(x => x.Id == segmentId && x.ClientId == clientId);
+
+                if (seg == null)
+                    return NotFound(new { success = false, message = "Segment nahi mila." });
+
+                // Step 2: SegmentContacts → ContactId list nikaalo
+                var contactIds = await _context.segmentContacts
+                    .Where(sc => sc.SegmentId == segmentId)
+                    .Select(sc => sc.ContactId)
+                    .ToListAsync();
+
+                if (!contactIds.Any())
+                    return Ok(new { success = true, contactCount = 0, contacts = new List<object>() });
+
+                // Step 3: Unsubscribed emails list
+                var unsubscribedEmails = await _context.UnsubscribedContacts
+                    .Where(u => u.ClientId == clientId)
+                    .Select(u => u.Email)
+                    .ToListAsync();
+
+                // Step 4: Contacts load karo foreach ke through (id → record fetch)
+                var contactsRaw = new List<Contact>();
+
+                foreach (var cid in contactIds)
+                {
+                    var contact = await _context.contacts
+                        .FirstOrDefaultAsync(c => c.id == cid);
+
+                    if (contact != null)
+                        contactsRaw.Add(contact);
+                }
+
+
+                // Step 5: unsubscribe flag add karo
+                var contacts = contactsRaw
+                    .Select(c => new
+                    {
+                        c.id,
+                        c.full_name,
+                        c.email,
+                        c.website,
+                        c.company_name,
+                        c.job_title,
+                        c.linkedin_url,
+                        c.country_or_address,
+                        c.email_subject,
+                        c.email_body,
+                        c.created_at,
+                        c.updated_at,
+                        c.email_sent_at,
+                        c.CompanyTelephone,
+                        c.CompanyEmployeeCount,
+                        c.CompanyIndustry,
+                        c.CompanyLinkedInURL,
+                        c.CompanyEventLink,
+
+                        unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
+                    })
+                    .ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    contactCount = contacts.Count,
+                    contacts
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Server error aaya.",
+                    error = ex.Message
+                });
+            }
+        }
+
+
 
         [HttpPost("update-segment")]
         public async Task<IActionResult> UpdateSegmentById([FromQuery] int id, [FromQuery] string name, [FromQuery] string? description)
@@ -1130,6 +1341,36 @@ namespace PitchGenApi.Controllers
             var response = await _repository.AddUnsubscribedAsync(ClientId, email);
             return Ok(response);
         }
+
+
+        //private async Task<string> BuildEmailThreadAsync(int clientId, int datafileid)
+        //{
+        //    var logs = await _context.EmailLogs
+        //        .Where(x => x.ClientId == clientId && x.DataFileId == datafileid)
+        //        .OrderByDescending(x => x.SentAt)
+        //        .ToListAsync();
+
+        //    if (!logs.Any())
+        //        return "";
+
+        //    StringBuilder sb = new StringBuilder();
+
+        //    foreach (var log in logs)
+        //    {
+        //        sb.AppendLine("-----Original Message-----");
+        //        //sb.AppendLine($"From: {log.FromEmail}");
+        //        sb.AppendLine($"Sent: {log.SentAt}");
+        //        sb.AppendLine($"To: {log.ToEmail}");
+        //        sb.AppendLine($"Subject: {log.Subject}");
+        //        sb.AppendLine();
+        //        sb.AppendLine(log.Body);
+        //        sb.AppendLine();
+        //    }
+
+        //    return sb.ToString();
+        //}
+
+       
 
     }
 }
