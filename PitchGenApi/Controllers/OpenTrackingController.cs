@@ -203,6 +203,14 @@ public class OpenTrackingController : ControllerBase
             return Redirect(url); // fallback
         }
 
+        var open = await _context.EmailTrackingLogs
+             .FirstOrDefaultAsync(x => x.TrackingId == trackingId && x.EventType == "Open");
+
+        if (open == null)
+        {
+            return Redirect(url);
+        }
+
         // ============================================
         // Basic required validation
         // ============================================
