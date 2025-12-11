@@ -56,10 +56,10 @@ public class CampaignUpdateModel
         [Required]
         public string CampaignName { get; set; }
 
-        [Required]
-        public int PromptId { get; set; }
+        public int? PromptId { get; set; }
 
         public string? ZohoViewId { get; set; }  // Make nullable
+        public string? Description { get; set; }  // Make nullable
 
         public int? SegmentId { get; set; }      // Add this
     }

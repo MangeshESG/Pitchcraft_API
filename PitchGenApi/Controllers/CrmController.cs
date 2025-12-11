@@ -63,6 +63,7 @@ namespace PitchGenApi.Controllers
                     CompanyIndustry = c.CompanyIndustry,
                     CompanyLinkedInURL = c.CompanyLinkedInURL,
                     CompanyEventLink = c.CompanyEventLink,
+                    Notes = c.Notes,
                     created_at = DateTime.UtcNow,
                     updated_at = null
                 }).ToList();
@@ -129,7 +130,8 @@ namespace PitchGenApi.Controllers
                     CompanyLinkedInURL = request.CompanyLinkedInURL,
                     CompanyEventLink = request.CompanyEventLink,
                     created_at = DateTime.UtcNow,
-                    updated_at = null
+                    updated_at = null,
+                    Notes = request.Notes
                 };
 
                 _context.contacts.Add(contact);
@@ -337,7 +339,8 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.CompanyEventLink
+                        c.CompanyEventLink,
+                        c.Notes
                     })
                     .ToListAsync();
 
@@ -363,6 +366,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
                         c.CompanyEventLink,
+                        c.Notes,
 
                         unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
                     })
@@ -1029,6 +1033,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
                         c.CompanyEventLink,
+                        c.Notes,
 
                         unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
                     })
