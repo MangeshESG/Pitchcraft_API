@@ -7,8 +7,8 @@ namespace PitchGenApi.Model
     public class Campaign
     {
         public int Id { get; set; }
-        public string CampaignName { get; set; }
-        public int PromptId { get; set; }
+        public string? CampaignName { get; set; }
+        public int? PromptId { get; set; }
         public string? ZohoViewId { get; set; }
         public int? SegmentId { get; set; }      // Add this
         public int ClientId { get; set; }
