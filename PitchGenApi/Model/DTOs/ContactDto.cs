@@ -15,7 +15,7 @@
         public string? CompanyEmployeeCount { get; set; }
         public string? CompanyIndustry { get; set; }
         public string? CompanyLinkedInURL { get; set; }
-        public string? CompanyEventLink { get; set; }
+        //public string? CompanyEventLink { get; set; }
         public string? Notes { get; set; }
     }
 }

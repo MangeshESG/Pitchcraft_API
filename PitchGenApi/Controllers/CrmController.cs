@@ -62,7 +62,7 @@ namespace PitchGenApi.Controllers
                     CompanyEmployeeCount = c.CompanyEmployeeCount,
                     CompanyIndustry = c.CompanyIndustry,
                     CompanyLinkedInURL = c.CompanyLinkedInURL,
-                    CompanyEventLink = c.CompanyEventLink,
+                    //CompanyEventLink = c.CompanyEventLink,
                     Notes = c.Notes,
                     created_at = DateTime.UtcNow,
                     updated_at = null
@@ -128,7 +128,7 @@ namespace PitchGenApi.Controllers
                     CompanyEmployeeCount = request.CompanyEmployeeCount,
                     CompanyIndustry = request.CompanyIndustry,
                     CompanyLinkedInURL = request.CompanyLinkedInURL,
-                    CompanyEventLink = request.CompanyEventLink,
+                    //CompanyEventLink = request.CompanyEventLink,
                     created_at = DateTime.UtcNow,
                     updated_at = null,
                     Notes = request.Notes
@@ -274,7 +274,7 @@ namespace PitchGenApi.Controllers
                     c.CompanyEmployeeCount,
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
-                    c.CompanyEventLink
+                    //c.CompanyEventLink
                 });
             }
 
@@ -339,7 +339,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.CompanyEventLink,
+                        //c.CompanyEventLink,
                         c.Notes
                     })
                     .ToListAsync();
@@ -365,7 +365,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.CompanyEventLink,
+                        //c.CompanyEventLink,
                         c.Notes,
 
                         unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
@@ -953,7 +953,7 @@ namespace PitchGenApi.Controllers
                     c.CompanyEmployeeCount,
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
-                    c.CompanyEventLink
+                    //c.CompanyEventLink
                 });
             }
 
@@ -1032,7 +1032,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.CompanyEventLink,
+                        //c.CompanyEventLink,
                         c.Notes,
 
                         unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
