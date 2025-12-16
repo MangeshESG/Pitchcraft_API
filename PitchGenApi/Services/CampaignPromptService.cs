@@ -48,6 +48,21 @@ namespace PitchGenApi.Services
             _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
         }
 
+        private static readonly HashSet<string> RuntimeOnlyPlaceholders =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "full_name",
+            "first_name",
+            "last_name",
+            "job_title",
+            "location",
+            "linkedin_url",
+            "company_name",
+            "company_name_friendly",
+            "website"
+        };
+
+
         // Single method to handle both start and continue
         public async Task<object> ProcessChatAsync(string userId, string message, string systemPrompt, string model)
         {
@@ -409,7 +424,9 @@ namespace PitchGenApi.Services
                 ? new Dictionary<string, string>()
                 : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues) ?? new Dictionary<string, string>();
 
-            foreach (var kv in newValues)
+            var filtered = RemoveRuntimeOnlyPlaceholders(newValues);
+
+            foreach (var kv in filtered)
                 existing[kv.Key] = kv.Value;
 
             campaign.PlaceholderValues = JsonConvert.SerializeObject(existing);
@@ -423,14 +440,17 @@ namespace PitchGenApi.Services
                 foreach (var (key, value) in existing)
                 {
                     if (string.IsNullOrWhiteSpace(key)) continue;
-                    filledBlueprint = Regex.Replace(
-                        filledBlueprint,
-                        $"{{{Regex.Escape(key)}}}",
-                        value ?? string.Empty,
-                        RegexOptions.IgnoreCase);
+                    // ✅ NEVER touch CampaignBlueprint here
+                    campaign.PlaceholderValues = JsonConvert.SerializeObject(existing);
+                    campaign.PlaceholderListWithValue =
+                        string.Join("\n", existing.Select(kv => $"{{{kv.Key}}} = {kv.Value}"));
+
+                    campaign.UpdatedAt = DateTime.UtcNow;
+                    await db.SaveChangesAsync();
+
                 }
 
-                campaign.CampaignBlueprint = filledBlueprint;
+
             }
             catch (Exception ex)
             {
@@ -440,6 +460,44 @@ namespace PitchGenApi.Services
             campaign.UpdatedAt = DateTime.UtcNow;
             await db.SaveChangesAsync();
         }
+
+        private static string ApplyPlaceholders(
+            string? blueprint,
+            Dictionary<string, string>? values)
+        {
+            if (string.IsNullOrWhiteSpace(blueprint) || values == null || values.Count == 0)
+                return blueprint ?? string.Empty;
+
+            string result = blueprint;
+
+            foreach (var (key, value) in values)
+            {
+                result = Regex.Replace(
+                    result,
+                    $"{{{Regex.Escape(key)}}}",
+                    value ?? string.Empty,
+                    RegexOptions.IgnoreCase
+                );
+            }
+
+            return result;
+        }
+
+        private static Dictionary<string, string> RemoveRuntimeOnlyPlaceholders(
+        Dictionary<string, string>? input)
+            {
+                if (input == null || input.Count == 0)
+                    return new Dictionary<string, string>();
+
+                return input
+                    .Where(kv => !RuntimeOnlyPlaceholders.Contains(kv.Key))
+                    .ToDictionary(
+                        kv => kv.Key,
+                        kv => kv.Value,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+            }
+
 
         public class CompletionResponse
         {
@@ -627,7 +685,7 @@ namespace PitchGenApi.Services
                 : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues)
                   ?? new Dictionary<string, string>();
 
-          
+
             // Create clean in-memory session
             _sessions[req.UserId] = new CampaignSession
             {
@@ -698,6 +756,8 @@ namespace PitchGenApi.Services
             return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5.1", req.UserId);
         }
 
+
+        
     }
 
 }

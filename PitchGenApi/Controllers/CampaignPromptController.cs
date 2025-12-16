@@ -329,25 +329,48 @@ namespace PitchGenApi.Controllers
                 if (template.TemplateDefinition == null)
                     return StatusCode(500, new { Message = "Template definition is missing" });
 
-                Dictionary<string, string>? placeholderValues = null;
+                // -------------------------------
+                // Deserialize placeholder values
+                // -------------------------------
+                Dictionary<string, string> placeholderValues =
+                    string.IsNullOrEmpty(template.PlaceholderValues)
+                        ? new Dictionary<string, string>()
+                        : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
+                          ?? new Dictionary<string, string>();
 
-                if (!string.IsNullOrEmpty(template.PlaceholderValues))
-                    placeholderValues = JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues);
+                // -------------------------------
+                // Runtime placeholder replacement
+                // -------------------------------
+                string filledBlueprint = ApplyPlaceholders(
+                    template.CampaignBlueprint,
+                    placeholderValues
+                );
 
+                // -------------------------------
+                // Build response
+                // -------------------------------
                 var result = new CampaignTemplateDetailResponse
                 {
                     Id = template.Id,
                     ClientId = template.ClientId,
                     TemplateDefinitionId = template.TemplateDefinitionId,
                     TemplateName = template.TemplateDefinition.TemplateName,
+
                     AIInstructions = template.TemplateDefinition.AIInstructions,
                     AIInstructionsForEdit = template.TemplateDefinition.AIInstructionsForEdit,
+
                     PlaceholderList = template.TemplateDefinition.PlaceholderList,
                     PlaceholderListExtensive = template.TemplateDefinition.PlaceholderListExtensive,
                     MasterBlueprintUnpopulated = template.TemplateDefinition.MasterBlueprintUnpopulated,
+
                     PlaceholderListWithValue = template.PlaceholderListWithValue,
-                    CampaignBlueprint = template.CampaignBlueprint,
+
+                    // ⭐ FILLED version for frontend
+                    CampaignBlueprint = filledBlueprint,
+
+                    // Raw values still exposed if frontend needs them
                     PlaceholderValues = placeholderValues,
+
                     SelectedModel = template.SelectedModel,
                     CreatedAt = template.CreatedAt,
                     UpdatedAt = template.UpdatedAt,
@@ -380,8 +403,7 @@ namespace PitchGenApi.Controllers
                 if (!string.IsNullOrEmpty(request.PlaceholderListWithValue))
                     template.PlaceholderListWithValue = request.PlaceholderListWithValue;
 
-                if (!string.IsNullOrEmpty(request.CampaignBlueprint))
-                    template.CampaignBlueprint = request.CampaignBlueprint;
+
 
                 if (request.PlaceholderValues != null)
                     template.PlaceholderValues = JsonSerializer.Serialize(request.PlaceholderValues);
@@ -479,7 +501,8 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("example/generate")]
-        public async Task<IActionResult> RegenerateExample([FromBody] GenerateExampleOutputRequest req)
+        public async Task<IActionResult> RegenerateExample(
+            [FromBody] GenerateExampleOutputRequest req)
         {
             if (req.CampaignTemplateId <= 0)
                 return BadRequest(new { Message = "Valid CampaignTemplateId required" });
@@ -491,23 +514,27 @@ namespace PitchGenApi.Controllers
             if (template == null)
                 return NotFound(new { Message = "Template not found" });
 
-            // ✅ Merge placeholder values from DB + frontend
-            var vals = string.IsNullOrEmpty(template.PlaceholderValues)
+            // 1️⃣ Load conversation placeholders from DB
+            var persistedVals = string.IsNullOrEmpty(template.PlaceholderValues)
                 ? new Dictionary<string, string>()
                 : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
                   ?? new Dictionary<string, string>();
 
+            // 2️⃣ Clone so DB data is never mutated
+            var runtimeVals = new Dictionary<string, string>(persistedVals);
+
+            // 3️⃣ Merge runtime placeholders from frontend
             if (req.PlaceholderValues?.Count > 0)
             {
                 foreach (var pair in req.PlaceholderValues)
-                    vals[pair.Key] = pair.Value;
+                    runtimeVals[pair.Key] = pair.Value;
             }
 
             string master = template.TemplateDefinition.MasterBlueprintUnpopulated ?? "";
 
-            // ⭐ Call service → returns: "__FILLED_TEMPLATE_START__ ... __FILLED_TEMPLATE_END__ ...html..."
+            // 4️⃣ Generate email
             var rawResult = await _campaignService.GenerateExampleOutputAsync(
-                vals,
+                runtimeVals,
                 master,
                 req.Model ?? "gpt-4o"
             );
@@ -515,7 +542,7 @@ namespace PitchGenApi.Controllers
             string filledTemplate = "";
             string html = rawResult ?? "";
 
-            // ⭐ Extract both parts from rawResult
+            // 5️⃣ Extract filled template + HTML
             if (!string.IsNullOrEmpty(rawResult))
             {
                 int s = rawResult.IndexOf("__FILLED_TEMPLATE_START__");
@@ -528,15 +555,16 @@ namespace PitchGenApi.Controllers
                         e - (s + "__FILLED_TEMPLATE_START__".Length)
                     );
 
-                    html = rawResult.Substring(e + "__FILLED_TEMPLATE_END__".Length);
+                    html = rawResult.Substring(
+                        e + "__FILLED_TEMPLATE_END__".Length
+                    );
                 }
             }
 
-            // ⭐ Save only HTML and placeholder values to DB
+            // 6️⃣ Save ONLY example output
             if (!string.IsNullOrEmpty(html))
             {
                 template.ExampleOutput = html;
-                template.PlaceholderValues = JsonSerializer.Serialize(vals);
                 template.UpdatedAt = DateTime.UtcNow;
                 await _dbContext.SaveChangesAsync();
             }
@@ -544,8 +572,8 @@ namespace PitchGenApi.Controllers
             return Ok(new
             {
                 Success = true,
-                ExampleOutput = html,     // final HTML
-                FilledTemplate = filledTemplate // ⭐ the full final prompt (email body before GPT)
+                ExampleOutput = html,
+                FilledTemplate = filledTemplate
             });
         }
 
@@ -658,10 +686,11 @@ namespace PitchGenApi.Controllers
             return Ok(new { response = result });
         }
 
+        private const string ExampleOutputKey = "example_output";
 
         [HttpPost("template/update-placeholders")]
         public async Task<IActionResult> UpdatePlaceholders(
-    [FromBody] UpdatePlaceholdersRequest req)
+            [FromBody] UpdatePlaceholdersRequest req)
         {
             if (req.TemplateId <= 0)
                 return BadRequest(new { Message = "TemplateId required" });
@@ -676,51 +705,89 @@ namespace PitchGenApi.Controllers
             if (campaign.TemplateDefinition == null)
                 return StatusCode(500, new { Message = "Template definition missing" });
 
-            // ✅ Read existing placeholder values safely
-            Dictionary<string, string> existing =
-                string.IsNullOrEmpty(campaign.PlaceholderValues)
-                    ? new Dictionary<string, string>()
-                    : JsonSerializer.Deserialize<Dictionary<string, string>>(campaign.PlaceholderValues)
-                      ?? new Dictionary<string, string>();
+            var existing = string.IsNullOrEmpty(campaign.PlaceholderValues)
+                ? new Dictionary<string, string>()
+                : JsonSerializer.Deserialize<Dictionary<string, string>>(campaign.PlaceholderValues)
+                  ?? new Dictionary<string, string>();
 
-            // ✅ Merge / replace values
             if (req.PlaceholderValues != null)
             {
                 foreach (var kv in req.PlaceholderValues)
+                {
+                    // 🚫 SKIP runtime-only placeholders
+                    if (RuntimeOnlyPlaceholders.Contains(kv.Key))
+                        continue;
+
+                    // ✅ Store allowed placeholders
                     existing[kv.Key] = kv.Value;
+
+                    // ✅ Sync example_output
+                    if (kv.Key.Equals("example_output", StringComparison.OrdinalIgnoreCase))
+                    {
+                        campaign.ExampleOutput = kv.Value;
+                    }
+                }
             }
 
-            // ✅ Save JSON
+            // Save JSON (ONLY allowed placeholders)
             campaign.PlaceholderValues = JsonSerializer.Serialize(existing);
 
-            // ✅ Human-readable version
-            campaign.PlaceholderListWithValue =
-                string.Join("\n", existing.Select(kv => $"{{{kv.Key}}} = {kv.Value}"));
+            // Human-readable list (ONLY allowed placeholders)
+            campaign.PlaceholderListWithValue = string.Join(
+                "\n",
+                existing.Select(kv => $"{{{kv.Key}}} = {kv.Value}")
+            );
 
-            // ✅ Rebuild CampaignBlueprint from MASTER
-            string blueprint = campaign.TemplateDefinition.MasterBlueprintUnpopulated ?? "";
+            // ✅ Blueprint ALWAYS stays unpopulated
+            campaign.CampaignBlueprint =
+                campaign.TemplateDefinition.MasterBlueprintUnpopulated;
 
-            foreach (var kv in existing)
-            {
-                blueprint = Regex.Replace(
-                    blueprint,
-                    $"{{{Regex.Escape(kv.Key)}}}",
-                    kv.Value ?? "",
-                    RegexOptions.IgnoreCase
-                );
-            }
-
-            campaign.CampaignBlueprint = blueprint;
             campaign.UpdatedAt = DateTime.UtcNow;
-
             await _dbContext.SaveChangesAsync();
 
             return Ok(new
             {
                 Success = true,
-                Message = "Placeholders updated successfully"
+                Message = "Placeholders saved (runtime placeholders excluded)"
             });
         }
+
+        private static string ApplyPlaceholders(
+
+            string blueprint,
+            Dictionary<string, string>? values)
+        {
+            if (string.IsNullOrEmpty(blueprint) || values == null || values.Count == 0)
+                return blueprint ?? "";
+
+            string result = blueprint;
+
+            foreach (var (key, value) in values)
+            {
+                result = Regex.Replace(
+                    result,
+                    $"{{{Regex.Escape(key)}}}",
+                    value ?? "",
+                    RegexOptions.IgnoreCase
+                );
+            }
+
+            return result;
+        }
+
+        private static readonly HashSet<string> RuntimeOnlyPlaceholders =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "full_name",
+            "first_name",
+            "last_name",
+            "job_title",
+            "location",
+            "linkedin_url",
+            "company_name",
+            "company_name_friendly",
+            "website"
+        };
 
 
 
