@@ -6,31 +6,33 @@ using System.Net;
 public static class EmailTrackingHelper
 {
     public static string GetPixelTag(
-     string email, int clientId, int? dataFileId, int? segmentId,
-     int contactId, string fullName, string location, string company,
-     string website, string linkedin, string jobTitle, string trackingId)
-    {
-        string B64(string s) =>
-            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(s ?? ""));
+    string email, int clientId, int? dataFileId, int? segmentId,
+    int contactId, string fullName, string location, string company,
+    string website, string linkedin, string jobTitle, string trackingId)
+{
+    string B64(string s) =>
+        Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(s ?? ""));
 
-        string B64Int(int? num) =>
-            Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes((num ?? 0).ToString()));
+    string B64Int(int? num) =>
+        Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes((num ?? 0).ToString()));
 
-        return $@"<img src=""https://app.pitchkraft.ai/track/open?
-                email={B64(email)}
-                &clientId={B64Int(clientId)}
-                &SegmentId={B64Int(segmentId)}
-                &DataFileId={B64Int(dataFileId)}
-                &contactId={B64Int(contactId)}
-                &FullName={B64(fullName)}
-                &Location={B64(location)}
-                &Company={B64(company)}
-                &Website={B64(website)}
-                &linkedin_URL={B64(linkedin)}
-                &JobTitle={B64(jobTitle)}
-                &trackingId={B64(trackingId)}
-                width=""1"" height=""1"" style=""display:none;max-height:0;overflow:hidden;"" alt="""" />";
-    }
+    var url =
+        "https://app.pitchkraft.ai/track/open" +
+        "?email=" + B64(email) +
+        "&clientId=" + B64Int(clientId) +
+        "&SegmentId=" + B64Int(segmentId) +
+        "&DataFileId=" + B64Int(dataFileId) +
+        "&contactId=" + B64Int(contactId) +
+        "&FullName=" + B64(fullName) +
+        "&Location=" + B64(location) +
+        "&Company=" + B64(company) +
+        "&Website=" + B64(website) +
+        "&linkedin_URL=" + B64(linkedin) +
+        "&JobTitle=" + B64(jobTitle) +
+        "&trackingId=" + B64(trackingId);
+
+    return $"<img src=\"{url}\" width=\"1\" height=\"1\" style=\"display:none;max-height:0;overflow:hidden;\" alt=\"\" />";
+}
 
 
 
