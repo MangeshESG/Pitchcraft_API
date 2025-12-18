@@ -28,7 +28,7 @@ public static class EmailTrackingHelper
                 &Website={B64(website)}
                 &linkedin_URL={B64(linkedin)}
                 &JobTitle={B64(jobTitle)}
-                &trackingId={B64(trackingId)}""
+                &trackingId={B64(trackingId)}
                 width=""1"" height=""1"" style=""display:none;max-height:0;overflow:hidden;"" alt="""" />";
     }
 
