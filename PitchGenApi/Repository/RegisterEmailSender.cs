@@ -23,9 +23,9 @@ namespace PitchGenApi.Helpers
         private readonly AppDbContext _context;
         private readonly EmailTemplateHelper _templateHelper;
 
-        private const string FromEmail = "pitchcraft@dataji.co";
+        private const string FromEmail = "support@pitchkraft.ai";
         private const string FromName = "PitchGen";
-        private const string FromPassword = "z7d&73W2f";
+        private const string FromPassword = "Mdx020*0m";
 
         public RegisterEmailSender(AppDbContext context, EmailTemplateHelper templateHelper)
         {
@@ -40,7 +40,7 @@ namespace PitchGenApi.Helpers
 
         private static SmtpClient CreateSmtpClient() => new()
         {
-            Host = "213.171.222.69",
+            Host = "mail.pitchkraft.ai",
             Port = 587,
             EnableSsl = true,
             Credentials = new NetworkCredential(FromEmail, FromPassword)
