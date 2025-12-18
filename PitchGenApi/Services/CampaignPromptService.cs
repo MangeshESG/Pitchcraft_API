@@ -420,44 +420,32 @@ namespace PitchGenApi.Services
                 return;
             }
 
+            // -------------------------------
+            // Deserialize existing values
+            // -------------------------------
             var existing = string.IsNullOrEmpty(campaign.PlaceholderValues)
                 ? new Dictionary<string, string>()
-                : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues) ?? new Dictionary<string, string>();
+                : JsonConvert.DeserializeObject<Dictionary<string, string>>(campaign.PlaceholderValues)
+                  ?? new Dictionary<string, string>();
 
+            // -------------------------------
+            // Remove runtime-only placeholders
+            // -------------------------------
             var filtered = RemoveRuntimeOnlyPlaceholders(newValues);
 
             foreach (var kv in filtered)
                 existing[kv.Key] = kv.Value;
 
+            // -------------------------------
+            // ✅ SINGLE DB UPDATE (NO LOOP)
+            // -------------------------------
             campaign.PlaceholderValues = JsonConvert.SerializeObject(existing);
-            campaign.PlaceholderListWithValue = string.Join("\n", existing.Select(kv => $"{{{kv.Key}}} = {kv.Value}"));
+            campaign.PlaceholderListWithValue =
+                string.Join("\n", existing.Select(kv => $"{{{kv.Key}}} = {kv.Value}"));
 
-            try
-            {
-                string unpopulated = campaign.TemplateDefinition?.MasterBlueprintUnpopulated ?? string.Empty;
-                string filledBlueprint = unpopulated;
-
-                foreach (var (key, value) in existing)
-                {
-                    if (string.IsNullOrWhiteSpace(key)) continue;
-                    // ✅ NEVER touch CampaignBlueprint here
-                    campaign.PlaceholderValues = JsonConvert.SerializeObject(existing);
-                    campaign.PlaceholderListWithValue =
-                        string.Join("\n", existing.Select(kv => $"{{{kv.Key}}} = {kv.Value}"));
-
-                    campaign.UpdatedAt = DateTime.UtcNow;
-                    await db.SaveChangesAsync();
-
-                }
-
-
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Blueprint Build Error] {ex.Message}");
-            }
-
+            // ❌ NEVER touch CampaignBlueprint here
             campaign.UpdatedAt = DateTime.UtcNow;
+
             await db.SaveChangesAsync();
         }
 
@@ -485,18 +473,18 @@ namespace PitchGenApi.Services
 
         private static Dictionary<string, string> RemoveRuntimeOnlyPlaceholders(
         Dictionary<string, string>? input)
-            {
-                if (input == null || input.Count == 0)
-                    return new Dictionary<string, string>();
+        {
+            if (input == null || input.Count == 0)
+                return new Dictionary<string, string>();
 
-                return input
-                    .Where(kv => !RuntimeOnlyPlaceholders.Contains(kv.Key))
-                    .ToDictionary(
-                        kv => kv.Key,
-                        kv => kv.Value,
-                        StringComparer.OrdinalIgnoreCase
-                    );
-            }
+            return input
+                .Where(kv => !RuntimeOnlyPlaceholders.Contains(kv.Key))
+                .ToDictionary(
+                    kv => kv.Key,
+                    kv => kv.Value,
+                    StringComparer.OrdinalIgnoreCase
+                );
+        }
 
 
         public class CompletionResponse
@@ -757,7 +745,8 @@ namespace PitchGenApi.Services
         }
 
 
-        
+
+
     }
 
 }

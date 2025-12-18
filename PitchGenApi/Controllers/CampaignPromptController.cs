@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using PitchGenApi.Model;
 
 namespace PitchGenApi.Controllers
 {
@@ -62,6 +63,16 @@ namespace PitchGenApi.Controllers
 
                 _dbContext.CampaignTemplateDefinitions.Add(templateDef);
                 await _dbContext.SaveChangesAsync();
+
+                var placeholderKeys = ExtractPlaceholderKeys(
+                    request.AIInstructions,
+                    request.AIInstructionsForEdit,
+                    request.PlaceholderList,
+                    request.PlaceholderListExtensive,
+                    request.MasterBlueprintUnpopulated
+                );
+
+                await SyncPlaceholderDefinitions(placeholderKeys);
 
                 return Ok(new
                 {
@@ -155,6 +166,18 @@ namespace PitchGenApi.Controllers
 
 
                 await _dbContext.SaveChangesAsync();
+
+                // 🔁 Re-sync placeholders if instructions changed
+                var placeholderKeys = ExtractPlaceholderKeys(
+                    request.AIInstructions,
+                    request.AIInstructionsForEdit,
+                    request.PlaceholderList,
+                    request.PlaceholderListExtensive,
+                    request.MasterBlueprintUnpopulated
+                );
+
+                await SyncPlaceholderDefinitions(placeholderKeys);
+
 
                 return Ok(new { Success = true, Message = "Template definition updated successfully" });
             }
@@ -607,12 +630,21 @@ namespace PitchGenApi.Controllers
                 ClientId = req.ClientId,
                 TemplateDefinitionId = req.TemplateDefinitionId,
                 TemplateName = req.TemplateName,
+
+                // ✅ MASTER → INSTANCE COPY (CRITICAL)
+                CampaignBlueprint = templateDef.MasterBlueprintUnpopulated,
+
+                // ✅ clean initial state
                 PlaceholderValues = "{}",
+                PlaceholderListWithValue = "",
+
                 SelectedModel = templateDef.SelectedModel,
-                CreatedAt = DateTime.UtcNow,
                 SearchURLCount = templateDef.SearchURLCount,
-                SubjectInstructions = templateDef.SubjectInstructions
+                SubjectInstructions = templateDef.SubjectInstructions,
+
+                CreatedAt = DateTime.UtcNow
             };
+
 
             _dbContext.CampaignTemplates.Add(campaign);
             await _dbContext.SaveChangesAsync();
@@ -789,6 +821,120 @@ namespace PitchGenApi.Controllers
             "website"
         };
 
+
+        // ============================================
+        // 🎨 ELEMENTS TAB – PLACEHOLDERS WITH METADATA
+        // ============================================
+        [HttpGet("placeholders/by-campaign/{campaignId}")]
+        public async Task<IActionResult> GetPlaceholdersForCampaign(int campaignId)
+        {
+            var campaign = await _dbContext.CampaignTemplates
+                .FirstOrDefaultAsync(c => c.Id == campaignId);
+
+            if (campaign == null)
+                return NotFound(new { Message = "Campaign not found" });
+
+            var values = string.IsNullOrEmpty(campaign.PlaceholderValues)
+                ? new Dictionary<string, string>()
+                : JsonSerializer.Deserialize<Dictionary<string, string>>(campaign.PlaceholderValues)
+                  ?? new Dictionary<string, string>();
+
+            var placeholders = await _dbContext.PlaceholderDefinitions
+                .OrderBy(p => p.Category)
+                .ThenBy(p => p.FriendlyName)
+                .Select(p => new
+                {
+                    key = p.PlaceholderKey,
+                    friendlyName = p.FriendlyName,
+                    description = p.Description,
+                    category = p.Category,
+                    inputType = p.InputType,
+                    uiSize = p.UiSize,
+                    expandable = p.IsExpandable,
+                    isRuntimeOnly = p.IsRuntimeOnly,
+                    value = values.ContainsKey(p.PlaceholderKey)
+                        ? values[p.PlaceholderKey]
+                        : ""
+                })
+                .ToListAsync();
+
+            return Ok(placeholders);
+        }
+
+        // ============================================
+        // 🔁 PLACEHOLDER DEFINITION SYNC HELPERS
+        // ============================================
+
+        private static HashSet<string> ExtractPlaceholderKeys(params string?[] sources)
+        {
+            var regex = new Regex(@"\{([^}]+)\}");
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var src in sources)
+            {
+                if (string.IsNullOrWhiteSpace(src)) continue;
+
+                foreach (Match m in regex.Matches(src))
+                    result.Add(m.Groups[1].Value.Trim());
+            }
+
+            return result;
+        }
+
+        private async Task SyncPlaceholderDefinitions(IEnumerable<string> keys)
+        {
+            var existingKeys = (await _dbContext.PlaceholderDefinitions
+                    .Select(p => p.PlaceholderKey)
+                    .ToListAsync())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+
+
+            foreach (var key in keys)
+            {
+                if (existingKeys.Contains(key))
+                    continue;
+
+                _dbContext.PlaceholderDefinitions.Add(new PlaceholderDefinition
+                {
+                    PlaceholderKey = key,
+                    FriendlyName = Regex.Replace(key, "_+", " ")
+                                        .Trim()
+                                        .ToUpperInvariant(),
+                    Category = InferCategory(key),
+                    InputType = InferInputType(key),
+                    UiSize = InferUiSize(key),
+                    IsExpandable = key.Contains("example") || key.Contains("output"),
+                    IsRichText = key.Contains("example") || key.Contains("output"),
+                    IsRuntimeOnly = RuntimeOnlyPlaceholders.Contains(key),
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+
+            await _dbContext.SaveChangesAsync();
+        }
+
+        private static string InferCategory(string key)
+        {
+            if (RuntimeOnlyPlaceholders.Contains(key)) return "Contact";
+            if (key.Contains("search")) return "Search";
+            if (key.Contains("example") || key.Contains("output")) return "Output";
+            if (key.Contains("vendor")) return "Vendor";
+            return "Custom";
+        }
+
+        private static string InferInputType(string key)
+        {
+            if (key.Contains("example") || key.Contains("output")) return "richtext";
+            if (key.Contains("instruction")) return "textarea";
+            return "text";
+        }
+
+        private static string InferUiSize(string key)
+        {
+            if (key.Contains("example") || key.Contains("output")) return "xl";
+            return "md";
+        }
 
 
     }
