@@ -16,13 +16,13 @@ public class UserRepository : IUserRepository
         _context = context;
     }
 
-    public async Task<IEnumerable<tbl_clientdetails>> GetAllUsersAsync()
+    public async Task<IEnumerable<ClientDetails>> GetAllUsersAsync()
     {
         try
         {
 
        
-        return await _context.tbl_clientdetails.ToListAsync();
+        return await _context.ClientDetails.ToListAsync();
         }
         catch (Exception )
         {
