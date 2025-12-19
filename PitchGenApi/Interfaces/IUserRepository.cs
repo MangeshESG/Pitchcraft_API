@@ -4,7 +4,7 @@ namespace PitchGenApi.Interfaces
 {
     public interface IUserRepository
     {
-        Task<IEnumerable<tbl_clientdetails>> GetAllUsersAsync();
+        Task<IEnumerable<ClientDetails>> GetAllUsersAsync();
         Task<tbl_clientdetails> GetUserByIdAsync(int id);
         Task<tbl_clientdetails> GetUserByUsernameAsync(string userName);
         Task<ClientDetails> GetUser(string? username);

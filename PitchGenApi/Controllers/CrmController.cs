@@ -159,6 +159,47 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpPost]
+        [Route("update-contact")]
+        public async Task<IActionResult> UpdateContact([FromQuery]int id ,[FromBody] ContactDto model)
+        {
+            try
+            {
+                var contact = await _context.contacts
+                    .FirstOrDefaultAsync(x => x.id == id);
+
+                if (contact == null)
+                {
+                    return NotFound(new { message = "Contact not found" });
+                }
+
+                // Update fields
+                contact.full_name = model.fullName;
+                contact.email = model.email;
+                contact.website = model.website;
+                contact.company_name = model.companyName;
+                contact.company_name = model.companyName;
+                contact.company_name = model.companyName;
+                contact.country_or_address = model.countryOrAddress;
+                contact.email_subject = model.emailSubject;
+                contact.email_body = model.emailBody;
+                contact.CompanyTelephone = model.CompanyTelephone;
+                contact.CompanyLinkedInURL = model.CompanyLinkedInURL;
+                contact.CompanyIndustry = model.CompanyIndustry;
+                contact.CompanyEmployeeCount = model.CompanyEmployeeCount;
+                contact.Notes = model.Notes;
+                contact.updated_at = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new { message = "Contact updated successfully" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
         [HttpGet]
         public async Task<IActionResult> GetContacts([FromQuery] int? dataFileId)
         {

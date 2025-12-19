@@ -81,7 +81,7 @@ namespace PitchGenApi.Controllers
                 FirstName = u.FirstName,
                 LastName = u.LastName,
                 // Assuming ClientID is equivalent to Id in your User model
-                ClientID = u.ClientID,
+                ClientID = u.Id,
                 CompanyName = u.CompanyName
 
             }).ToList();
