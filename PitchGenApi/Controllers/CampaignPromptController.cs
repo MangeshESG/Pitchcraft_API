@@ -72,7 +72,7 @@ namespace PitchGenApi.Controllers
                     request.MasterBlueprintUnpopulated
                 );
 
-                await SyncPlaceholderDefinitions(placeholderKeys);
+                await SyncPlaceholderDefinitions(placeholderKeys, templateDef.Id);
 
                 return Ok(new
                 {
@@ -176,7 +176,7 @@ namespace PitchGenApi.Controllers
                     request.MasterBlueprintUnpopulated
                 );
 
-                await SyncPlaceholderDefinitions(placeholderKeys);
+                await SyncPlaceholderDefinitions(placeholderKeys, request.Id);
 
 
                 return Ok(new { Success = true, Message = "Template definition updated successfully" });
@@ -881,22 +881,26 @@ namespace PitchGenApi.Controllers
             return result;
         }
 
-        private async Task SyncPlaceholderDefinitions(IEnumerable<string> keys)
+        private async Task SyncPlaceholderDefinitions(
+            IEnumerable<string> keys,
+            int templateDefinitionId
+        )
         {
-            var existingKeys = (await _dbContext.PlaceholderDefinitions
-                    .Select(p => p.PlaceholderKey)
-                    .ToListAsync())
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingKeys = await _dbContext.PlaceholderDefinitions
+                .Where(p => p.TemplateDefinitionId == templateDefinitionId)
+                .Select(p => p.PlaceholderKey)
+                .ToListAsync();
 
-
+            var existingSet = existingKeys.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             foreach (var key in keys)
             {
-                if (existingKeys.Contains(key))
+                if (existingSet.Contains(key))
                     continue;
 
                 _dbContext.PlaceholderDefinitions.Add(new PlaceholderDefinition
                 {
+                    TemplateDefinitionId = templateDefinitionId, // ⭐⭐ THIS WAS MISSING
                     PlaceholderKey = key,
                     FriendlyName = Regex.Replace(key, "_+", " ")
                                         .Trim()
@@ -935,6 +939,117 @@ namespace PitchGenApi.Controllers
             if (key.Contains("example") || key.Contains("output")) return "xl";
             return "md";
         }
+
+        // ============================================
+        // 💾 SAVE PLACEHOLDER DEFINITIONS (ADMIN)
+        // ============================================
+        [HttpPost("placeholders/save")]
+        public async Task<IActionResult> SavePlaceholderDefinitions(
+            [FromBody] SavePlaceholderDefinitionsRequest req)
+        {
+            if (req.TemplateDefinitionId <= 0)
+                return BadRequest(new { Message = "TemplateDefinitionId required" });
+
+            // Load existing placeholders for this template
+            var existing = await _dbContext.PlaceholderDefinitions
+                .Where(p => p.TemplateDefinitionId == req.TemplateDefinitionId)
+                .ToListAsync();
+
+            var map = existing.ToDictionary(
+                p => p.PlaceholderKey,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+            foreach (var p in req.Placeholders)
+            {
+                if (map.TryGetValue(p.PlaceholderKey, out var entity))
+                {
+                    // ✅ UPDATE
+                    entity.FriendlyName = p.FriendlyName;
+                    entity.Category = p.Category;
+                    entity.InputType = p.InputType;
+                    entity.UiSize = p.UiSize;
+                    entity.IsRuntimeOnly = p.IsRuntimeOnly;
+                    entity.IsExpandable = p.IsExpandable;
+                    entity.IsRichText = p.IsRichText;
+                    entity.Description = p.Description;
+
+                    entity.OptionsJson = p.Options != null
+                        ? JsonSerializer.Serialize(p.Options)
+                        : null;
+
+                    entity.UpdatedAt = DateTime.UtcNow;
+                }
+                else
+                {
+                    // ✅ INSERT (THIS WAS MISSING)
+                    _dbContext.PlaceholderDefinitions.Add(new PlaceholderDefinition
+                    {
+                        TemplateDefinitionId = req.TemplateDefinitionId,
+                        PlaceholderKey = p.PlaceholderKey,
+                        FriendlyName = p.FriendlyName,
+                        Description = p.Description,
+                        Category = p.Category,
+                        InputType = p.InputType,
+                        UiSize = p.UiSize,
+                        IsRuntimeOnly = p.IsRuntimeOnly,
+                        IsExpandable = p.IsExpandable,
+                        IsRichText = p.IsRichText,
+                        OptionsJson = p.Options != null
+                            ? JsonSerializer.Serialize(p.Options)
+                            : null,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+            }
+
+            await _dbContext.SaveChangesAsync();
+
+            return Ok(new
+            {
+                Success = true,
+                Message = "Placeholder definitions saved"
+            });
+        }
+
+        // ============================================
+        // 📥 GET PLACEHOLDER DEFINITIONS BY TEMPLATE
+        // ============================================
+
+        [HttpGet("placeholders/by-template/{templateDefinitionId}")]
+        public async Task<IActionResult> GetPlaceholdersByTemplate(int templateDefinitionId)
+        {
+            if (templateDefinitionId <= 0)
+                return BadRequest(new { Message = "TemplateDefinitionId required" });
+
+            // 1️⃣ Fetch from DB (NO Json deserialize here)
+            var entities = await _dbContext.PlaceholderDefinitions
+                .Where(p => p.TemplateDefinitionId == templateDefinitionId)
+                .OrderBy(p => p.Category)
+                .ThenBy(p => p.FriendlyName)
+                .ToListAsync();
+
+            // 2️⃣ Map in-memory (SAFE)
+            var result = entities.Select(p => new
+            {
+                placeholderKey = p.PlaceholderKey,
+                friendlyName = p.FriendlyName,
+                description = p.Description,
+                category = p.Category,
+                inputType = p.InputType,
+                uiSize = p.UiSize,
+                isExpandable = p.IsExpandable,
+                isRichText = p.IsRichText,
+                isRuntimeOnly = p.IsRuntimeOnly,
+
+                options = string.IsNullOrWhiteSpace(p.OptionsJson)
+                    ? new List<string>()
+                    : JsonSerializer.Deserialize<List<string>>(p.OptionsJson)
+            });
+
+            return Ok(result);
+        }
+
 
 
     }
