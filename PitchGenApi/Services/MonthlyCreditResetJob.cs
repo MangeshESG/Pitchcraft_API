@@ -5,14 +5,14 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
-//public class MonthlyCreditResetJob
-//{
-//    private readonly AppDbContext _context;
+public class MonthlyCreditResetJob
+{
+    private readonly AppDbContext _context;
 
-//    public MonthlyCreditResetJob(AppDbContext context)
-//    {
-//        _context = context;
-//    }
+    public MonthlyCreditResetJob(AppDbContext context)
+    {
+        _context = context;
+    }
 
     // ✅ Plan hierarchy (small → big)
     private static readonly Dictionary<string, int> PlanPriority = new()
@@ -27,24 +27,24 @@ using System.Threading.Tasks;
     {
         Console.WriteLine($"🕐 [{DateTime.Now}] MonthlyCreditResetJob started...");
 
-//        // ✅ Step 1 — Mark expired plans
-//        var justExpiredPlans = await _context.UserCredits
-//            .Where(u => u.Status.ToLower() == "active" && u.EndDate <= DateTime.UtcNow)
-//            .ToListAsync();
+        // ✅ Step 1 — Mark expired plans
+        var justExpiredPlans = await _context.UserCredits
+            .Where(u => u.Status.ToLower() == "active" && u.EndDate <= DateTime.UtcNow)
+            .ToListAsync();
 
-//        foreach (var plan in justExpiredPlans)
-//            plan.Status = "expired";
+        foreach (var plan in justExpiredPlans)
+            plan.Status = "expired";
 
-//        if (justExpiredPlans.Any())
-//            Console.WriteLine($"⚠️ Marked {justExpiredPlans.Count} plans as expired.");
+        if (justExpiredPlans.Any())
+            Console.WriteLine($"⚠️ Marked {justExpiredPlans.Count} plans as expired.");
 
-//        // ✅ Step 2 — Mark Custom Credits as "Used" if Credits == 0
-//        var customCredits = await _context.UserCredits
-//            .Where(c => c.Plane == "Custom Credit" && c.Credits == 0)
-//            .ToListAsync();
+        // ✅ Step 2 — Mark Custom Credits as "Used" if Credits == 0
+        var customCredits = await _context.UserCredits
+            .Where(c => c.Plane == "Custom Credit" && c.Credits == 0)
+            .ToListAsync();
 
-//        foreach (var plan in customCredits)
-//            plan.Status = "Used";
+        foreach (var plan in customCredits)
+            plan.Status = "Used";
 
         // ✅ Step 3 — Handle expired plans with hierarchy check
         // ✅ Step 3 — Handle expired plans with hierarchy check (EF safe)
@@ -108,16 +108,16 @@ using System.Threading.Tasks;
         }
 
 
-//        // ✅ Step 4 — Reset monthly limits if ResetDate passed
-//        var plansToReset = await _context.UserCredits
-//            .Where(u => u.Status.ToLower() == "active" && u.ResetDate <= DateTime.UtcNow)
-//            .ToListAsync();
+        // ✅ Step 4 — Reset monthly limits if ResetDate passed
+        var plansToReset = await _context.UserCredits
+            .Where(u => u.Status.ToLower() == "active" && u.ResetDate <= DateTime.UtcNow)
+            .ToListAsync();
 
-//        foreach (var plan in plansToReset)
-//            plan.ResetDate = (plan.ResetDate ?? DateTime.UtcNow).AddMonths(1);
+        foreach (var plan in plansToReset)
+            plan.ResetDate = (plan.ResetDate ?? DateTime.UtcNow).AddMonths(1);
 
-//        if (plansToReset.Any())
-//            Console.WriteLine($"🔄 Found {plansToReset.Count} active plans to reset monthly limit.");
+        if (plansToReset.Any())
+            Console.WriteLine($"🔄 Found {plansToReset.Count} active plans to reset monthly limit.");
 
         // ✅ Step 5 — Reset LimitUsed in FinalUserCredit
         var clientIdsToReset = plansToReset
@@ -131,15 +131,15 @@ using System.Threading.Tasks;
                 .Where(f => clientIdsToReset.Contains(f.ClientId))
                 .ToListAsync();
 
-//            foreach (var credit in usersCredits)
-//            {
-//                credit.LimitUsed = 0;
-//                credit.UpdatedAt = DateTime.UtcNow;
-//            }
+            foreach (var credit in usersCredits)
+            {
+                credit.LimitUsed = 0;
+                credit.UpdatedAt = DateTime.UtcNow;
+            }
 
-//            if (usersCredits.Any())
-//                Console.WriteLine($"✅ Reset monthly LimitUsed for {usersCredits.Count} users.");
-//        }
+            if (usersCredits.Any())
+                Console.WriteLine($"✅ Reset monthly LimitUsed for {usersCredits.Count} users.");
+        }
 
         // ✅ Step 6 — Save changes
         await _context.SaveChangesAsync();
@@ -147,4 +147,3 @@ using System.Threading.Tasks;
         Console.WriteLine($"🎯 [{DateTime.Now}] MonthlyCreditResetJob completed successfully.\n");
     }
 }
-
