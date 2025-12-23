@@ -90,16 +90,43 @@ public class ScheduledEmailSendingHelper
         {
             if (Contact == null || string.IsNullOrWhiteSpace(Contact.email))
                 continue;
+
             bool isUnsubscribed = await context.UnsubscribedContacts
                 .AnyAsync(x => x.ClientId == step.ClientId &&
-                      x.Email.ToLower() == Contact.email.ToLower(),
-                      cancellationToken);
+                               x.Email.ToLower() == Contact.email.ToLower(),
+                          cancellationToken);
+
+            // ❗ Email subject/body validation (DO NOT STOP BULK)
+            if (string.IsNullOrWhiteSpace(Contact.email_subject) ||
+                Contact.email_subject.Trim().ToUpper() == "N/A" ||
+                string.IsNullOrWhiteSpace(Contact.email_body) ||
+                Contact.email_body.Trim().ToUpper() == "N/A")
+            {
+                context.EmailLogs.Add(new EmailLog
+                {
+                    StepId = step.Id,
+                    ToEmail = Contact.email,
+                    ContactId = Contact.id,
+                    Subject = Contact.email_subject,
+                    Body = Contact.email_body,
+                    IsSuccess = false,
+                    ErrorMessage = "Email body or subject is incorrect.",
+                    zohoViewName = "from pitch craft",
+                    DataFileId = step.DataFileId,
+                    SegmentId = step.SegmentId,
+                    SentAt = DateTime.UtcNow,
+                    ClientId = step.ClientId,
+                    TrackingId = Guid.NewGuid(),
+                    process_name = "Bulk"
+                });
+
+                continue; // ✅ important (NO return)
+            }
 
             if (isUnsubscribed)
             {
                 Console.WriteLine($"🚫 Skipping email to {Contact.email} - User Unsubscribed.");
 
-                // Add failure log with unsubscribed reason
                 context.EmailLogs.Add(new EmailLog
                 {
                     StepId = step.Id,
@@ -118,10 +145,12 @@ public class ScheduledEmailSendingHelper
                     process_name = "Bulk"
                 });
 
-                continue; // ❗SKIP sending email
+                continue;
             }
+
             if (sentEmails.Contains(Contact.email))
                 continue;
+
             string trackingId = Guid.NewGuid().ToString();
 
             bool alreadySent = await context.EmailLogs
@@ -132,11 +161,13 @@ public class ScheduledEmailSendingHelper
                 Console.WriteLine($"ℹ️ Already sent to: {Contact.email} — skipping.");
                 continue;
             }
+
             string finalEmailBody = Contact.email_body;
 
             if (step.IsFollowUp == true)
             {
-                string oldThread = await _contactRepository.BuildEmailThreadAsync(step.ClientId, step.DataFileId, Contact.id, step.SegmentId);
+                string oldThread = await _contactRepository
+                    .BuildEmailThreadAsync(step.ClientId, step.DataFileId, Contact.id, step.SegmentId);
 
                 finalEmailBody =
                 $@"{Contact.email_body}
@@ -145,9 +176,12 @@ public class ScheduledEmailSendingHelper
             }
 
             sentEmails.Add(Contact.email);
-            string subject = Contact.email_subject ?? "No Subject";
+
+            string subject = Contact.email_subject;
             string toEmail = Contact.email;
-            string bodyWithTracking = Contact.email_body ?? "No Content";
+
+            // ✅ Use finalEmailBody (fix)
+            string bodyWithTracking = finalEmailBody;
 
             bodyWithTracking = EmailTrackingHelper.InjectClickTracking(
                 Contact.email,
@@ -182,7 +216,6 @@ public class ScheduledEmailSendingHelper
 
             try
             {
-
                 using var smtpClient = new SmtpClient(smtpCredential.Server)
                 {
                     Port = smtpCredential.Port,
@@ -208,13 +241,11 @@ public class ScheduledEmailSendingHelper
 
                 if (!string.IsNullOrWhiteSpace(step.BccEmail))
                 {
-                    string cleanBody = Contact.email_body ?? "No Content";
-
                     using var bccMessage = new MailMessage
                     {
                         From = new MailAddress(smtpCredential.FromEmail),
                         Subject = subject,
-                        Body = cleanBody,
+                        Body = Contact.email_body,
                         IsBodyHtml = true,
                         BodyEncoding = System.Text.Encoding.UTF8,
                         SubjectEncoding = System.Text.Encoding.UTF8,
@@ -225,28 +256,21 @@ public class ScheduledEmailSendingHelper
 
                     await smtpClient.SendMailAsync(bccMessage, cancellationToken);
 
-                    Console.WriteLine($"📩 BCC sent for: {toEmail}");
                     var nowUtc = DateTime.UtcNow;
 
                     var dbContact = await context.contacts
                         .AsTracking()
-                        .FirstOrDefaultAsync(c => c.email == toEmail && c.DataFileId == step.DataFileId, cancellationToken);
+                        .FirstOrDefaultAsync(c => c.email == toEmail &&
+                                                  c.DataFileId == step.DataFileId,
+                                              cancellationToken);
 
                     if (dbContact != null)
                     {
                         dbContact.email_sent_at = nowUtc;
-
                         context.Entry(dbContact).Property(x => x.email_sent_at).IsModified = true;
                         context.Entry(dbContact).Property(x => x.updated_at).IsModified = true;
-
-                        var rows = await context.SaveChangesAsync(cancellationToken);
-                        Console.WriteLine($"📌 Contacts updated: {rows}");
+                        await context.SaveChangesAsync(cancellationToken);
                     }
-                    else
-                    {
-                        Console.WriteLine("⚠️ Contact not found for update (email/DataFileId mismatch).");
-                    }
-
                 }
 
                 context.EmailLogs.Add(new EmailLog
@@ -257,7 +281,6 @@ public class ScheduledEmailSendingHelper
                     Subject = subject,
                     Body = Contact.email_body,
                     IsSuccess = true,
-                    ErrorMessage = null,
                     zohoViewName = "from pitch craft",
                     DataFileId = step.DataFileId,
                     SegmentId = step.SegmentId,
@@ -269,8 +292,6 @@ public class ScheduledEmailSendingHelper
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Failed to send to: {toEmail} | Error: {ex.Message}");
-
                 context.EmailLogs.Add(new EmailLog
                 {
                     StepId = step.Id,

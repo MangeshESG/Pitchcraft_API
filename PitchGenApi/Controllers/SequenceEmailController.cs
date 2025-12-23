@@ -268,9 +268,20 @@ namespace PitchGenApi.Controllers
                 var unsubscribedcontact = await _context.UnsubscribedContacts.FirstOrDefaultAsync(x => x.ClientId == dto.clientId && x.Email == dto.ToEmail);
 
                 if (unsubscribedcontact != null)
-                    return BadRequest("Unsubscribed Contact");   // ✅ correct
+                    return BadRequest("Unsubscribed Contact");   // correct
 
+                var emailBody = await _context.contacts
+                    .Where(x => x.id == dto.contactid)
+                    .Select(x => x.email_body)
+                    .FirstOrDefaultAsync();
 
+                if (string.IsNullOrWhiteSpace(dto.Subject) ||
+                  dto.Subject.Trim().ToUpper() == "N/A" ||
+                  string.IsNullOrWhiteSpace(emailBody) ||
+                  emailBody.Trim().ToUpper() == "N/A")
+                {
+                    return BadRequest("Email body or subject is incorrect.");
+                }
                 // 1) Send email
                 var success = await _emailHelper.SendEmailUsingSmtp(
                     dto.clientId,
