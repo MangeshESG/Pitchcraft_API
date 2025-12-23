@@ -176,6 +176,7 @@ namespace PitchGenApi.Controllers
                 // Update fields
                 contact.full_name = model.fullName;
                 contact.email = model.email;
+                contact.job_title = model.jobTitle;
                 contact.website = model.website;
                 contact.company_name = model.companyName;
                 contact.company_name = model.companyName;
