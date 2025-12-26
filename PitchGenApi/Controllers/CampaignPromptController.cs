@@ -1051,6 +1051,27 @@ namespace PitchGenApi.Controllers
         }
 
 
+        [HttpPost("rename-Template")]
+        public async Task<IActionResult> RenameTemplate([FromBody] RenameTemplate rename)
+        {
+            var updatedTemplate = await _campaignService.RenameTemplate(rename);
+
+            if (updatedTemplate == null)
+                return NotFound("Template not found.");
+
+            return Ok("Template Renamed Successfully");
+        }
+
+        [HttpPost("clone-template")]
+        public async Task<IActionResult> CloneTemplate([FromQuery] string clientId, [FromQuery] int templateId)
+        {
+            var clonedTemplate = await _campaignService.CloneTemplateAsync(clientId, templateId);
+
+            if (clonedTemplate == null)
+                return NotFound("Original template not found.");
+
+            return Ok("Template clone Successfully");
+        }
 
     }
 }

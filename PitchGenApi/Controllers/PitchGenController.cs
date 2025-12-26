@@ -1112,6 +1112,7 @@ namespace PitchGenApi.Controllers
                 campaign.PromptId = model.PromptId;
                 campaign.ZohoViewId = model.ZohoViewId;
                 campaign.SegmentId = model.SegmentId;
+                campaign.TemplateId = model.TemplateId;
                 campaign.Description = model.Description;
                 // Update in database
                 _context.Campaigns.Update(campaign);

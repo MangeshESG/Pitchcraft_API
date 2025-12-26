@@ -744,8 +744,58 @@ namespace PitchGenApi.Services
             return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5.1", req.UserId);
         }
 
+        public async Task<CampaignTemplate?> RenameTemplate(RenameTemplate rename)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            // Fetch template
+            var template = await db.CampaignTemplates
+                .FirstOrDefaultAsync(t => t.ClientId == rename.clientId && t.Id == rename.templateId);
 
+            if (template == null)
+                return null;
 
+            // Update template name
+            template.TemplateName = rename.TemplateName;
+            template.UpdatedAt = DateTime.UtcNow;
+
+            await db.SaveChangesAsync();
+
+            return template;
+        }
+        public async Task<CampaignTemplate?> CloneTemplateAsync(string clientId, int templateId)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            // Fetch the original template
+            var template = await db.CampaignTemplates
+                .FirstOrDefaultAsync(t => t.ClientId == clientId && t.Id == templateId);
+
+            if (template == null)
+                return null;
+
+            // Create a new template (clone)
+            var clonedTemplate = new CampaignTemplate
+            {
+                ClientId = template.ClientId,
+                TemplateDefinitionId = template.TemplateDefinitionId,
+                PlaceholderListWithValue = template.PlaceholderListWithValue,
+                CampaignBlueprint = template.CampaignBlueprint,
+                PlaceholderValues = template.PlaceholderValues,
+                SelectedModel = template.SelectedModel,
+                TemplateName = template.TemplateName + " Copy",
+                ExampleOutput = template.ExampleOutput,
+                SearchURLCount = template.SearchURLCount,
+                SubjectInstructions = template.SubjectInstructions,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            db.CampaignTemplates.Add(clonedTemplate);
+            await db.SaveChangesAsync();
+
+            return clonedTemplate;
+        }
 
     }
 
