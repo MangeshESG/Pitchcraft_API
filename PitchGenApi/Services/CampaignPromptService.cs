@@ -783,7 +783,7 @@ namespace PitchGenApi.Services
                 CampaignBlueprint = template.CampaignBlueprint,
                 PlaceholderValues = template.PlaceholderValues,
                 SelectedModel = template.SelectedModel,
-                TemplateName = template.TemplateName,
+                TemplateName = template.TemplateName + " Copy",
                 ExampleOutput = template.ExampleOutput,
                 SearchURLCount = template.SearchURLCount,
                 SubjectInstructions = template.SubjectInstructions,

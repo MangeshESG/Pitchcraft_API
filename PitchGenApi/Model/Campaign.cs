@@ -60,6 +60,7 @@ public class CampaignUpdateModel
 
         public string? ZohoViewId { get; set; }  // Make nullable
         public string? Description { get; set; }  // Make nullable
+        public int? TemplateId { get; set; }  // Make nullable
 
         public int? SegmentId { get; set; }      // Add this
     }
