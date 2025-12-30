@@ -950,7 +950,7 @@ namespace PitchGenApi.Controllers
             if (req.TemplateDefinitionId <= 0)
                 return BadRequest(new { Message = "TemplateDefinitionId required" });
 
-            // Load existing placeholders for this template
+            // 1️⃣ Load existing placeholders for the template
             var existing = await _dbContext.PlaceholderDefinitions
                 .Where(p => p.TemplateDefinitionId == req.TemplateDefinitionId)
                 .ToListAsync();
@@ -960,29 +960,28 @@ namespace PitchGenApi.Controllers
                 StringComparer.OrdinalIgnoreCase
             );
 
+            // 2️⃣ UPSERT
             foreach (var p in req.Placeholders)
             {
                 if (map.TryGetValue(p.PlaceholderKey, out var entity))
                 {
-                    // ✅ UPDATE
+                    // ✅ UPDATE EXISTING
                     entity.FriendlyName = p.FriendlyName;
+                    entity.Description = p.Description;
                     entity.Category = p.Category;
                     entity.InputType = p.InputType;
                     entity.UiSize = p.UiSize;
                     entity.IsRuntimeOnly = p.IsRuntimeOnly;
                     entity.IsExpandable = p.IsExpandable;
                     entity.IsRichText = p.IsRichText;
-                    entity.Description = p.Description;
-
                     entity.OptionsJson = p.Options != null
                         ? JsonSerializer.Serialize(p.Options)
                         : null;
-
                     entity.UpdatedAt = DateTime.UtcNow;
                 }
                 else
                 {
-                    // ✅ INSERT (THIS WAS MISSING)
+                    // ✅ INSERT ONLY IF MISSING
                     _dbContext.PlaceholderDefinitions.Add(new PlaceholderDefinition
                     {
                         TemplateDefinitionId = req.TemplateDefinitionId,
@@ -1008,7 +1007,7 @@ namespace PitchGenApi.Controllers
             return Ok(new
             {
                 Success = true,
-                Message = "Placeholder definitions saved"
+                Message = "Placeholder definitions updated"
             });
         }
 
