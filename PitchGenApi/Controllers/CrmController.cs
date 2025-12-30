@@ -18,12 +18,12 @@ namespace PitchGenApi.Controllers
     public class CrmController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly ContactRepository _repository;
+        private readonly ContactRepository _contactRepository;
 
-        public CrmController(AppDbContext context)
+        public CrmController(AppDbContext context, ContactRepository contactRepository)
         {
             _context = context;
-            _repository = new ContactRepository(context);
+            _contactRepository = contactRepository;
 
         }
 
@@ -204,7 +204,7 @@ namespace PitchGenApi.Controllers
         [HttpGet]
         public async Task<IActionResult> GetContacts([FromQuery] int? dataFileId)
         {
-            var contacts = await _repository.GetContactsAsync(dataFileId);
+            var contacts = await _contactRepository.GetContactsAsync(dataFileId);
             return Ok(contacts);
         }
         [HttpGet("Singel-contact")]
@@ -213,7 +213,7 @@ namespace PitchGenApi.Controllers
             if (dataFileId == 0)
                 return BadRequest("dataFileId is required.");
 
-            var result = await _repository.GetContactWithNextAsync(dataFileId, contactId);
+            var result = await _contactRepository.GetContactWithNextAsync(dataFileId, contactId);
 
             if (result == null)
                 return NotFound("Contact not found.");
@@ -294,7 +294,7 @@ namespace PitchGenApi.Controllers
                         c.email_body = "You have not krafted any email after sending the last email. Please kraft to continue.";
                     }
 
-                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, c.id, null);
+                    string oldThread = await _contactRepository.BuildEmailThreadAsync(clientId, dataFileId, c.id, null);
 
                     finalEmailBody =
                     $@"{c.email_body}
@@ -489,45 +489,7 @@ namespace PitchGenApi.Controllers
             // 🧠 Deduct credit only from FinalUserCredit when GPTGenerate = true
             if (request.GPTGenerate == true)
             {
-                var finalCredit = await _context.FinalUserCredit
-                .FirstOrDefaultAsync(f => f.ClientId == request.ClientId);
-
-                if (finalCredit != null)
-                {
-                    // Case 1: Use TotalCredit if available and monthly limit not reached
-                    if ((finalCredit.TotalCredit ?? 0) > 0 && (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
-                    {
-                        finalCredit.TotalCredit -= 1;
-                        finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + 1;
-                        finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + 1;
-                    }
-                    // Case 2: Use CustomLimit when monthly limit is reached or TotalCredit is 0
-                    else if ((finalCredit.CustomLimit ?? 0) > 0)
-                    {
-                        finalCredit.CustomLimit -= 1;
-                        finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + 1;
-
-                        // 🔹 Also deduct from latest active UserCredits plan
-                        var latestActivePlan = await _context.UserCredits
-                            .Where(u => u.ClientId == request.ClientId &&
-                                        u.Status.ToLower() == "active" &&
-                                        u.Plane == "Custom Credit")
-                            .OrderByDescending(u => u.CreatedAt)
-                            .FirstOrDefaultAsync();
-
-                        if (latestActivePlan != null && latestActivePlan.Credits > 0)
-                        {
-                            latestActivePlan.Credits -= 1;
-                            _context.UserCredits.Update(latestActivePlan);
-                        }
-                    }
-
-                    finalCredit.UpdatedAt = DateTime.UtcNow;
-                    _context.FinalUserCredit.Update(finalCredit);
-                    await _context.SaveChangesAsync();
-                }
-
-
+              await _contactRepository.CreditDeduction(request.ClientId);
             }
 
             await _context.SaveChangesAsync();
@@ -912,7 +874,7 @@ namespace PitchGenApi.Controllers
         [HttpGet("segment/{segmentId}/contacts")]
         public async Task<IActionResult> GetContactsBySegmentId(int segmentId)
         {
-            var contacts = await _repository.GetContactBySegment(segmentId);
+            var contacts = await _contactRepository.GetContactBySegment(segmentId);
             return Ok(contacts);
         }
 
@@ -980,7 +942,7 @@ namespace PitchGenApi.Controllers
                         c.email_body = "You have not krafted any email after sending the last email. Please kraft to continue.";
                     }
 
-                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
+                    string oldThread = await _contactRepository.BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
                     finalEmailBody =
                     $@"{c.email_body}
 
@@ -1396,7 +1358,7 @@ namespace PitchGenApi.Controllers
         [HttpGet("UnsubscribeContacts")]
         public async Task<IActionResult> UnsubscribeContacts([FromQuery] int ClientId, [FromQuery] string email)
         {
-            var response = await _repository.AddUnsubscribedAsync(ClientId, email);
+            var response = await _contactRepository.AddUnsubscribedAsync(ClientId, email);
             return Ok(response);
         }
 
