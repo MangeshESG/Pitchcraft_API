@@ -27,6 +27,57 @@ public class ContactRepository
         return await query.ToListAsync();
     }
 
+    public async Task<bool> CreditDeduction(int clientId)
+    {
+        var finalCredit = await _context.FinalUserCredit
+            .FirstOrDefaultAsync(f => f.ClientId == clientId);
+
+        if (finalCredit == null)
+            return false;
+
+        bool isDeducted = false;
+
+        // Case 1: Use TotalCredit if available and monthly limit not reached
+        if ((finalCredit.TotalCredit ?? 0) > 0 &&
+            (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
+        {
+            finalCredit.TotalCredit -= 1;
+            finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + 1;
+            finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + 1;
+
+            isDeducted = true;
+        }
+        // Case 2: Use CustomLimit
+        else if ((finalCredit.CustomLimit ?? 0) > 0)
+        {
+            finalCredit.CustomLimit -= 1;
+            finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + 1;
+
+            var latestActivePlan = await _context.UserCredits
+                .Where(u => u.ClientId == clientId &&
+                            u.Status.ToLower() == "active" &&
+                            u.Plane == "Custom Credit")
+                .OrderByDescending(u => u.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (latestActivePlan != null && latestActivePlan.Credits > 0)
+            {
+                latestActivePlan.Credits -= 1;
+                _context.UserCredits.Update(latestActivePlan);
+                isDeducted = true;
+            }
+        }
+
+        if (!isDeducted)
+            return false;
+
+        finalCredit.UpdatedAt = DateTime.UtcNow;
+        _context.FinalUserCredit.Update(finalCredit);
+
+        await _context.SaveChangesAsync();
+        return true;
+    }
+
     public async Task<ContactWithNextDto> GetContactWithNextAsync(int dataFileId, int? contactId = null)
     {
         Contact currentContact;

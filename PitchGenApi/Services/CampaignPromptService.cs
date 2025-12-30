@@ -20,7 +20,9 @@ namespace PitchGenApi.Services
     public class CampaignPromptService
     {
         private readonly HttpClient _httpClient;
+        private readonly AppDbContext _context;
         private readonly string _apiKey;
+        private readonly ContactRepository _contactRepository;
         private readonly IServiceScopeFactory _scopeFactory; // scope factory for DbContext
 
         // Store sessions (chat history per user)
@@ -35,6 +37,8 @@ namespace PitchGenApi.Services
 
         public CampaignPromptService(
             HttpClient httpClient,
+            AppDbContext context,
+            ContactRepository contactRepository,
             IOptions<OpenAISettings> options,
             IServiceScopeFactory scopeFactory)
         {
@@ -46,6 +50,9 @@ namespace PitchGenApi.Services
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
             _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+            _context = context;
+            _contactRepository = contactRepository;
+
         }
 
         private static readonly HashSet<string> RuntimeOnlyPlaceholders =
@@ -244,6 +251,9 @@ namespace PitchGenApi.Services
                 var endpoint = "https://api.openai.com/v1/responses";
                 var httpResponse = await _httpClient.PostAsync(endpoint, httpContent);
                 var raw = await httpResponse.Content.ReadAsStringAsync();
+
+                int clientId = int.Parse(userId);
+                await _contactRepository.CreditDeduction(clientId);
 
                 if (!httpResponse.IsSuccessStatusCode)
                 {
