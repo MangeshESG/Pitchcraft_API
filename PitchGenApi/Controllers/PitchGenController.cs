@@ -366,40 +366,7 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        // No Use SummarizeWithChatGPT
-        //private async Task<string> SummarizeWithChatGPT(string text)
-        //{
-        //    string apiKey = "YOUR_OPENAI_API_KEY";
-        //    string apiUrl = "https://api.openai.com/v1/chat/completions";
-
-        //    using (HttpClient client = new HttpClient())
-        //    {
-        //        client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-
-        //        var requestBody = new
-        //        {
-        //            model = "gpt-3.5-turbo",
-        //            messages = new[]
-        //            {
-        //        new { role = "system", content = "Summarize the following text " },
-        //        new { role = "user", content = text }
-        //    },
-        //            max_tokens = 10000
-        //        };
-
-        //        var response = await client.PostAsync(apiUrl, new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
-
-        //        if (!response.IsSuccessStatusCode)
-        //        {
-        //            throw new Exception("Failed to get a response from ChatGPT API.");
-        //        }
-
-        //        var jsonResponse = await response.Content.ReadAsStringAsync();
-        //        dynamic result = JsonConvert.DeserializeObject(jsonResponse);
-
-        //        return result.choices[0].message.content.ToString();
-        //    }
-        //}
+     
 
         [HttpPost("sendemail")] // Email Send Code
         public IActionResult SendEmail([FromBody] EmailRequest emailRequest)
@@ -823,49 +790,6 @@ namespace PitchGenApi.Controllers
 
 
 
-        [HttpPost("updatezoho")]
-        public async Task<IActionResult> UpdateZoho([FromBody] UpdateZohoRequest request)
-        {
-            if (request == null)
-            {
-                return BadRequest(new { Message = "Invalid request data." });
-            }
-
-            try
-            {
-                bool isUpdated = false;
-
-                if (!string.IsNullOrEmpty(request.ContactId))
-                {
-                    // Update contact with only the email body
-                    isUpdated = await _zohoService.UpdateContacts(request.ContactId, request.EmailBody, request.job_post_URL);
-                }
-                else if (!string.IsNullOrEmpty(request.AccountId))
-                {
-                    // Update account with only the email body
-                    isUpdated = await _zohoService.UpdateAccount(request.AccountId, request.EmailBody, request.job_post_URL, null, null, false);
-                }
-                else
-                {
-                    return BadRequest(new { Message = "Either ContactId or AccountId must be provided." });
-                }
-
-                if (isUpdated)
-                {
-                    return Ok(new { Message = "Zoho CRM email body updated successfully." });
-                }
-                else
-                {
-                    return StatusCode(500, new { Message = "Failed to update Zoho CRM email body." });
-                }
-            }
-            catch (Exception ex)
-            {
-                // Log the exception
-                Console.Error.WriteLine(ex);
-                return StatusCode(500, new { Message = "An error occurred while updating Zoho CRM email body.", Error = ex.Message });
-            }
-        }
 
 
 

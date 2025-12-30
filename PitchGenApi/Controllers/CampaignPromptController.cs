@@ -7,23 +7,32 @@ using PitchGenApi.Database;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using PitchGenApi.Model;
+using PitchGenApi.Interfaces;
+
 
 namespace PitchGenApi.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+
+
     public class CampaignPromptController : ControllerBase
     {
         private readonly CampaignPromptService _campaignService;
         private readonly AppDbContext _dbContext;
+        private readonly IPitchService _pitchService;
 
         public CampaignPromptController(
             CampaignPromptService campaignService,
-            AppDbContext dbContext)
+            AppDbContext dbContext,
+            IPitchService pitchService)
         {
             _campaignService = campaignService;
             _dbContext = dbContext;
+            _pitchService = pitchService;
         }
+
+
 
         #region Template Definition Endpoints (Shared Templates)
 
@@ -537,13 +546,16 @@ namespace PitchGenApi.Controllers
             if (template == null)
                 return NotFound(new { Message = "Template not found" });
 
-            // 1️⃣ Load conversation placeholders from DB
+            if (template.TemplateDefinition == null)
+                return StatusCode(500, new { Message = "Template definition missing" });
+
+            // 1️⃣ Load persisted placeholder values
             var persistedVals = string.IsNullOrEmpty(template.PlaceholderValues)
                 ? new Dictionary<string, string>()
                 : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
                   ?? new Dictionary<string, string>();
 
-            // 2️⃣ Clone so DB data is never mutated
+            // 2️⃣ Clone to avoid DB mutation
             var runtimeVals = new Dictionary<string, string>(persistedVals);
 
             // 3️⃣ Merge runtime placeholders from frontend
@@ -553,49 +565,67 @@ namespace PitchGenApi.Controllers
                     runtimeVals[pair.Key] = pair.Value;
             }
 
-            string master = template.TemplateDefinition.MasterBlueprintUnpopulated ?? "";
+            // 4️⃣ Get master blueprint
+            string masterBlueprint =
+                template.TemplateDefinition.MasterBlueprintUnpopulated ?? "";
 
-            // 4️⃣ Generate email
+            if (string.IsNullOrWhiteSpace(masterBlueprint))
+                return StatusCode(500, new { Message = "Master blueprint is empty" });
+
+            // 5️⃣ Generate FILLED TEMPLATE (placeholder replacement via AI)
             var rawResult = await _campaignService.GenerateExampleOutputAsync(
                 runtimeVals,
-                master,
-                req.Model ?? "gpt-4o"
+                masterBlueprint,
+                req.Model ?? "gpt-4.1"
             );
 
+            if (string.IsNullOrWhiteSpace(rawResult))
+                return StatusCode(500, new { Message = "Failed to generate filled template" });
+
+            // 6️⃣ Extract filled template
             string filledTemplate = "";
-            string html = rawResult ?? "";
+            int start = rawResult.IndexOf("__FILLED_TEMPLATE_START__");
+            int end = rawResult.IndexOf("__FILLED_TEMPLATE_END__");
 
-            // 5️⃣ Extract filled template + HTML
-            if (!string.IsNullOrEmpty(rawResult))
+            if (start >= 0 && end > start)
             {
-                int s = rawResult.IndexOf("__FILLED_TEMPLATE_START__");
-                int e = rawResult.IndexOf("__FILLED_TEMPLATE_END__");
+                filledTemplate = rawResult.Substring(
+                    start + "__FILLED_TEMPLATE_START__".Length,
+                    end - (start + "__FILLED_TEMPLATE_START__".Length)
+                ).Trim();
+            }
 
-                if (s >= 0 && e > s)
+            if (string.IsNullOrWhiteSpace(filledTemplate))
+                return StatusCode(500, new { Message = "Filled template extraction failed" });
+
+            // 7️⃣ Generate EXAMPLE EMAIL using EXISTING PitchService
+            var pitchResult = await _pitchService.GeneratePitchAsync(
+                new EnquiryRequest
                 {
-                    filledTemplate = rawResult.Substring(
-                        s + "__FILLED_TEMPLATE_START__".Length,
-                        e - (s + "__FILLED_TEMPLATE_START__".Length)
-                    );
-
-                    html = rawResult.Substring(
-                        e + "__FILLED_TEMPLATE_END__".Length
-                    );
+                    Prompt = filledTemplate,
+                    ScrappedData = "Generate a professional example email",
+                    ModelName = req.Model 
                 }
+            );
+
+            if (!pitchResult.IsSuccess || string.IsNullOrWhiteSpace(pitchResult.Content))
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Example email generation failed",
+                    Error = pitchResult.Content
+                });
             }
 
-            // 6️⃣ Save ONLY example output
-            if (!string.IsNullOrEmpty(html))
-            {
-                template.ExampleOutput = html;
-                template.UpdatedAt = DateTime.UtcNow;
-                await _dbContext.SaveChangesAsync();
-            }
+            // 8️⃣ Save ONLY example output
+            template.ExampleOutput = pitchResult.Content;
+            template.UpdatedAt = DateTime.UtcNow;
+            await _dbContext.SaveChangesAsync();
 
             return Ok(new
             {
                 Success = true,
-                ExampleOutput = html,
+                ExampleOutput = pitchResult.Content,
                 FilledTemplate = filledTemplate
             });
         }
