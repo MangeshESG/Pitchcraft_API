@@ -279,7 +279,6 @@ namespace PitchGenApi.Controllers
                         .Any(uc => uc.ClientId == clientId && uc.Email == c.email))
                 .OrderBy(c => c.id)
                 .ToListAsync();
-
             // Yaha follow-up logic apply hoga
             var result = new List<object>();
 
@@ -289,10 +288,16 @@ namespace PitchGenApi.Controllers
 
                 if (isFollowUp)
                 {
+
+                    if (c.updated_at < c.email_sent_at)
+                    {
+                        c.email_body = "You have not krafted any email after sending the last email. Please kraft to continue.";
+                    }
+
                     string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, c.id, null);
 
                     finalEmailBody =
-        $@"{c.email_body}
+                    $@"{c.email_body}
 
                 {oldThread}";
                 }
@@ -318,7 +323,7 @@ namespace PitchGenApi.Controllers
                     c.CompanyLinkedInURL,
                     c.Notes
                     //c.CompanyEventLink
-                });
+            });
             }
 
             return Ok(new
@@ -970,6 +975,11 @@ namespace PitchGenApi.Controllers
                 // Add follow-up thread
                 if (isFollowUp)
                 {
+                    if (c.updated_at < c.email_sent_at)
+                    {
+                        c.email_body = "You have not krafted any email after sending the last email. Please kraft to continue.";
+                    }
+
                     string oldThread = await _repository.BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
                     finalEmailBody =
                     $@"{c.email_body}

@@ -763,7 +763,7 @@ namespace PitchGenApi.Services
 
             return template;
         }
-        public async Task<CampaignTemplate?> CloneTemplateAsync(string clientId, int templateId)
+        public async Task<CampaignTemplate?> CloneTemplateAsync(string clientId, int templateId,string Name)
         {
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -783,7 +783,7 @@ namespace PitchGenApi.Services
                 CampaignBlueprint = template.CampaignBlueprint,
                 PlaceholderValues = template.PlaceholderValues,
                 SelectedModel = template.SelectedModel,
-                TemplateName = template.TemplateName + " Copy",
+                TemplateName = Name,
                 ExampleOutput = template.ExampleOutput,
                 SearchURLCount = template.SearchURLCount,
                 SubjectInstructions = template.SubjectInstructions,

@@ -1092,9 +1092,9 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpPost("clone-template")]
-        public async Task<IActionResult> CloneTemplate([FromQuery] string clientId, [FromQuery] int templateId)
+        public async Task<IActionResult> CloneTemplate([FromQuery] string clientId, [FromQuery] int templateId, [FromQuery] string Name)
         {
-            var clonedTemplate = await _campaignService.CloneTemplateAsync(clientId, templateId);
+            var clonedTemplate = await _campaignService.CloneTemplateAsync(clientId, templateId,Name);
 
             if (clonedTemplate == null)
                 return NotFound("Original template not found.");

@@ -849,6 +849,7 @@ namespace PitchGenApi.Controllers
                                    cs.Campaign.CampaignName,
                                    cs.Campaign.PromptId,
                                    cs.Campaign.ZohoViewId,
+                                   cs.Campaign.TemplateId,
                                    cs.Campaign.SegmentId,
                                    cs.Campaign.ClientId,
                                    cs.Campaign.Description,
