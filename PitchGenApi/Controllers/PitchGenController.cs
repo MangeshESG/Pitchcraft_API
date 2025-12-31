@@ -837,27 +837,47 @@ namespace PitchGenApi.Controllers
                 }
 
                 var campaigns = await _context.Campaigns
-                    .Where(c => c.ClientId == clientId)
-                    .GroupJoin(_context.segments, // Use GroupJoin instead of Join
-                              c => c.SegmentId,
-                              s => s.Id,
-                              (c, segments) => new { Campaign = c, Segments = segments })
-                    .SelectMany(cs => cs.Segments.DefaultIfEmpty(),
-                               (cs, s) => new
-                               {
-                                   cs.Campaign.Id,
-                                   cs.Campaign.CampaignName,
-                                   cs.Campaign.PromptId,
-                                   cs.Campaign.ZohoViewId,
-                                   cs.Campaign.TemplateId,
-                                   cs.Campaign.SegmentId,
-                                   cs.Campaign.ClientId,
-                                   cs.Campaign.Description,
-                                   SegmentName = s != null ? s.Name : null,
-                                   DataSource = s != null ? "Segment" : "DataFile"
-                               })
-                    .OrderBy(c => c.CampaignName)
-                    .ToListAsync();
+                 .Where(c => c.ClientId == clientId)
+
+                 // LEFT JOIN Segment
+                 .GroupJoin(_context.segments,
+                     c => c.SegmentId,
+                     s => s.Id,
+                     (c, segments) => new { c, segments })
+                 .SelectMany(
+                     x => x.segments.DefaultIfEmpty(),
+                     (x, s) => new { x.c, Segment = s })
+
+                 // LEFT JOIN DataFile
+                 .GroupJoin(_context.data_files,
+                    cs => cs.c.ZohoViewId,        // string
+                    df => df.id.ToString(),       // int → string
+                    (cs, dataFiles) => new { cs.c, cs.Segment, dataFiles })
+
+                 .SelectMany(
+                     x => x.dataFiles.DefaultIfEmpty(),
+                     (x, df) => new
+                     {
+                         x.c.Id,
+                         x.c.CampaignName,
+                         x.c.PromptId,
+                         x.c.ZohoViewId,
+                         x.c.TemplateId,
+                         x.c.SegmentId,
+                         x.c.ClientId,
+                         x.c.Description,
+
+                         SegmentName = x.Segment != null ? x.Segment.Name : null,
+                         DataFileName = df != null ? df.name : null,
+
+                         DataSource = x.Segment != null
+                             ? "Segment"
+                             : "DataFile"
+                     })
+
+                 .OrderBy(c => c.CampaignName)
+                 .ToListAsync();
+
 
                 return Ok(campaigns);
             }
