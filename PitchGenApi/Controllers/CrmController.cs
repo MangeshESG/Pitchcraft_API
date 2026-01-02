@@ -178,6 +178,7 @@ namespace PitchGenApi.Controllers
                 contact.email = model.email;
                 contact.job_title = model.jobTitle;
                 contact.website = model.website;
+                contact.linkedin_url = model.linkedInUrl;
                 contact.company_name = model.companyName;
                 contact.company_name = model.companyName;
                 contact.company_name = model.companyName;

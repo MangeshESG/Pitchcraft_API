@@ -460,6 +460,7 @@ public class OpenTrackingController : ControllerBase
             .Where(c => !loggedContactIds.Contains(c.id))
             .Select(c => new
             {
+                contactId = c.id,
                 c.full_name,
                 c.email,
                 c.company_name,
