@@ -202,6 +202,34 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpPost]
+        [Route("Update-Notes")]
+        public async Task<IActionResult> UpdateNotes([FromQuery] int contactid, [FromQuery] string Notes)
+        {
+            try
+            {
+                var contact = await _context.contacts
+                    .FirstOrDefaultAsync(x => x.id == contactid);
+
+                if (contact == null)
+                {
+                    return NotFound(new { message = "Contact not found" });
+                }
+
+                // Update fields
+                contact.Notes = Notes;
+                contact.updated_at = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new { message = "Notes updated successfully" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
         [HttpGet]
         public async Task<IActionResult> GetContacts([FromQuery] int? dataFileId)
         {
