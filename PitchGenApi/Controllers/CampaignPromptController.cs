@@ -74,10 +74,8 @@ namespace PitchGenApi.Controllers
                 await _dbContext.SaveChangesAsync();
 
                 var placeholderKeys = ExtractPlaceholderKeys(
-                    request.AIInstructions,
-                    request.AIInstructionsForEdit,
+                    
                     request.PlaceholderList,
-                    request.PlaceholderListExtensive,
                     request.MasterBlueprintUnpopulated
                 );
 
@@ -168,7 +166,8 @@ namespace PitchGenApi.Controllers
                 definition.MasterBlueprintUnpopulated = request.MasterBlueprintUnpopulated;
                 definition.UpdatedAt = DateTime.UtcNow;
                 definition.SearchURLCount = request.SearchURLCount;
-                definition.SubjectInstructions = request.SubjectInstructions;
+                if (!string.IsNullOrWhiteSpace(request.SubjectInstructions))
+                    definition.SubjectInstructions = request.SubjectInstructions;
                 definition.SelectedModel = request.SelectedModel;
 
 
@@ -178,10 +177,7 @@ namespace PitchGenApi.Controllers
 
                 // 🔁 Re-sync placeholders if instructions changed
                 var placeholderKeys = ExtractPlaceholderKeys(
-                    request.AIInstructions,
-                    request.AIInstructionsForEdit,
                     request.PlaceholderList,
-                    request.PlaceholderListExtensive,
                     request.MasterBlueprintUnpopulated
                 );
 
@@ -228,7 +224,8 @@ namespace PitchGenApi.Controllers
         // Save client's filled campaign template
         // Save client's filled campaign template
         [HttpPost("template/save")]
-        public async Task<IActionResult> SaveCampaignTemplate([FromBody] SaveCampaignTemplateRequest request)
+        public async Task<IActionResult> SaveCampaignTemplate(
+            [FromBody] SaveCampaignTemplateRequest request)
         {
             try
             {
@@ -238,14 +235,16 @@ namespace PitchGenApi.Controllers
                 if (request.TemplateDefinitionId <= 0)
                     return BadRequest(new { Message = "Valid TemplateDefinitionId is required" });
 
-                // Verify template definition exists
-                var definitionExists = await _dbContext.CampaignTemplateDefinitions
-                    .AnyAsync(t => t.Id == request.TemplateDefinitionId && t.IsActive);
+                // ✅ LOAD template definition (FIX)
+                var templateDef = await _dbContext.CampaignTemplateDefinitions
+                    .FirstOrDefaultAsync(t =>
+                        t.Id == request.TemplateDefinitionId &&
+                        t.IsActive
+                    );
 
-                if (!definitionExists)
+                if (templateDef == null)
                     return BadRequest(new { Message = "Template definition not found or inactive" });
 
-                // Create campaign template  ← UPDATED
                 var campaignTemplate = new CampaignTemplate
                 {
                     ClientId = request.ClientId,
@@ -258,32 +257,17 @@ namespace PitchGenApi.Controllers
                     SelectedModel = request.SelectedModel,
                     CreatedAt = DateTime.UtcNow,
 
-                    // ⭐ NEW FIELDS START
                     SearchURLCount = request.SearchURLCount,
-                    SubjectInstructions = request.SubjectInstructions
-                    // ⭐ NEW FIELDS END
+
+                    // ✅ SAFE subject instruction handling
+                    SubjectInstructions =
+                        !string.IsNullOrWhiteSpace(request.SubjectInstructions)
+                            ? request.SubjectInstructions
+                            : templateDef.SubjectInstructions ?? ""
                 };
 
                 _dbContext.CampaignTemplates.Add(campaignTemplate);
                 await _dbContext.SaveChangesAsync();
-
-                // Save conversation if provided
-                if (request.ConversationMessages != null && request.ConversationMessages.Count > 0)
-                {
-                    var conversation = new CampaignConversation
-                    {
-                        ClientId = request.ClientId,
-                        CampaignTemplateId = campaignTemplate.Id,
-                        ConversationData = JsonSerializer.Serialize(request.ConversationMessages),
-                        Model = request.SelectedModel,
-                        StartedAt = request.ConversationMessages[0].Timestamp,
-                        CompletedAt = DateTime.UtcNow,
-                        IsComplete = true
-                    };
-
-                    _dbContext.CampaignConversations.Add(conversation);
-                    await _dbContext.SaveChangesAsync();
-                }
 
                 return Ok(new
                 {
@@ -448,7 +432,7 @@ namespace PitchGenApi.Controllers
                 if (request.SearchURLCount.HasValue)
                     template.SearchURLCount = request.SearchURLCount;
 
-                if (request.SubjectInstructions != null)
+                if (!string.IsNullOrWhiteSpace(request.SubjectInstructions))
                     template.SubjectInstructions = request.SubjectInstructions;
 
 
