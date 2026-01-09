@@ -21,15 +21,18 @@ namespace PitchGenApi.Controllers
         private readonly CampaignPromptService _campaignService;
         private readonly AppDbContext _dbContext;
         private readonly IPitchService _pitchService;
+        private readonly ContactRepository _contactRepository;
 
         public CampaignPromptController(
-            CampaignPromptService campaignService,
-            AppDbContext dbContext,
-            IPitchService pitchService)
+             CampaignPromptService campaignService,
+             AppDbContext dbContext,
+             IPitchService pitchService,
+             ContactRepository contactRepository)
         {
             _campaignService = campaignService;
             _dbContext = dbContext;
             _pitchService = pitchService;
+            _contactRepository = contactRepository;
         }
 
 
@@ -356,7 +359,7 @@ namespace PitchGenApi.Controllers
                 // Runtime placeholder replacement
                 // -------------------------------
                 string filledBlueprint = ApplyPlaceholders(
-                    template.CampaignBlueprint,
+                    template.TemplateDefinition.MasterBlueprintUnpopulated,
                     placeholderValues
                 );
 
@@ -560,6 +563,13 @@ namespace PitchGenApi.Controllers
                 masterBlueprint,
                 req.Model ?? "gpt-5.1"
             );
+
+            if (!string.IsNullOrWhiteSpace(rawResult))
+            {
+                int clientId = int.Parse(req.UserId);
+                await _contactRepository.CreditDeduction(clientId);
+
+            }
 
             if (string.IsNullOrWhiteSpace(rawResult))
                 return StatusCode(500, new { Message = "Failed to generate filled template" });
