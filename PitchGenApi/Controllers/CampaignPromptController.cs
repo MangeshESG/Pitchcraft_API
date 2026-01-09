@@ -75,8 +75,7 @@ namespace PitchGenApi.Controllers
 
                 var placeholderKeys = ExtractPlaceholderKeys(
                     
-                    request.PlaceholderList,
-                    request.MasterBlueprintUnpopulated
+                    request.PlaceholderList
                 );
 
                 await SyncPlaceholderDefinitions(placeholderKeys, templateDef.Id);
@@ -177,8 +176,7 @@ namespace PitchGenApi.Controllers
 
                 // 🔁 Re-sync placeholders if instructions changed
                 var placeholderKeys = ExtractPlaceholderKeys(
-                    request.PlaceholderList,
-                    request.MasterBlueprintUnpopulated
+                    request.PlaceholderList
                 );
 
                 await SyncPlaceholderDefinitions(placeholderKeys, request.Id);
@@ -560,7 +558,7 @@ namespace PitchGenApi.Controllers
             var rawResult = await _campaignService.GenerateExampleOutputAsync(
                 runtimeVals,
                 masterBlueprint,
-                req.Model ?? "gpt-4.1"
+                req.Model ?? "gpt-5.1"
             );
 
             if (string.IsNullOrWhiteSpace(rawResult))
