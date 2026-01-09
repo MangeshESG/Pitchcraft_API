@@ -287,10 +287,7 @@ namespace PitchGenApi.Controllers
 
 
         [HttpGet("contacts/by-client-datafile")]
-        public async Task<IActionResult> GetContactsByClientAndDataFileId(
-     [FromQuery] int clientId,
-     [FromQuery] int dataFileId,
-     [FromQuery] bool isFollowUp)
+        public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId, [FromQuery] bool isFollowUp)
         {
             if (clientId <= 0 || dataFileId <= 0)
                 return BadRequest("Both clientId and dataFileId must be greater than 0.");
@@ -364,9 +361,7 @@ namespace PitchGenApi.Controllers
 
 
         [HttpGet("contacts/List-by-CleinteId")]
-        public async Task<IActionResult> GetContactsByClientAndDataFileIdList(
-    [FromQuery] int clientId,
-    [FromQuery] int dataFileId)
+        public async Task<IActionResult> GetContactsByClientAndDataFileIdList([FromQuery] int clientId, [FromQuery] int dataFileId)
         {
             try
             {
@@ -908,10 +903,7 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("contacts/by-client-segment")]
-        public async Task<IActionResult> GetContactsBySegmentId(
-    [FromQuery] int clientId,
-    [FromQuery] int segmentId,
-    [FromQuery] bool isFollowUp)
+        public async Task<IActionResult> GetContactsBySegmentId([FromQuery] int clientId, [FromQuery] int segmentId, [FromQuery] bool isFollowUp)
         {
             if (clientId <= 0 || segmentId <= 0)
                 return BadRequest("clientId aur segmentId dono 0 se bade hone chahiye.");
@@ -1392,6 +1384,18 @@ namespace PitchGenApi.Controllers
         }
 
 
+        [HttpGet("email-timeline")]
+        public async Task<IActionResult> GetEmailTimelineApi(int contactId)
+        {
+            var result = await _contactRepository.GetEmailTimeline(contactId);
+
+            if (result == null)
+                return NotFound("No email data found");
+
+            return Ok(result);
+        }
+
+
         //private async Task<string> BuildEmailThreadAsync(int clientId, int datafileid)
         //{
         //    var logs = await _context.EmailLogs
@@ -1419,7 +1423,7 @@ namespace PitchGenApi.Controllers
         //    return sb.ToString();
         //}
 
-       
+
 
     }
 }
