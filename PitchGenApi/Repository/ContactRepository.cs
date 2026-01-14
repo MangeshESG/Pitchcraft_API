@@ -4,6 +4,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
+using Serilog;
 using System.Text;
 
 public class ContactRepository
@@ -224,28 +225,56 @@ public class ContactRepository
                     x.EmailLog.Subject
                 })
                 .OrderBy(g => g.Key.SentAt)
-                .Select(g => new SentEmailDto
+                .Select(g =>
                 {
-                    TrackingId = g.Key.TrackingId.ToString(),
-                    SentAt = g.Key.SentAt,
-                    SenderEmailId = g.Key.SenderEmailId,
-                    Subject = g.Key.Subject,
+                    var log = g.First().EmailLog;
 
-                    Events = g
-                        .Where(x => x.Tracking != null)
-                        .OrderBy(x => x.Tracking.Timestamp)
-                        .Select(x => new EmailEventDto
-                        {
-                            EventType = x.Tracking.EventType,
-                            EventAt = x.Tracking.Timestamp,
-                            TargetUrl = x.Tracking.TargetUrl
-                        })
-                        .ToList()
+                    return new SentEmailDto
+                    {
+                        TrackingId = g.Key.TrackingId.ToString(),
+                        SentAt = g.Key.SentAt,
+                        SenderEmailId = g.Key.SenderEmailId,
+                        Subject = g.Key.Subject,
+                        Body = log.Body,
+                        Source = GetSourceName(log),
+
+                        Events = g
+                            .Where(x => x.Tracking != null)
+                            .OrderBy(x => x.Tracking.Timestamp)
+                            .Select(x => new EmailEventDto
+                            {
+                                EventType = x.Tracking.EventType,
+                                EventAt = x.Tracking.Timestamp,
+                                TargetUrl = x.Tracking.TargetUrl
+                            })
+                            .ToList()
+                    };
                 })
                 .ToList()
         };
 
         return response;
     }
+    private string? GetSourceName(EmailLog log)
+    {
+        if (log.DataFileId != null)
+        {
+            return _context.data_files
+                .Where(x => x.id == log.DataFileId)
+                .Select(x => x.name)
+                .FirstOrDefault();
+        }
+
+        if (log.SegmentId != null)
+        {
+            return _context.segments
+                .Where(x => x.Id == log.SegmentId)
+                .Select(x => x.Name)
+                .FirstOrDefault();
+        }
+
+        return null;
+    }
+
 }
 

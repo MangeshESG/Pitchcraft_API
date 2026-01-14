@@ -23,6 +23,8 @@
         public DateTime? SentAt { get; set; }
         public string SenderEmailId { get; set; }
         public string Subject { get; set; }
+        public string Body { get; set; }
+        public string Source { get; set; }
 
         public List<EmailEventDto> Events { get; set; }
     }
