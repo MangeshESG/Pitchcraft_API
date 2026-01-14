@@ -862,7 +862,8 @@ namespace PitchGenApi.Controllers
                   ?? new Dictionary<string, string>();
 
             var placeholders = await _dbContext.PlaceholderDefinitions
-                .OrderBy(p => p.Category)
+                .OrderBy(p => p.CategorySequence)
+                .ThenBy(p => p.PlaceholderSequence)
                 .ThenBy(p => p.FriendlyName)
                 .Select(p => new
                 {
@@ -874,6 +875,8 @@ namespace PitchGenApi.Controllers
                     uiSize = p.UiSize,
                     expandable = p.IsExpandable,
                     isRuntimeOnly = p.IsRuntimeOnly,
+                    categorySequence = p.CategorySequence,
+                    placeholderSequence = p.PlaceholderSequence,
                     value = values.ContainsKey(p.PlaceholderKey)
                         ? values[p.PlaceholderKey]
                         : ""
@@ -933,6 +936,8 @@ namespace PitchGenApi.Controllers
                     IsExpandable = key.Contains("example") || key.Contains("output"),
                     IsRichText = key.Contains("example") || key.Contains("output"),
                     IsRuntimeOnly = RuntimeOnlyPlaceholders.Contains(key),
+                    CategorySequence = 999,
+                    PlaceholderSequence = 999,
                     CreatedAt = DateTime.UtcNow
                 });
             }
@@ -972,7 +977,6 @@ namespace PitchGenApi.Controllers
             if (req.TemplateDefinitionId <= 0)
                 return BadRequest(new { Message = "TemplateDefinitionId required" });
 
-            // 1️⃣ Load existing placeholders for the template
             var existing = await _dbContext.PlaceholderDefinitions
                 .Where(p => p.TemplateDefinitionId == req.TemplateDefinitionId)
                 .ToListAsync();
@@ -982,12 +986,13 @@ namespace PitchGenApi.Controllers
                 StringComparer.OrdinalIgnoreCase
             );
 
-            // 2️⃣ UPSERT
             foreach (var p in req.Placeholders)
             {
                 if (map.TryGetValue(p.PlaceholderKey, out var entity))
                 {
-                    // ✅ UPDATE EXISTING
+                    // ==============================
+                    // UPDATE EXISTING PLACEHOLDER
+                    // ==============================
                     entity.FriendlyName = p.FriendlyName;
                     entity.Description = p.Description;
                     entity.Category = p.Category;
@@ -996,14 +1001,22 @@ namespace PitchGenApi.Controllers
                     entity.IsRuntimeOnly = p.IsRuntimeOnly;
                     entity.IsExpandable = p.IsExpandable;
                     entity.IsRichText = p.IsRichText;
+
                     entity.OptionsJson = p.Options != null
                         ? JsonSerializer.Serialize(p.Options)
                         : null;
+
+                    // ⭐⭐ NEW: SAVE ORDER
+                    entity.CategorySequence = p.CategorySequence;
+                    entity.PlaceholderSequence = p.PlaceholderSequence;
+
                     entity.UpdatedAt = DateTime.UtcNow;
                 }
                 else
                 {
-                    // ✅ INSERT ONLY IF MISSING
+                    // ==============================
+                    // INSERT NEW PLACEHOLDER
+                    // ==============================
                     _dbContext.PlaceholderDefinitions.Add(new PlaceholderDefinition
                     {
                         TemplateDefinitionId = req.TemplateDefinitionId,
@@ -1019,6 +1032,11 @@ namespace PitchGenApi.Controllers
                         OptionsJson = p.Options != null
                             ? JsonSerializer.Serialize(p.Options)
                             : null,
+
+                        // ⭐⭐ NEW: SAVE ORDER
+                        CategorySequence = p.CategorySequence > 0 ? p.CategorySequence : 999,
+                        PlaceholderSequence = p.PlaceholderSequence > 0 ? p.PlaceholderSequence : 999,
+
                         CreatedAt = DateTime.UtcNow
                     });
                 }
@@ -1043,14 +1061,13 @@ namespace PitchGenApi.Controllers
             if (templateDefinitionId <= 0)
                 return BadRequest(new { Message = "TemplateDefinitionId required" });
 
-            // 1️⃣ Fetch from DB (NO Json deserialize here)
+            // ⭐ Correct sorting by sequences
             var entities = await _dbContext.PlaceholderDefinitions
                 .Where(p => p.TemplateDefinitionId == templateDefinitionId)
-                .OrderBy(p => p.Category)
-                .ThenBy(p => p.FriendlyName)
+                .OrderBy(p => p.CategorySequence)
+                .ThenBy(p => p.PlaceholderSequence)
                 .ToListAsync();
 
-            // 2️⃣ Map in-memory (SAFE)
             var result = entities.Select(p => new
             {
                 placeholderKey = p.PlaceholderKey,
@@ -1062,6 +1079,10 @@ namespace PitchGenApi.Controllers
                 isExpandable = p.IsExpandable,
                 isRichText = p.IsRichText,
                 isRuntimeOnly = p.IsRuntimeOnly,
+
+                // ⭐ MUST INCLUDE THESE OR FRONTEND BREAKS
+                categorySequence = p.CategorySequence,
+                placeholderSequence = p.PlaceholderSequence,
 
                 options = string.IsNullOrWhiteSpace(p.OptionsJson)
                     ? new List<string>()

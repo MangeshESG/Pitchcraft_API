@@ -24,5 +24,7 @@
 
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
+        public int? CategorySequence { get; set; }
+        public int? PlaceholderSequence { get; set; }
     }
 }

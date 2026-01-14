@@ -27,5 +27,8 @@ namespace PitchGenApi.Model.DTOs
 
         // ⭐ DROPDOWN OPTIONS
         public List<string>? Options { get; set; }
+
+        public int CategorySequence { get; set; }
+        public int PlaceholderSequence { get; set; }
     }
 }
