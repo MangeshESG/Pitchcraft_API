@@ -133,6 +133,7 @@ builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddScoped<EmailTemplateHelper>();
 builder.Services.AddScoped<ContactRepository>();
 builder.Services.AddScoped<IPitchGenDataRepository, PitchGenDataRepository>();
+builder.Services.AddScoped<IDomainVerificationRepository, DomainVerificationRepository>();
 builder.Services.AddScoped<IRegisterEmailSender, RegisterEmailSender>();
 builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();

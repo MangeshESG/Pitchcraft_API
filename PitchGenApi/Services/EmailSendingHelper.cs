@@ -5,16 +5,20 @@ using System.Threading.Tasks;
 using PitchGenApi.Database;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
+using System.Text.RegularExpressions;
+using PitchGenApi.Interfaces;
 
 public class EmailSendingHelper
 {
     private readonly AppDbContext _context;
     private readonly ContactRepository _repository;
+    private readonly IDomainVerificationRepository _domain;
 
-    public EmailSendingHelper(AppDbContext context, ContactRepository repository)
+    public EmailSendingHelper(AppDbContext context, ContactRepository repository,IDomainVerificationRepository domain)
     {
         _context = context;
         _repository = repository;
+        _domain = domain;
     }
 
     public async Task<bool> SendEmailUsingSmtp(
@@ -60,9 +64,17 @@ public class EmailSendingHelper
         }
 
         var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
+        var fromEmailToUse = smtpCredential.FromEmail;
 
         try
         {
+
+            var issmtpverified = await _domain.IsSmtpFullyVerifiedAsync(SmtpID);
+
+            if (!issmtpverified)
+            {
+               fromEmailToUse = "aamirs@groupji.co";
+            }
             string trackingId = Guid.NewGuid().ToString();
 
             using var smtpClient = new SmtpClient(smtpCredential.Server)
@@ -113,7 +125,7 @@ public class EmailSendingHelper
 
                 using var toMessage = new MailMessage
                 {
-                    From = new MailAddress(smtpCredential.FromEmail),
+                    From = new MailAddress(fromEmailToUse),
                     Subject = subject,
                     Body = bodyWithTracking,
                     IsBodyHtml = true
@@ -131,7 +143,7 @@ public class EmailSendingHelper
                     Body = EmailDetails.email_body,
                     EmailRecipientName = fullName,
                     EmailSenderName = $"{user.FirstName} {user.LastName}",
-                    SenderEmailId = smtpCredential.FromEmail,
+                    SenderEmailId = fromEmailToUse,
                     zohoViewName = "from pitch craft",
                     DataFileId = dataFileId,
                     SegmentId = SegmentId,
@@ -147,7 +159,7 @@ public class EmailSendingHelper
             {
                 using var bccMessage = new MailMessage
                 {
-                    From = new MailAddress(smtpCredential.FromEmail),
+                    From = new MailAddress(fromEmailToUse),
                     Subject = subject,
                     Body = EmailDetails.email_body,
                     IsBodyHtml = true
@@ -173,7 +185,7 @@ public class EmailSendingHelper
                 Body = EmailDetails.email_body,
                 EmailRecipientName = fullName,
                 EmailSenderName = $"{user.FirstName} {user.LastName}",
-                SenderEmailId = smtpCredential.FromEmail,
+                SenderEmailId = fromEmailToUse,
                 IsSuccess = false,
                 ErrorMessage = ex.Message,
                 zohoViewName = "from pitch craft",

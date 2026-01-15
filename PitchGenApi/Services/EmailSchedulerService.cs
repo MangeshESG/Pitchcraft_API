@@ -1,15 +1,18 @@
 ﻿using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
+using PitchGenApi.Interfaces;
 using PitchGenApi.Services;
 
 public class EmailSchedulerService : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IDomainVerificationRepository _domain;
 
-    public EmailSchedulerService(IServiceProvider serviceProvider)
+    public EmailSchedulerService(IServiceProvider serviceProvider, IDomainVerificationRepository domain)
     {
         _serviceProvider = serviceProvider;
+        _domain = domain;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -45,7 +48,7 @@ public class EmailSchedulerService : BackgroundService
                             Console.WriteLine($"➡️  Starting step ID: {step.Id}");
 
                             var contactRepo = scope.ServiceProvider.GetRequiredService<ContactRepository>();
-                            var helper = new ScheduledEmailSendingHelper(_serviceProvider, contactRepo);
+                            var helper = new ScheduledEmailSendingHelper(_serviceProvider, contactRepo, _domain);
 
                             await helper.ProcessStepAsync(step, stoppingToken);
 

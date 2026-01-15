@@ -5,16 +5,19 @@ using System.Net.Mail;
 using System.Net;
 using PitchGenApi.Models;
 using PitchGenApi.Model;
+using PitchGenApi.Interfaces;
 
 public class ScheduledEmailSendingHelper
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ContactRepository _contactRepository;
+    private readonly IDomainVerificationRepository _domain;
 
-    public ScheduledEmailSendingHelper(IServiceProvider serviceProvider, ContactRepository contactRepository)
+    public ScheduledEmailSendingHelper(IServiceProvider serviceProvider, ContactRepository contactRepository,IDomainVerificationRepository domain)
     {
         _serviceProvider = serviceProvider;
         _contactRepository = contactRepository;
+        _domain = domain;
     }
 
     public async Task ProcessStepAsync(SequenceStep step, CancellationToken cancellationToken)
@@ -83,11 +86,21 @@ public class ScheduledEmailSendingHelper
 
         Console.WriteLine($"👥 Total contacts fetched: {contacts.Count}");
 
+        var user = await context.ClientDetails.FirstOrDefaultAsync(x => x.Id == step.ClientId);
+
 
         var sentEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        var fromEmailToUse = smtpCredential.FromEmail;
+
         foreach (var Contact in contacts)
         {
+            var issmtpverified = await _domain.IsSmtpFullyVerifiedAsync(step.SmtpID);
+            if (!issmtpverified)
+            {
+                fromEmailToUse = "aamirs@groupji.co";
+            }
+
             if (Contact == null || string.IsNullOrWhiteSpace(Contact.email))
                 continue;
 
@@ -112,6 +125,9 @@ public class ScheduledEmailSendingHelper
                     IsSuccess = false,
                     ErrorMessage = "Email body or subject is incorrect.",
                     zohoViewName = "from pitch craft",
+                    EmailRecipientName = Contact.full_name,
+                    EmailSenderName = $"{user.FirstName} {user.LastName}",
+                    SenderEmailId = fromEmailToUse,
                     DataFileId = step.DataFileId,
                     SegmentId = step.SegmentId,
                     SentAt = DateTime.UtcNow,
@@ -134,6 +150,9 @@ public class ScheduledEmailSendingHelper
                     ContactId = Contact.id,
                     Subject = Contact.email_subject,
                     Body = Contact.email_body,
+                    EmailRecipientName = Contact.full_name,
+                    EmailSenderName = $"{user.FirstName} {user.LastName}",
+                    SenderEmailId = fromEmailToUse,
                     IsSuccess = false,
                     ErrorMessage = "Unsubscribed",
                     zohoViewName = "from pitch craft",
@@ -225,7 +244,7 @@ public class ScheduledEmailSendingHelper
 
                 using (var toMessage = new MailMessage
                 {
-                    From = new MailAddress(smtpCredential.FromEmail),
+                    From = new MailAddress(fromEmailToUse),
                     Subject = subject,
                     Body = bodyWithTracking,
                     IsBodyHtml = true,
@@ -243,7 +262,7 @@ public class ScheduledEmailSendingHelper
                 {
                     using var bccMessage = new MailMessage
                     {
-                        From = new MailAddress(smtpCredential.FromEmail),
+                        From = new MailAddress(fromEmailToUse),
                         Subject = subject,
                         Body = Contact.email_body,
                         IsBodyHtml = true,
@@ -282,6 +301,9 @@ public class ScheduledEmailSendingHelper
                     Body = Contact.email_body,
                     IsSuccess = true,
                     zohoViewName = "from pitch craft",
+                    EmailRecipientName = Contact.full_name,
+                    EmailSenderName = $"{user.FirstName} {user.LastName}",
+                    SenderEmailId = fromEmailToUse,
                     DataFileId = step.DataFileId,
                     SegmentId = step.SegmentId,
                     SentAt = DateTime.UtcNow,
@@ -301,6 +323,9 @@ public class ScheduledEmailSendingHelper
                     Body = Contact.email_body,
                     IsSuccess = false,
                     ErrorMessage = ex.Message,
+                    EmailRecipientName = Contact.full_name,
+                    EmailSenderName = $"{user.FirstName} {user.LastName}",
+                    SenderEmailId = fromEmailToUse,
                     zohoViewName = "from pitch craft",
                     DataFileId = step.DataFileId,
                     SegmentId = step.SegmentId,
