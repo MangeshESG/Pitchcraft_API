@@ -92,14 +92,20 @@ namespace PitchGenApi.Services
                 if (string.IsNullOrWhiteSpace(output))
                     output = ExtractText(parsed);
 
-                // Extract usage cost
+                // Extract usage
                 int promptTokens = parsed["usage"]?["input_tokens"]?.Value<int>() ?? 0;
                 int completionTokens = parsed["usage"]?["output_tokens"]?.Value<int>() ?? 0;
                 int totalTokens = promptTokens + completionTokens;
 
-                decimal inputCost = rate.InputPrice;
-                decimal outputCost = rate.OutputPrice;
-                decimal currentCost = (promptTokens * inputCost / 1000) + (completionTokens * outputCost / 1000);
+                // Correct OpenAI pricing (per 1,000,000 tokens)
+                decimal inputCostPerMillion = rate.InputPrice;
+                decimal outputCostPerMillion = rate.OutputPrice;
+
+                // Correct cost calculation
+                decimal currentCost =
+                    (promptTokens * inputCostPerMillion / 1_000_000m) +
+                    (completionTokens * outputCostPerMillion / 1_000_000m);
+
 
                 return new PitchResult
                 {
