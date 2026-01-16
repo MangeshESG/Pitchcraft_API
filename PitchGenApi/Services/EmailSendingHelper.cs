@@ -82,7 +82,6 @@ public class EmailSendingHelper
 
             if (!isVerified)
             {
-                // ❌ NOT VERIFIED → FALLBACK SMTP
                 smtpServer = "mail.sender.pitchkraft.ai";
                 smtpPort = 587;
                 useSsl = true;
