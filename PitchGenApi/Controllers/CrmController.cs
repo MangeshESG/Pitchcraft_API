@@ -989,6 +989,7 @@ namespace PitchGenApi.Controllers
                     c.CompanyEmployeeCount,
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
+                    c.Notes
                     //c.CompanyEventLink
                 });
             }
