@@ -47,7 +47,7 @@ namespace PitchGenApi.Services
             var rate = await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == request.ModelName);
             if (rate == null)
             {
-                rate = await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == "gpt-5");
+                rate = await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == "gpt-5.1");
                 if (rate == null)
                     return new PitchResult { Content = "Invalid model and fallback model not found.", IsSuccess = false };
 
