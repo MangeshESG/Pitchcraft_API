@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
 using System.Text.RegularExpressions;
 using PitchGenApi.Interfaces;
+using Org.BouncyCastle.Crypto;
 
 public class EmailSendingHelper
 {
@@ -31,7 +32,7 @@ public class EmailSendingHelper
         bool isFollowUp,
         string BccEmail = "",
         int SmtpID = 0,
-        string fullName = "",
+        string fullname = "",
         string location = "",
         string company = "",
         string website = "",
@@ -64,24 +65,40 @@ public class EmailSendingHelper
         }
 
         var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
-        var fromEmailToUse = smtpCredential.FromEmail;
+
+        bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(SmtpID);
+
+        string smtpServer = smtpCredential.Server;
+        int smtpPort = smtpCredential.Port;
+        bool useSsl = smtpCredential.UseSsl;
+        string smtpUsername = smtpCredential.Username;
+        string smtpPassword = smtpCredential.Password;
+
+        string fromEmailToUse = smtpCredential.FromEmail;
+        string senderName = smtpCredential.SenderName;
 
         try
         {
 
-            var issmtpverified = await _domain.IsSmtpFullyVerifiedAsync(SmtpID);
-
-            if (!issmtpverified)
+            if (!isVerified)
             {
-               fromEmailToUse = "aamirs@groupji.co";
+                // ❌ NOT VERIFIED → FALLBACK SMTP
+                smtpServer = "mail.sender.pitchkraft.ai";
+                smtpPort = 587;
+                useSsl = true;
+                smtpUsername = "message-service@sender.pitchkraft.ai";
+                smtpPassword = "yV%691jd9";
+
+                fromEmailToUse = "message-service@sender.pitchkraft.ai";
+                senderName = "PitchCraft";
             }
             string trackingId = Guid.NewGuid().ToString();
 
-            using var smtpClient = new SmtpClient(smtpCredential.Server)
+            using var smtpClient = new SmtpClient(smtpServer)
             {
-                Port = smtpCredential.Port,
-                Credentials = new NetworkCredential(smtpCredential.Username, smtpCredential.Password),
-                EnableSsl = smtpCredential.UseSsl,
+                Port = smtpPort,
+                Credentials = new NetworkCredential(smtpUsername, smtpPassword),
+                EnableSsl = useSsl,
             };
 
             string finalEmailBody = EmailDetails.email_body;
@@ -120,12 +137,12 @@ public class EmailSendingHelper
             // Send main email
             if (!string.IsNullOrWhiteSpace(toEmail))
             {
-                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, finalEmailBody, clientId,contactId, dataFileId, SegmentId, fullName, location, company, website, linkedin, jobtitle, trackingId);
-                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullName, location, company, website, linkedin, jobtitle, trackingId);
+                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, finalEmailBody, clientId,contactId, dataFileId, SegmentId, fullname, location, company, website, linkedin, jobtitle, trackingId);
+                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullname, location, company, website, linkedin, jobtitle, trackingId);
 
                 using var toMessage = new MailMessage
                 {
-                    From = new MailAddress(fromEmailToUse),
+                    From = new MailAddress(fromEmailToUse,senderName),
                     Subject = subject,
                     Body = bodyWithTracking,
                     IsBodyHtml = true
@@ -141,8 +158,8 @@ public class EmailSendingHelper
                     ToEmail = toEmail,
                     Subject = subject,
                     Body = EmailDetails.email_body,
-                    EmailRecipientName = fullName,
-                    EmailSenderName = $"{user.FirstName} {user.LastName}",
+                    EmailRecipientName = fullname,
+                    EmailSenderName = senderName,
                     SenderEmailId = fromEmailToUse,
                     zohoViewName = "from pitch craft",
                     DataFileId = dataFileId,
@@ -183,8 +200,8 @@ public class EmailSendingHelper
                 ToEmail = toEmail,
                 Subject = subject,
                 Body = EmailDetails.email_body,
-                EmailRecipientName = fullName,
-                EmailSenderName = $"{user.FirstName} {user.LastName}",
+                EmailRecipientName = fullname,
+                EmailSenderName = senderName,
                 SenderEmailId = fromEmailToUse,
                 IsSuccess = false,
                 ErrorMessage = ex.Message,

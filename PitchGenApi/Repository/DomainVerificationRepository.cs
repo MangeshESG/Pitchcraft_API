@@ -546,6 +546,7 @@ namespace PitchGenApi.Repositories
                     Username = smtpDto.Username,
                     Password = smtpDto.Password,
                     FromEmail = smtpDto.FromEmail,
+                    SenderName = smtpDto.SenderName,
                     UseSsl = smtpDto.UseSsl,
                 };
 

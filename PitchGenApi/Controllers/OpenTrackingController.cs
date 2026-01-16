@@ -75,7 +75,7 @@ public class OpenTrackingController : ControllerBase
 
         // Bot detection
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
-        var suspiciousAgents = new[] { "googleimageproxy", "thunderbird", "yahoo", "bot", "crawler", "preview", "proxy", "scanner", "monitor" };
+        var suspiciousAgents = new[] {"thunderbird", "bot", "crawler", "preview", "proxy", "scanner", "monitor" };
         if (suspiciousAgents.Any(agent => userAgent.Contains(agent)))
         {
             byte[] botPixelBytes = Convert.FromBase64String(
@@ -274,7 +274,17 @@ public class OpenTrackingController : ControllerBase
             x.EventType == "Click" &&
             x.IsBot == false
         );
+        bool hasOpenLog = await _context.EmailTrackingLogs.AnyAsync(x =>
+            x.TrackingId == trackingId &&
+            x.EventType == "Open" &&
+            x.IsBot == false
+        );
 
+        if (!hasOpenLog)
+        {
+            // ❌ Open nahi hua → click track nahi karna
+            return Redirect(url);
+        }
         if (!alreadyClicked)
         {
             _context.EmailTrackingLogs.Add(new EmailTrackingLog

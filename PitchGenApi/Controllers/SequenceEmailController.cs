@@ -91,9 +91,9 @@ namespace PitchGenApi.Controllers
                         BccEmail = dto.BccEmail,
                         DataFileId = dto.SegmentId.HasValue ? null : dto.DataFileId, 
                         SegmentId = dto.DataFileId.HasValue ? null : dto.SegmentId,  
-                        TestIsSent = false,
+                        TestIsSent = true,
                         SmtpID = dto.SmtpID,
-                        IsSent = true,
+                        IsSent = false,
                         IsFollowUp = dto.IsFollowUp
                     };
 
