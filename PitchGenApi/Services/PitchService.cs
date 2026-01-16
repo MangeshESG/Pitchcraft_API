@@ -51,7 +51,7 @@ namespace PitchGenApi.Services
                 if (rate == null)
                     return new PitchResult { Content = "Invalid model and fallback model not found.", IsSuccess = false };
 
-                request.ModelName = "gpt-5";
+                request.ModelName = "gpt-5.1";
             }
 
             // Build role-tagged input for Responses API
