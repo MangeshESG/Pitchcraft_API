@@ -45,6 +45,8 @@ namespace PitchGenApi.Database
         public DbSet<FinalUserCredit> FinalUserCredit { get; set; }
         public DbSet<UnsubscribedContacts> UnsubscribedContacts { get; set; }
         public DbSet<PlaceholderDefinition> PlaceholderDefinitions { get; set; }
+        public DbSet<DomainVerification> DomainVerification { get; set; }
+        public DbSet<DomainEmailVerification> DomainEmailVerification { get; set; }
 
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)

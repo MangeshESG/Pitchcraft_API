@@ -143,6 +143,35 @@ namespace PitchGenApi.Helpers
             await SendAsync(to, subject, body);
         }
 
+        public async Task DomainVerifyOTP(string Email, string otp, string firstName, string ip, string browsername,string username)
+        {
+            var template = await _context.EmailTemplates
+               .FirstOrDefaultAsync(x => x.TemplateName == "DomainVerification");
+
+            string domain = Email.Split('@')[1].Trim().ToLower();
+
+            if (template == null)
+                throw new Exception("OtpEmail template not found");
+
+            // Prepare dynamic data for placeholders
+            var data = new Dictionary<string, string>
+            {
+                { "FirstName", firstName },
+                { "domainname", domain },
+                { "OTP", otp },
+                { "UserEmail", username },
+                { "IPAddress", ip },
+                { "BrowserName", browsername },
+            };
+
+            // Replace placeholders in subject and body
+            string subject = _templateHelper.ReplacePlaceholders(template.Subject, data);
+            string body = _templateHelper.ReplacePlaceholders(template.Body, data);
+
+            // Send the email
+            await SendAsync(Email, subject, body);
+        }
+
         public async Task SendInvoiceEmailAsync(string toEmail, string customerName, string invoiceNumber, string invoiceDate, string amount, string invoicePdfUrl, string senderName, string supportEmail)
         {
             var fromAddress = new MailAddress(FromEmail, FromName);

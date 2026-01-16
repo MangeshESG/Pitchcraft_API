@@ -1,6 +1,9 @@
 ﻿using System.Linq;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using PitchGenApi.Database;
+using PitchGenApi.Interfaces;
 using PitchGenApi.Services;
 
 public class EmailSchedulerService : BackgroundService
@@ -23,10 +26,11 @@ public class EmailSchedulerService : BackgroundService
                 Console.WriteLine("🔄 Checking for pending steps...");
 
                 using var scope = _serviceProvider.CreateScope();
+
                 var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
                 var dueSteps = await context.SequenceSteps
-                    .Where(s => !s.TestIsSent)
+                    .Where(s => !s.IsSent)
                     .ToListAsync(stoppingToken);
 
                 Console.WriteLine($"🟡 Found {dueSteps.Count} pending step(s).");
@@ -34,18 +38,27 @@ public class EmailSchedulerService : BackgroundService
                 var groupedSteps = dueSteps
                     .GroupBy(s => s.ScheduledDate + s.ScheduledTime);
 
-                var groupTasks = groupedSteps.Select(async group =>
+                foreach (var group in groupedSteps)
                 {
                     Console.WriteLine($"🧩 Processing group scheduled at: {group.Key}");
 
-                    var innerTasks = group.Select(async step =>
+                    var tasks = group.Select(async step =>
                     {
                         try
                         {
-                            Console.WriteLine($"➡️  Starting step ID: {step.Id}");
+                            Console.WriteLine($"➡️ Starting step ID: {step.Id}");
 
-                            var contactRepo = scope.ServiceProvider.GetRequiredService<ContactRepository>();
-                            var helper = new ScheduledEmailSendingHelper(_serviceProvider, contactRepo);
+                            var contactRepo = scope.ServiceProvider
+                                .GetRequiredService<ContactRepository>();
+
+                            var domainRepo = scope.ServiceProvider
+                                .GetRequiredService<IDomainVerificationRepository>();
+
+                            var helper = new ScheduledEmailSendingHelper(
+                                scope.ServiceProvider,
+                                contactRepo,
+                                domainRepo
+                            );
 
                             await helper.ProcessStepAsync(step, stoppingToken);
 
@@ -53,14 +66,12 @@ public class EmailSchedulerService : BackgroundService
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"❌ Error in step ID: {step.Id} - {ex.Message}");
+                            Console.WriteLine($"❌ Error in step ID {step.Id}: {ex.Message}");
                         }
                     });
 
-                    await Task.WhenAll(innerTasks);
-                });
-
-                await Task.WhenAll(groupTasks);
+                    await Task.WhenAll(tasks);
+                }
 
                 Console.WriteLine("⏳ Waiting 20 seconds for next cycle...");
             }

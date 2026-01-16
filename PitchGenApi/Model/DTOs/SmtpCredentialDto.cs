@@ -22,6 +22,8 @@ namespace PitchGenApi.Model.DTOs
 
         [Required]
         public string FromEmail { get; set; }
+        [Required]
+        public string SenderName { get; set; }
 
         [Required]
         public bool UseSsl { get; set; }

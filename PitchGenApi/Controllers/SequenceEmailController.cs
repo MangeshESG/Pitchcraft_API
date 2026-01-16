@@ -10,6 +10,8 @@ using System.Collections.Generic;
 using System.Net.Mail;
 using System.Net;
 using PitchGenApi.Models;
+using PitchGenApi.Interfaces;
+using System.Text.Json;
 
 namespace PitchGenApi.Controllers
 {
@@ -20,13 +22,15 @@ namespace PitchGenApi.Controllers
         private readonly AppDbContext _context;
         private readonly ContactRepository _contactRepository;
         private readonly EmailSendingHelper _emailHelper;
+        private readonly IDomainVerificationRepository _repo;
 
 
-        public SequenceEmailController(AppDbContext context, ContactRepository contactRepository, EmailSendingHelper emailHelper)
+        public SequenceEmailController(AppDbContext context, ContactRepository contactRepository, EmailSendingHelper emailHelper, IDomainVerificationRepository repository)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _contactRepository = contactRepository;
             _emailHelper = emailHelper;
+            _repo = repository;
         }
 
         // Step 1: Create a new email sequence with multiple steps
@@ -87,9 +91,9 @@ namespace PitchGenApi.Controllers
                         BccEmail = dto.BccEmail,
                         DataFileId = dto.SegmentId.HasValue ? null : dto.DataFileId, 
                         SegmentId = dto.DataFileId.HasValue ? null : dto.SegmentId,  
-                        TestIsSent = false,
+                        TestIsSent = true,
                         SmtpID = dto.SmtpID,
-                        IsSent = true,
+                        IsSent = false,
                         IsFollowUp = dto.IsFollowUp
                     };
 
@@ -405,6 +409,11 @@ namespace PitchGenApi.Controllers
         {
             try
             {
+                var check = await _context.SmtpCredentials.FirstOrDefaultAsync(x => x.ClientId == ClientId && x.FromEmail == dto.FromEmail);
+                if  (check != null)
+                    {
+                    return BadRequest("Email already exists");
+                    }
                 //var clientIdStr = User.FindFirst("UserId")?.Value;
                 //if (string.IsNullOrEmpty(clientIdStr) || !int.TryParse(clientIdStr, out int clientId))
                 //    return Unauthorized("Invalid or missing client ID.");
@@ -469,6 +478,17 @@ namespace PitchGenApi.Controllers
 
                 await smtpClient.SendMailAsync(mailMessage);
 
+                var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+                var userAgent = Request.Headers["User-Agent"].ToString();
+                var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+
+                var smtpdetails = JsonSerializer.Serialize(dto);
+
+                int userid = int.Parse(ClientId);
+                var result = await _repo.GenerateToken(dto.FromEmail, userid, smtpdetails,ipAddress,browserName);
+
+                if (!result.Success)
+                    return BadRequest(result.Message);
                 // Log success
                 _context.EmailLogs.Add(new EmailLog
                 {

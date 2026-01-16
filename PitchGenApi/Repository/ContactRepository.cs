@@ -4,6 +4,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
+using Serilog;
 using System.Text;
 
 public class ContactRepository
@@ -185,6 +186,95 @@ public class ContactRepository
         return "Unsubscribed Added Successfully";
     }
 
+    public async Task<ContactEmailTimelineDto?> GetEmailTimeline(int contactId)
+    {
+        var rows = await (
+            from c in _context.contacts
+            join el in _context.EmailLogs
+                on c.id equals el.ContactId
+            join et in _context.EmailTrackingLogs
+                on el.TrackingId equals et.TrackingId into etg
+            from et in etg.DefaultIfEmpty()
+            where c.id == contactId
+                  && el.TrackingId != null
+                  && (et == null || et.EventType == "OPEN" || et.EventType == "CLICK")
+            select new
+            {
+                Contact = c,
+                EmailLog = el,
+                Tracking = et
+            }
+        ).ToListAsync();
+
+        if (!rows.Any())
+            return null;
+
+        var response = new ContactEmailTimelineDto
+        {
+            ContactId = contactId,
+            FullName = rows.First().Contact.full_name,
+            Email = rows.First().Contact.email,
+            ContactCreatedAt = rows.First().Contact.created_at,
+
+            Emails = rows
+                .GroupBy(x => new
+                {
+                    x.EmailLog.TrackingId,
+                    x.EmailLog.SentAt,
+                    x.EmailLog.SenderEmailId,
+                    x.EmailLog.Subject
+                })
+                .OrderBy(g => g.Key.SentAt)
+                .Select(g =>
+                {
+                    var log = g.First().EmailLog;
+
+                    return new SentEmailDto
+                    {
+                        TrackingId = g.Key.TrackingId.ToString(),
+                        SentAt = g.Key.SentAt,
+                        SenderEmailId = g.Key.SenderEmailId,
+                        Subject = g.Key.Subject,
+                        Body = log.Body,
+                        Source = GetSourceName(log),
+
+                        Events = g
+                            .Where(x => x.Tracking != null)
+                            .OrderBy(x => x.Tracking.Timestamp)
+                            .Select(x => new EmailEventDto
+                            {
+                                EventType = x.Tracking.EventType,
+                                EventAt = x.Tracking.Timestamp,
+                                TargetUrl = x.Tracking.TargetUrl
+                            })
+                            .ToList()
+                    };
+                })
+                .ToList()
+        };
+
+        return response;
+    }
+    private string? GetSourceName(EmailLog log)
+    {
+        if (log.DataFileId != null)
+        {
+            return _context.data_files
+                .Where(x => x.id == log.DataFileId)
+                .Select(x => x.name)
+                .FirstOrDefault();
+        }
+
+        if (log.SegmentId != null)
+        {
+            return _context.segments
+                .Where(x => x.Id == log.SegmentId)
+                .Select(x => x.Name)
+                .FirstOrDefault();
+        }
+
+        return null;
+    }
 
 }
 

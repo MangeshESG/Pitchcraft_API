@@ -5,16 +5,19 @@ using System.Net.Mail;
 using System.Net;
 using PitchGenApi.Models;
 using PitchGenApi.Model;
+using PitchGenApi.Interfaces;
 
 public class ScheduledEmailSendingHelper
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ContactRepository _contactRepository;
+    private readonly IDomainVerificationRepository _domain;
 
-    public ScheduledEmailSendingHelper(IServiceProvider serviceProvider, ContactRepository contactRepository)
+    public ScheduledEmailSendingHelper(IServiceProvider serviceProvider, ContactRepository contactRepository,IDomainVerificationRepository domain)
     {
         _serviceProvider = serviceProvider;
         _contactRepository = contactRepository;
+        _domain = domain;
     }
 
     public async Task ProcessStepAsync(SequenceStep step, CancellationToken cancellationToken)
@@ -83,11 +86,37 @@ public class ScheduledEmailSendingHelper
 
         Console.WriteLine($"👥 Total contacts fetched: {contacts.Count}");
 
+        var user = await context.ClientDetails.FirstOrDefaultAsync(x => x.Id == step.ClientId);
+
 
         var sentEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(step.SmtpID);
+
+        string smtpServer = smtpCredential.Server;
+        int smtpPort = smtpCredential.Port;
+        bool useSsl = smtpCredential.UseSsl;
+        string smtpUsername = smtpCredential.Username;
+        string smtpPassword = smtpCredential.Password;
+
+        string fromEmailToUse = smtpCredential.FromEmail;
+        string senderName = smtpCredential.SenderName;
+
         foreach (var Contact in contacts)
         {
+            if (!isVerified)
+            {
+                // ❌ NOT VERIFIED → FALLBACK SMTP
+                smtpServer = "mail.sender.pitchkraft.ai";
+                smtpPort = 587;
+                useSsl = true;
+                smtpUsername = "message-service@sender.pitchkraft.ai";
+                smtpPassword = "yV%691jd9";
+
+                fromEmailToUse = "message-service@sender.pitchkraft.ai";
+                senderName = "PitchCraft";
+            }
+
             if (Contact == null || string.IsNullOrWhiteSpace(Contact.email))
                 continue;
 
@@ -112,6 +141,9 @@ public class ScheduledEmailSendingHelper
                     IsSuccess = false,
                     ErrorMessage = "Email body or subject is incorrect.",
                     zohoViewName = "from pitch craft",
+                    EmailRecipientName = Contact.full_name,
+                    EmailSenderName = senderName,
+                    SenderEmailId = fromEmailToUse,
                     DataFileId = step.DataFileId,
                     SegmentId = step.SegmentId,
                     SentAt = DateTime.UtcNow,
@@ -134,6 +166,9 @@ public class ScheduledEmailSendingHelper
                     ContactId = Contact.id,
                     Subject = Contact.email_subject,
                     Body = Contact.email_body,
+                    EmailRecipientName = Contact.full_name,
+                    EmailSenderName = senderName,
+                    SenderEmailId = fromEmailToUse,
                     IsSuccess = false,
                     ErrorMessage = "Unsubscribed",
                     zohoViewName = "from pitch craft",
@@ -216,16 +251,16 @@ public class ScheduledEmailSendingHelper
 
             try
             {
-                using var smtpClient = new SmtpClient(smtpCredential.Server)
+                using var smtpClient = new SmtpClient(smtpServer)
                 {
-                    Port = smtpCredential.Port,
-                    Credentials = new NetworkCredential(smtpCredential.Username, smtpCredential.Password),
-                    EnableSsl = smtpCredential.UseSsl,
+                    Port = smtpPort,
+                    Credentials = new NetworkCredential(smtpUsername, smtpPassword),
+                    EnableSsl = useSsl,
                 };
 
                 using (var toMessage = new MailMessage
                 {
-                    From = new MailAddress(smtpCredential.FromEmail),
+                    From = new MailAddress(fromEmailToUse, senderName),
                     Subject = subject,
                     Body = bodyWithTracking,
                     IsBodyHtml = true,
@@ -243,7 +278,7 @@ public class ScheduledEmailSendingHelper
                 {
                     using var bccMessage = new MailMessage
                     {
-                        From = new MailAddress(smtpCredential.FromEmail),
+                        From = new MailAddress(fromEmailToUse, senderName),
                         Subject = subject,
                         Body = Contact.email_body,
                         IsBodyHtml = true,
@@ -282,6 +317,9 @@ public class ScheduledEmailSendingHelper
                     Body = Contact.email_body,
                     IsSuccess = true,
                     zohoViewName = "from pitch craft",
+                    EmailRecipientName = Contact.full_name,
+                    EmailSenderName = senderName,
+                    SenderEmailId = fromEmailToUse,
                     DataFileId = step.DataFileId,
                     SegmentId = step.SegmentId,
                     SentAt = DateTime.UtcNow,
@@ -301,6 +339,9 @@ public class ScheduledEmailSendingHelper
                     Body = Contact.email_body,
                     IsSuccess = false,
                     ErrorMessage = ex.Message,
+                    EmailRecipientName = Contact.full_name,
+                    EmailSenderName = senderName,
+                    SenderEmailId = fromEmailToUse,
                     zohoViewName = "from pitch craft",
                     DataFileId = step.DataFileId,
                     SegmentId = step.SegmentId,
@@ -315,7 +356,7 @@ public class ScheduledEmailSendingHelper
         var dbStep = await context.SequenceSteps.FirstOrDefaultAsync(x => x.Id == step.Id, cancellationToken);
         if (dbStep != null)
         {
-            dbStep.TestIsSent = true;
+            dbStep.IsSent = true;
             Console.WriteLine($"🟢 Marked step ID {step.Id} as sent.");
         }
 
