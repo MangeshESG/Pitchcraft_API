@@ -96,6 +96,8 @@ namespace PitchGenApi.Services
                 int promptTokens = parsed["usage"]?["input_tokens"]?.Value<int>() ?? 0;
                 int completionTokens = parsed["usage"]?["output_tokens"]?.Value<int>() ?? 0;
                 int totalTokens = promptTokens + completionTokens;
+                int searchTokens = parsed["usage"]?["search_tokens"]?.Value<int>() ?? 0;
+
 
                 // Correct OpenAI pricing (per 1,000,000 tokens)
                 decimal inputCostPerMillion = rate.InputPrice;
@@ -104,7 +106,10 @@ namespace PitchGenApi.Services
                 // Correct cost calculation
                 decimal currentCost =
                     (promptTokens * inputCostPerMillion / 1_000_000m) +
-                    (completionTokens * outputCostPerMillion / 1_000_000m);
+                    (completionTokens * outputCostPerMillion / 1_000_000m) +
+                    (searchTokens * inputCostPerMillion / 1_000_000m) +
+                    0.01m; // fixed web search API cost per call
+
 
 
                 return new PitchResult

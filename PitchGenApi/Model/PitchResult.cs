@@ -8,5 +8,6 @@
         public int TotalTokens { get; set; }
         public decimal CurrentCost { get; set; }
         public bool IsSuccess { get; set; }
+        public int SearchTokens { get; set; }
     }
 }

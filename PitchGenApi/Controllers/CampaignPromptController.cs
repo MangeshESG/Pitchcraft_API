@@ -618,7 +618,15 @@ namespace PitchGenApi.Controllers
             {
                 Success = true,
                 ExampleOutput = pitchResult.Content,
-                FilledTemplate = filledTemplate
+                FilledTemplate = filledTemplate,
+                Usage = new
+                {
+                    promptTokens = pitchResult.PromptTokens,
+                    completionTokens = pitchResult.CompletionTokens,
+                    searchTokens = pitchResult.SearchTokens ,   // add this line
+                    totalTokens = pitchResult.TotalTokens,
+                    cost = pitchResult.CurrentCost
+                }
             });
         }
 

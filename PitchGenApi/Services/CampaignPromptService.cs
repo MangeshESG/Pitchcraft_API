@@ -235,13 +235,13 @@ namespace PitchGenApi.Services
             }
 
             var requestBody = new Dictionary<string, object>
-            {
-                { "model", model },
-                { "input", sbInput.ToString() },
-                { "temperature", 1.0 },
-                { "max_output_tokens", 15000 },
-                { "tools", new object[] { new { type = "web_search_preview" } } }
-            };
+    {
+        { "model", model },
+        { "input", sbInput.ToString() },
+        { "temperature", 1.0 },
+        { "max_output_tokens", 15000 },
+        { "tools", new object[] { new { type = "web_search_preview" } } }
+    };
 
             var requestJson = JsonConvert.SerializeObject(requestBody);
             var httpContent = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -257,10 +257,15 @@ namespace PitchGenApi.Services
 
                 if (!httpResponse.IsSuccessStatusCode)
                 {
-                    return new { assistantText = $"API Error: {httpResponse.StatusCode}", rawResponse = raw, error = true };
+                    return new
+                    {
+                        assistantText = $"API Error: {httpResponse.StatusCode}",
+                        rawResponse = raw,
+                        error = true
+                    };
                 }
 
-                var parsed = JsonConvert.DeserializeObject<JObject>(raw)!; // non-null after success
+                var parsed = JsonConvert.DeserializeObject<JObject>(raw)!;
 
                 // Prefer output_text
                 string aiResponse = parsed["output_text"]?.ToString() ?? string.Empty;
@@ -273,7 +278,44 @@ namespace PitchGenApi.Services
                 if (string.IsNullOrWhiteSpace(aiResponse))
                     aiResponse = "⚠️ No response from GPT (empty content).";
 
-                // Extract placeholders & save to DB if present
+
+                // ============================================================
+                // 🟢 NEW — USAGE EXTRACTION
+                // ============================================================
+                int promptTokens = parsed["usage"]?["input_tokens"]?.Value<int>() ?? 0;
+                int completionTokens = parsed["usage"]?["output_tokens"]?.Value<int>() ?? 0;
+                int searchTokens = parsed["usage"]?["search_tokens"]?.Value<int>() ?? 0;
+
+                // search_calls always 1 when tool is enabled
+                int searchCalls = 1;
+
+
+                // ============================================================
+                // 🟢 NEW — LOAD MODEL PRICING
+                // ============================================================
+                var rate = await _context.ModelRates
+                    .FirstOrDefaultAsync(x => x.ModelName == model);
+
+                if (rate == null)
+                    rate = await _context.ModelRates.FirstAsync(x => x.ModelName == "gpt-5");
+
+                decimal inputPrice = rate.InputPrice;     // per 1M
+                decimal outputPrice = rate.OutputPrice;   // per 1M
+
+
+                // ============================================================
+                // 🟢 NEW — COST CALCULATION
+                // ============================================================
+                decimal cost =
+                    (promptTokens * inputPrice / 1_000_000m) +
+                    (completionTokens * outputPrice / 1_000_000m) +
+                    (searchTokens * inputPrice / 1_000_000m) +
+                    0.01m; // web search fee
+
+
+                // ============================================================
+                // Save placeholders (existing logic)
+                // ============================================================
                 var updatedPlaceholders = ExtractPlaceholders(aiResponse);
                 if (updatedPlaceholders.Count > 0)
                 {
@@ -290,16 +332,24 @@ namespace PitchGenApi.Services
                 // Ensure session exists
                 if (!_sessions.ContainsKey(userId))
                 {
-                    _sessions[userId] = new CampaignSession { UserId = userId, CampaignTemplateId = 0, Messages = new List<Dictionary<string, string>>() };
+                    _sessions[userId] = new CampaignSession
+                    {
+                        UserId = userId,
+                        CampaignTemplateId = 0,
+                        Messages = new List<Dictionary<string, string>>()
+                    };
                 }
 
                 _sessions[userId].Messages.Add(new Dictionary<string, string>
-                {
-                    { "role", "assistant" },
-                    { "content", aiResponse }
-                });
+        {
+            { "role", "assistant" },
+            { "content", aiResponse }
+        });
 
-                // Collect web search sources if present
+
+                // ============================================================
+                // Collect web search sources (existing logic)
+                // ============================================================
                 var webSearchResults = new List<object>();
                 try
                 {
@@ -329,19 +379,33 @@ namespace PitchGenApi.Services
                     Console.WriteLine($"[WEB PARSE ERROR] {ex.Message}");
                 }
 
+
+                // ============================================================
+                // ⭐ FINAL RETURN WITH USAGE
+                // ============================================================
                 return new
                 {
                     isComplete = aiResponse.Contains("==PLACEHOLDER_VALUES_START==") &&
                                  aiResponse.Contains("==PLACEHOLDER_VALUES_END==") &&
                                  aiResponse.Contains("\"complete\""),
+
                     assistantText = aiResponse,
                     fullResponse = parsed,
                     sessionActive = true,
                     messageCount = _sessions[userId].Messages.Count,
-                    webSearchResults
+                    webSearchResults,
+
+                    usage = new
+                    {
+                        promptTokens,
+                        completionTokens,
+                        searchTokens,
+                        searchCalls,
+                        totalTokens = promptTokens + completionTokens + searchTokens,
+                        cost
+                    }
                 };
             }
-
             catch (Exception ex)
             {
                 await SaveConversationToDb(userId);
