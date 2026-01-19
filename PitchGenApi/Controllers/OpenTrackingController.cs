@@ -221,7 +221,7 @@ public class OpenTrackingController : ControllerBase
 
         var suspiciousAgents = new[]
         {
-        "googleimageproxy","curl","bot","preview","proxy","spider","crawler",
+        "curl","bot","preview","proxy","spider","crawler",
         "scraper","headless","phantom","selenium","puppeteer",
         "wget","fetch","scanner","monitor","python","java","ruby","perl"
     };
