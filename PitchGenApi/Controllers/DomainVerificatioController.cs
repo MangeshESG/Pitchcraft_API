@@ -14,35 +14,7 @@ namespace PitchGenApi.Controllers
         {
             _repo = repo;
         }
-
-        // ===============================
-        // Generate Domain Token + Add Email
-        // ===============================
-        //[HttpPost("generate")]
-        //public async Task<IActionResult> GenerateToken(string email, int clientId)
-        //{
-        //    var result = await _repo.GenerateToken(email, clientId);
-
-        //    if (!result.Success)
-        //        return BadRequest(result.Message);
-
-        //    // ✅ Domain already verified
-        //    if (result.DomainAlreadyVerified)
-        //        return Ok(new
-        //        {
-        //            Message = result.Message
-        //        });
-
-        //    // 🔐 Domain verification required
-        //    return Ok(new
-        //    {
-        //        Message = result.Message,
-        //        Type = "TXT",
-        //        Host = $"_pitchgen.{result.Domain}",
-        //        Value = $"pitchgen-verification={result.Token}"
-        //    });
-        //}
-
+        
         // ===============================
         // Verify Domain via DNS
         // ===============================
@@ -56,19 +28,7 @@ namespace PitchGenApi.Controllers
 
             return Ok(result.Message);
         } 
-        
-        //[HttpPost("resend-domain-verify-email")]
-        //public async Task<IActionResult> ResendDomainVerifyEmail(int emaildomainid , int clientId)
-        //{
-
-        //    var result = await _repo.ResendDomainVerifyOTP(emaildomainid, clientId);
-
-        //    if (!result.Success)
-        //        return BadRequest(result.Message);
-
-        //    return Ok(result.Message);
-        //}
-
+       
         [HttpPost("verifySmtpOtp")]
         public async Task<IActionResult> VerifySmtpOtp(string email,string otp,string clientId)
         {
@@ -152,5 +112,20 @@ namespace PitchGenApi.Controllers
                 DMARC = dmarcResult
             });
         }
+
+        [HttpPost("delete-domain")]
+        public async Task<IActionResult> DeleteDomain([FromQuery] int domainId, [FromQuery] string clientId)
+        {
+            if (domainId <= 0)
+                return BadRequest("Invalid domainId or clientId");
+
+            var result = await _repo.DeleteDomainAsync(domainId, clientId);
+
+            if (!result.Success)
+                return BadRequest(result.Message);
+
+            return Ok(result.Message);
+        }
+
     }
 }

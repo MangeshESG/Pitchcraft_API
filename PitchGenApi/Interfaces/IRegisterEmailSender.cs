@@ -8,14 +8,6 @@ namespace PitchGenApi.Helpers
         Task SendResetPasswordEmailAsync(string to, string otp, string firstName, string ip, string browser);
         Task TrustOtpEmail(string to, string otp, string firstName, string ip, string browser);
         Task DomainVerifyOTP(string Email, string otp, string firstName,string ip, string browser, string username);
-        Task SendInvoiceEmailAsync(
-            string toEmail,
-            string customerName,
-            string invoiceNumber,
-            string invoiceDate,
-            string amount,
-            string invoicePdfUrl,
-            string senderName,
-            string supportEmail);
+        Task SendInvoiceEmailAsync(string toEmail, string customerName, string invoiceNumber, string invoiceDate, string amount, string invoicePdfUrl, string senderName, string supportEmail);
     }
 }

@@ -89,7 +89,6 @@ public class EmailSendingHelper
                 smtpPassword = "yV%691jd9";
 
                 fromEmailToUse = "message-service@sender.pitchkraft.ai";
-                senderName = "PitchCraft";
             }
             string trackingId = Guid.NewGuid().ToString();
 

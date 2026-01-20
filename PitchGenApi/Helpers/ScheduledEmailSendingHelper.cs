@@ -114,7 +114,6 @@ public class ScheduledEmailSendingHelper
                 smtpPassword = "yV%691jd9";
 
                 fromEmailToUse = "message-service@sender.pitchkraft.ai";
-                senderName = "PitchCraft";
             }
 
             if (Contact == null || string.IsNullOrWhiteSpace(Contact.email))

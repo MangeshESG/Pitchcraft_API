@@ -25,69 +25,49 @@ namespace PitchGenApi.Repositories
         // ================================
         // Generate Token + Add Email
         // ================================
-        public async Task<OperationResult> GenerateToken(string email, int clientId, string smtpdetails,string ip, string browsername)
+        public async Task<OperationResult> GenerateToken( string email, int clientId, SmtpCredentialDto dto, string ip, string browsername)
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(email) || !email.Contains("@"))
-                    return Fail("Invalid email address");
-
                 string domain = email.Split('@')[1].Trim().ToLower();
 
                 var domainRecord = await _db.DomainVerification
                     .FirstOrDefaultAsync(x => x.Domain == domain && x.ClientId == clientId);
 
-                string? token = null;
-
-                // 🆕 Domain not exists
                 if (domainRecord == null)
                 {
-                    token = GenerateTokenValue();
-
                     domainRecord = new DomainVerification
                     {
                         ClientId = clientId,
                         Domain = domain,
-                        VerificationToken = token,
+                        VerificationToken = GenerateTokenValue(),
                         IsVerified = false,
                         CreatedAt = DateTime.UtcNow
                     };
 
                     await _db.DomainVerification.AddAsync(domainRecord);
-                    await _db.SaveChangesAsync();
+                    await _db.SaveChangesAsync(); 
                 }
-                // 🔄 Domain exists but NOT verified
+
                 else if (!domainRecord.IsVerified)
                 {
-                    token = GenerateTokenValue();
-                    domainRecord.VerificationToken = token;
-                    await _db.SaveChangesAsync();
+                    domainRecord.VerificationToken = GenerateTokenValue();
+                    await _db.SaveChangesAsync(); 
+
                 }
 
-                // 📧 Add email for domain
-                var emailResult = await AddEmailForDomain(domainRecord.Id, clientId, email, smtpdetails ,ip, browsername);
-                if (!emailResult.Success)
-                    return emailResult;
-
-                // ✅ Domain already verified
-                if (domainRecord.IsVerified)
-                {
-                    return Success("Domain already verified. Email added and OTP sent.", true);
-                }
-
-                // 🔐 Domain verification required
-                return new OperationResult
-                {
-                    Success = true,
-                    Domain = domain,
-                    Token = token,
-                    DomainAlreadyVerified = false,
-                    Message = "Add TXT record to verify domain"
-                };
+                return await AddEmailForDomain(
+                    domainRecord.Id,
+                    clientId,
+                    email,
+                    dto,
+                    ip,
+                    browsername
+                );
             }
-            catch
+            catch (Exception ex)
             {
-                return Fail("Failed to generate domain verification token");
+                return Fail(ex.Message);
             }
         }
 
@@ -133,41 +113,23 @@ namespace PitchGenApi.Repositories
         // ================================
         // Add Email for Domain + OTP
         // ================================
-        public async Task<OperationResult> AddEmailForDomain(int domainId, int clientId, string email, string smtpdetails, string ip, string browsername)
+        public async Task<OperationResult> AddEmailForDomain(int domainId, int clientId, string email, SmtpCredentialDto dto, string ip, string browsername)
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(email) || !email.Contains("@"))
-                    return Fail("Invalid email address");
-
-                var domain = await _db.DomainVerification
-                    .FirstOrDefaultAsync(x => x.Id == domainId && x.ClientId == clientId);
-                
-                var client = await _db.ClientDetails
-                    .FirstOrDefaultAsync(x => x.Id == clientId);
-
-                if (domain == null)
-                    return Fail("Domain not found for this client");
-
                 bool emailExists = await _db.DomainEmailVerification.AnyAsync(x =>
                     x.DomainId == domainId &&
                     x.Email.ToLower() == email.ToLower());
 
+                var user = await _db.ClientDetails
+                    .FirstOrDefaultAsync(x => x.Id == clientId);
+
                 if (emailExists)
-                    return Fail("Email already added for this domain");
-
-                var emailRecord = new DomainEmailVerification
-                {
-                    ClientId = clientId,
-                    DomainId = domainId,
-                    Email = email,
-                    IsEmailVerified = false,
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                await _db.DomainEmailVerification.AddAsync(emailRecord);
-
+                    return Fail("Email already added");
+              
                 string otp = OtpGenerator.GenerateSecureOtp();
+                dto.DomainId = domainId;
+                var smtpdetails = JsonSerializer.Serialize(dto);
 
                 var otpEntity = new EmailOtpVerification
                 {
@@ -182,19 +144,21 @@ namespace PitchGenApi.Repositories
                 };
 
                 await _db.EmailOtpVerifications.AddAsync(otpEntity);
-                await _db.SaveChangesAsync();
 
-                // 📤 Send OTP email
-                await _reg.DomainVerifyOTP(email, otp, client.FirstName,ip,browsername,client.Username);
+                // 🔥 OTP EMAIL AFTER COMMIT (NON-BLOCKING)
+                _ = Task.Run(() =>
+                    _reg.DomainVerifyOTP(email, otp, user.FirstName, ip, browsername, email
+                    )
+                );
 
-                return Success("Email added and OTP sent successfully");
+                return Success("Prepared for verification");
             }
-            catch
+            catch (Exception ex)
             {
-                return Fail("Failed to add email for domain");
+                return Fail(ex.Message);
             }
         }
-        
+
         //public async Task<OperationResult> ResendDomainVerifyOTP(int domainemaiId, int clientId)
         //{
         //    try
@@ -396,8 +360,6 @@ namespace PitchGenApi.Repositories
                         Domainverified = domain.IsVerified,
 
                         EmailDomainId = firstEmail?.Id ?? 0,
-                        EmailDomainverified = anyEmailVerified,
-
                         token = $"pitchgen-verification={domain.VerificationToken}",
 
                         Dmark = GetDnsStatus(
@@ -548,20 +510,20 @@ namespace PitchGenApi.Repositories
                     FromEmail = smtpDto.FromEmail,
                     SenderName = smtpDto.SenderName,
                     UseSsl = smtpDto.UseSsl,
+                    DomainId = smtpDto.DomainId,
+                };
+                
+                var emailRecord = new DomainEmailVerification
+                {
+                    ClientId = userId,
+                    DomainId = smtpDto.DomainId,
+                    Email = smtpDto.FromEmail,
+                    IsEmailVerified = true,
+                    CreatedAt = DateTime.UtcNow,
+                    EmailVerifiedAt = DateTime.UtcNow
                 };
 
-                // 🔹 Mark domain email verified (optional but correct)
-                var domainEmail = await _db.DomainEmailVerification
-                    .FirstOrDefaultAsync(x =>
-                        x.Email == email &&
-                        x.ClientId == userId);
-
-                if (domainEmail == null)
-                    return Fail("Domain email not found");
-
-                domainEmail.IsEmailVerified = true;
-                domainEmail.EmailVerifiedAt = DateTime.UtcNow;
-
+                await _db.DomainEmailVerification.AddAsync(emailRecord);
                 await _db.SmtpCredentials.AddAsync(smtpEntity);
                 await _db.SaveChangesAsync();
 
@@ -692,6 +654,55 @@ namespace PitchGenApi.Repositories
             // ✅ Everything verified
             return true;
         }
+
+        public async Task<OperationResult> DeleteDomainAsync(int domainId, string clientId)
+        {
+            using var transaction = await _db.Database.BeginTransactionAsync();
+
+            try
+            {
+                if (!int.TryParse(clientId, out int userId))
+                    return Fail("Invalid clientId");
+                // 1️⃣ SMTP Credentials
+                var smtpRecords = await _db.SmtpCredentials
+                    .Where(x => x.DomainId == domainId && x.ClientId == clientId)
+                    .ToListAsync();
+
+                if (smtpRecords.Any())
+                    _db.SmtpCredentials.RemoveRange(smtpRecords);
+
+                // 2️⃣ Domain Email Verification
+                var emailRecords = await _db.DomainEmailVerification
+                    .Where(x => x.DomainId == domainId && x.ClientId == userId)
+                    .ToListAsync();
+
+                if (emailRecords.Any())
+                    _db.DomainEmailVerification.RemoveRange(emailRecords);
+
+                // 3️⃣ Domain Verification
+                var domain = await _db.DomainVerification
+                    .FirstOrDefaultAsync(x => x.Id == domainId && x.ClientId == userId);
+
+                if (domain == null)
+                {
+                    await transaction.RollbackAsync();
+                    return Fail("Domain not found");
+                }
+
+                _db.DomainVerification.Remove(domain);
+
+                await _db.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Success("Domain deleted successfully");
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return Fail(ex.Message);
+            }
+        }
+
 
         // ================================
         // DNS TXT Check

@@ -15,6 +15,9 @@ namespace PitchGenApi.Model.DTOs
         public int Port { get; set; }
 
         [Required]
+        public int DomainId { get; set; }
+
+        [Required]
         public string Username { get; set; }
 
         [Required]

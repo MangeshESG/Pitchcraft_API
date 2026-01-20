@@ -12,6 +12,7 @@ using System.Net;
 using PitchGenApi.Models;
 using PitchGenApi.Interfaces;
 using System.Text.Json;
+using Stripe;
 
 namespace PitchGenApi.Controllers
 {
@@ -192,6 +193,8 @@ namespace PitchGenApi.Controllers
                     .Where(s => s.Id == id && s.ClientId == ClientId)
                     .FirstOrDefaultAsync();
 
+                var emaildomain = await _context.DomainEmailVerification.FirstOrDefaultAsync(x => x.Email == smtp.FromEmail);
+
                 if (smtp == null)
                     return NotFound("SMTP credentials not found for this client.");
 
@@ -203,6 +206,11 @@ namespace PitchGenApi.Controllers
                 if (sequenceSteps?.Count > 0)
                 {
                     _context.SequenceSteps.RemoveRange(sequenceSteps);
+                }
+
+                if (emaildomain != null)
+                {
+                    _context.DomainEmailVerification.Remove(emaildomain);
                 }
 
                 // Step 3: Delete SMTP record (even if some columns are null)
@@ -405,111 +413,82 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("configTestMail")]
-        public async Task<IActionResult> configTestMail([FromQuery] string ClientId, [FromBody] SmtpCredentialDto dto)
+        public async Task<IActionResult> configTestMail( [FromQuery] string ClientId, [FromBody] SmtpCredentialDto dto)
         {
+            ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
+            
+            if (string.IsNullOrEmpty(ClientId))
+                return BadRequest("ClientId required");
+
+            if (string.IsNullOrWhiteSpace(dto.FromEmail) || !dto.FromEmail.Contains("@"))
+                return BadRequest("Invalid email");
+
+            var exists = await _context.SmtpCredentials
+                .AnyAsync(x => x.ClientId == ClientId && x.FromEmail == dto.FromEmail);
+
+            if (exists)
+                return BadRequest("Email already exists");
+
+            // 🔥 STEP 1: SMTP FAST FAIL (NO DB TOUCH)
             try
             {
-                var check = await _context.SmtpCredentials.FirstOrDefaultAsync(x => x.ClientId == ClientId && x.FromEmail == dto.FromEmail);
-                if  (check != null)
-                    {
-                    return BadRequest("Email already exists");
-                    }
-                //var clientIdStr = User.FindFirst("UserId")?.Value;
-                //if (string.IsNullOrEmpty(clientIdStr) || !int.TryParse(clientIdStr, out int clientId))
-                //    return Unauthorized("Invalid or missing client ID.");
-                if (string.IsNullOrEmpty(ClientId))
-                    return NotFound("Data not found");
-                string toEmail = "info@mailtester.co.uk";
-                string body = @"
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                      <meta charset='UTF-8'>
-                      <title>Business Contact Information Notice</title>
-                    </head>
-                    <body style='font-family: Arial, sans-serif; color: #333; line-height: 1.6; padding: 20px;'>
-                      <p>Hi,</p>
-                      <p>I hope this email finds you well.</p>
-                      <p>Please review this email regarding the collection and processing of your business contact information by <strong>Mailtester</strong>.</p>
-                      <p>Mailtester employs a skilled team of researchers whose aim is to source business contact information for professionals working in selected corporations, companies, and organisations.</p>
-                      <p>The information collected is:</p>
-                      <ul>
-                        <li>Name</li>
-                        <li>Corporation/Company/Organisation Name</li>
-                        <li>Business Phone Number</li>
-                        <li>Business Email Address</li>
-                        <li>Job Title</li>
-                        <li>Job Function and Responsibilities</li>
-                      </ul>
-                      <p>This information is collected via various publicly available sources and/or by in-person request.</p>
-                      <p><strong>Sensitive personal information/data</strong> such as date of birth, personal email address, personal phone number, or government identification number is <strong>NEVER</strong> collected or stored by Mailtester. We only source business-related information.</p>
-                    </body>
-                    </html>";
-                string subject = "Information notice on business data processing";
-
-                var smtp = new SmtpCredentials
+                using var smtpClient = new SmtpClient(dto.Server)
                 {
-                    ClientId = ClientId,
-                    Server = dto.Server,
                     Port = dto.Port,
-                    Username = dto.Username,
-                    Password = dto.Password,
-                    FromEmail = dto.FromEmail,
-                    UseSsl = dto.UseSsl
+                    Credentials = new NetworkCredential(dto.Username, dto.Password),
+                    EnableSsl = dto.UseSsl                };
+
+                using var toMessage = new MailMessage
+                {
+                    From = new MailAddress(dto.FromEmail, dto.SenderName),
+                    Subject = "SMTP Test",
+                    Body = "Test",
+                    IsBodyHtml = true
                 };
+                toMessage.To.Add("info@mailtester.co.uk"); // ✅ MUST
 
-
-                using var smtpClient = new SmtpClient(smtp.Server)
-                {
-                    Port = smtp.Port,
-                    Credentials = new NetworkCredential(smtp.Username, smtp.Password),
-                    EnableSsl = true,
-                };
-
-                using var mailMessage = new MailMessage
-                {
-                    From = new MailAddress(smtp.Username),
-                    Subject = subject,
-                    Body = body,
-                    IsBodyHtml = true,
-                };
-
-                mailMessage.To.Add(toEmail);
-
-                await smtpClient.SendMailAsync(mailMessage);
-
-                var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-                var userAgent = Request.Headers["User-Agent"].ToString();
-                var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
-
-                var smtpdetails = JsonSerializer.Serialize(dto);
-
-                int userid = int.Parse(ClientId);
-                var result = await _repo.GenerateToken(dto.FromEmail, userid, smtpdetails,ipAddress,browserName);
-
-                if (!result.Success)
-                    return BadRequest(result.Message);
-                // Log success
-                _context.EmailLogs.Add(new EmailLog
-                {
-                    ClientId = Convert.ToInt32(ClientId),
-                    ToEmail = toEmail,
-                    Subject = subject,
-                    Body = body,
-                    IsSuccess = true,
-                    SentAt = DateTime.UtcNow
-                });
-
-                await _context.SaveChangesAsync();
-
-                return Ok(new
-                {
-                    message = $"Testing email sent successfully to {toEmail}.",
-                });
+                await smtpClient.SendMailAsync(toMessage);
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"An unexpected error occurred: {ex.Message}");
+                return BadRequest("SMTP configuration invalid: " + ex.Message);
+            }
+
+            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var userAgent = Request.Headers["User-Agent"].ToString();
+            var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+
+            int userId = int.Parse(ClientId);
+
+            // 🔥 STEP 2: ATOMIC DB TRANSACTION
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var result = await _repo.GenerateToken(
+                    dto.FromEmail,
+                    userId,
+                    dto,
+                    ipAddress,
+                    browserName
+                );
+
+                if (!result.Success)
+                {
+                    await transaction.RollbackAsync();
+                    return BadRequest(result.Message);
+                }
+
+                // 🔥 SINGLE COMMIT
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok("SMTP verified. OTP sent for domain verification.");
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(ex.Message);
             }
         }
 
