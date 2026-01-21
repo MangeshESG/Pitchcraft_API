@@ -16,6 +16,7 @@ public class SequenceStep
     public string zohoviewName { get; set; }
     public int? DataFileId { get; set; }
     public int? SegmentId { get; set; }
+    public int? CampaignId { get; set; }
 
     public int SmtpID { get; set; }
     public string? BccEmail { get; set; }

@@ -88,6 +88,7 @@ public class ScheduledEmailSendingHelper
 
         var user = await context.ClientDetails.FirstOrDefaultAsync(x => x.Id == step.ClientId);
 
+        var Blueprint = await context.Campaigns.FirstOrDefaultAsync(x => x.Id == step.CampaignId);
 
         var sentEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -138,6 +139,8 @@ public class ScheduledEmailSendingHelper
                     Subject = Contact.email_subject,
                     Body = Contact.email_body,
                     IsSuccess = false,
+                    CampaignId = step.CampaignId,
+                    BlueprintId = Blueprint.TemplateId,
                     ErrorMessage = "Email body or subject is incorrect.",
                     zohoViewName = "from pitch craft",
                     EmailRecipientName = Contact.full_name,
@@ -169,6 +172,8 @@ public class ScheduledEmailSendingHelper
                     EmailSenderName = senderName,
                     SenderEmailId = fromEmailToUse,
                     IsSuccess = false,
+                    CampaignId = step.CampaignId,
+                    BlueprintId = Blueprint.TemplateId,
                     ErrorMessage = "Unsubscribed",
                     zohoViewName = "from pitch craft",
                     DataFileId = step.DataFileId,
@@ -230,7 +235,9 @@ public class ScheduledEmailSendingHelper
                 Contact.website,
                 Contact.linkedin_url,
                 Contact.job_title,
-                trackingId
+                trackingId,
+                step.CampaignId,
+                Blueprint.TemplateId
             );
 
             bodyWithTracking += EmailTrackingHelper.GetPixelTag(
@@ -245,7 +252,9 @@ public class ScheduledEmailSendingHelper
                 Contact.website,
                 Contact.linkedin_url,
                 Contact.job_title,
-                trackingId
+                trackingId,
+                step.CampaignId,
+                Blueprint.TemplateId
             );
 
             try
@@ -315,6 +324,8 @@ public class ScheduledEmailSendingHelper
                     Subject = subject,
                     Body = Contact.email_body,
                     IsSuccess = true,
+                    CampaignId = step.CampaignId,
+                    BlueprintId = Blueprint.TemplateId,
                     zohoViewName = "from pitch craft",
                     EmailRecipientName = Contact.full_name,
                     EmailSenderName = senderName,
@@ -337,6 +348,8 @@ public class ScheduledEmailSendingHelper
                     Subject = subject,
                     Body = Contact.email_body,
                     IsSuccess = false,
+                    CampaignId = step.CampaignId,
+                    BlueprintId = Blueprint.TemplateId,
                     ErrorMessage = ex.Message,
                     EmailRecipientName = Contact.full_name,
                     EmailSenderName = senderName,

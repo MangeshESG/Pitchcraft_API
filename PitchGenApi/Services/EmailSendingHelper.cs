@@ -27,6 +27,7 @@ public class EmailSendingHelper
         int contactId,
         int? dataFileId,
         int? SegmentId,
+        int? CampaignId,
         string toEmail,
         string subject,
         bool isFollowUp,
@@ -44,6 +45,8 @@ public class EmailSendingHelper
 
         var smtpCredential = await _context.SmtpCredentials.FirstOrDefaultAsync(x => x.Id == SmtpID);
 
+        var Blueprint = await _context.Campaigns.FirstOrDefaultAsync(x => x.Id == CampaignId);
+
         if (smtpCredential == null || string.IsNullOrEmpty(smtpCredential.Server))
         {
             _context.EmailLogs.Add(new EmailLog
@@ -51,6 +54,8 @@ public class EmailSendingHelper
                 ClientId = clientId,
                 ContactId = contactId,
                 DataFileId = dataFileId,
+                CampaignId = CampaignId,
+                BlueprintId = Blueprint.TemplateId,
                 SegmentId = SegmentId,
                 ToEmail = toEmail,
                 Subject = subject,
@@ -135,8 +140,8 @@ public class EmailSendingHelper
             // Send main email
             if (!string.IsNullOrWhiteSpace(toEmail))
             {
-                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, finalEmailBody, clientId,contactId, dataFileId, SegmentId, fullname, location, company, website, linkedin, jobtitle, trackingId);
-                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullname, location, company, website, linkedin, jobtitle, trackingId);
+                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, finalEmailBody, clientId,contactId, dataFileId, SegmentId, fullname, location, company, website, linkedin, jobtitle, trackingId,CampaignId,Blueprint.TemplateId);
+                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullname, location, company, website, linkedin, jobtitle, trackingId,CampaignId,Blueprint.TemplateId);
 
                 using var toMessage = new MailMessage
                 {
@@ -153,6 +158,8 @@ public class EmailSendingHelper
                 {
                     ClientId = clientId,
                     ContactId = contactId,
+                    CampaignId = CampaignId,
+                    BlueprintId = Blueprint.TemplateId,
                     ToEmail = toEmail,
                     Subject = subject,
                     Body = EmailDetails.email_body,
@@ -195,6 +202,8 @@ public class EmailSendingHelper
             {
                 ClientId = clientId,
                 ContactId = contactId,
+                CampaignId = CampaignId,
+                BlueprintId = Blueprint.TemplateId,
                 ToEmail = toEmail,
                 Subject = subject,
                 Body = EmailDetails.email_body,

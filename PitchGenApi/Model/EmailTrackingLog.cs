@@ -1,4 +1,6 @@
-﻿public class EmailTrackingLog
+﻿using PitchGenApi.ValidationAttributes;
+
+public class EmailTrackingLog
 {
     public int Id { get; set; }
     public int? ContactId { get; set; }
@@ -11,7 +13,8 @@
     public string? ZohoViewName { get; set; }
     public int? DataFileId { get; set; }
     public int? SegmentId { get; set; }
-
+    public int? BlueprintId { get; set; }
+    public int? CampaignId { get; set; }
     public string? Full_Name { get; set; }
     public string? Location { get; set; }
     public string? Company { get; set; }

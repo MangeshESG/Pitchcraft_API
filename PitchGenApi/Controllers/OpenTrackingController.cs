@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
+using PitchGenApi.Model;
+using PitchGenApi.Models;
 using System.Text;
 
 [ApiController]
@@ -47,14 +49,15 @@ public class OpenTrackingController : ControllerBase
         }
 
         // Decode all fields with Base64 check
-        bool emailOk, clientOk, segmentOk, dataFileOk, contactOk, trackingOk;
-        bool fullNameOk, locationOk, companyOk, jobTitleOk, linkedinOk, websiteOk;
+        bool emailOk, clientOk, segmentOk, dataFileOk, contactOk, trackingOk, BlueprintOk;
+        bool fullNameOk, locationOk, companyOk, jobTitleOk, linkedinOk, websiteOk, CampaignOk;
 
         var email = DecodeB64(dto.Email, out emailOk);
         var clientId = DecodeInt(dto.ClientId, out clientOk);
         var segmentId = DecodeInt(dto.SegmentId, out segmentOk);
         var dataFileId = DecodeInt(dto.DataFileId, out dataFileOk);
         var contactId = DecodeInt(dto.contactId, out contactOk);
+        
         var trackingId = DecodeGuid(dto.TrackingId, out trackingOk);
 
         var fullName = DecodeB64(dto.FullName, out fullNameOk);
@@ -63,10 +66,11 @@ public class OpenTrackingController : ControllerBase
         var jobTitle = DecodeB64(dto.JobTitle, out jobTitleOk);
         var linkedin = DecodeB64(dto.linkedin_URL, out linkedinOk);
         var website = DecodeB64(dto.website, out websiteOk);
-
+        var BlueprintId = DecodeInt(dto.BlueprintId, out BlueprintOk);
+        var CampaignId = DecodeInt(dto.CampaignId, out CampaignOk);
         // If any field failed Base64 decoding → return pixel directly
         if (!emailOk || !clientOk || !segmentOk || !dataFileOk || !contactOk || !trackingOk ||
-            !fullNameOk || !locationOk || !companyOk || !jobTitleOk || !linkedinOk || !websiteOk)
+            !fullNameOk || !locationOk || !companyOk || !jobTitleOk || !linkedinOk || !websiteOk || !CampaignOk || !BlueprintOk)
         {
             byte[] pixelBytesFallback = Convert.FromBase64String(
                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
@@ -75,7 +79,7 @@ public class OpenTrackingController : ControllerBase
 
         // Bot detection
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
-        var suspiciousAgents = new[] {"thunderbird", "bot", "crawler", "preview", "proxy", "scanner", "monitor" };
+        var suspiciousAgents = new[] {"thunderbird", "bot", "crawler", "preview", "scanner", "monitor" };
         if (suspiciousAgents.Any(agent => userAgent.Contains(agent)))
         {
             byte[] botPixelBytes = Convert.FromBase64String(
@@ -99,6 +103,8 @@ public class OpenTrackingController : ControllerBase
                 ClientId = clientId,
                 DataFileId = dataFileId,
                 SegmentId = segmentId,
+                CampaignId = CampaignId,
+                BlueprintId = BlueprintId,
                 Full_Name = fullName,
                 Location = location,
                 Company = company,
@@ -190,13 +196,11 @@ public class OpenTrackingController : ControllerBase
         var jobTitle = DecodeB64(dto.JobTitle, out var jobTitleOk);
         var linkedin = DecodeB64(dto.linkedin_URL, out var linkedinOk);
         var website = DecodeB64(dto.website, out var websiteOk);
-
-        // ============================================
-        // Base64 decoding failed → skip tracking
-        // ============================================
-        if (!emailOk || !urlOk || !clientOk || !contactOk || !segmentOk || !dfOk ||
-            !trackingOk || !fullNameOk || !locationOk || !companyOk ||
-            !jobTitleOk || !linkedinOk || !websiteOk)
+        var BlueprintId = DecodeInt(dto.BlueprintId, out var BlueprintOk);
+        var CampaignId = DecodeInt(dto.CampaignId, out var CampaignOk);
+        // If any field failed Base64 decoding → return pixel directly
+        if (!emailOk || !clientOk || !segmentOk || !dfOk || !contactOk || !trackingOk ||
+            !fullNameOk || !locationOk || !companyOk || !jobTitleOk || !linkedinOk || !websiteOk || !CampaignOk || !BlueprintOk)
         {
             return Redirect(url); // fallback
         }
@@ -221,7 +225,7 @@ public class OpenTrackingController : ControllerBase
 
         var suspiciousAgents = new[]
         {
-        "curl","bot","preview","proxy","spider","crawler",
+        "curl","bot","preview","spider","crawler",
         "scraper","headless","phantom","selenium","puppeteer",
         "wget","fetch","scanner","monitor","python","java","ruby","perl"
     };
@@ -296,6 +300,8 @@ public class OpenTrackingController : ControllerBase
                 ClientId = clientId,
                 SegmentId = segmentId,
                 DataFileId = dataFileId,
+                CampaignId = CampaignId,
+                BlueprintId = BlueprintId,
                 Email = email,
                 Full_Name = fullName,
                 Location = location,

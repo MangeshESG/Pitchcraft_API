@@ -20,8 +20,8 @@
     public string? zohoViewName { get; set; }
     public int? DataFileId { get; set; }
     public int? SegmentId { get; set; }
-
-
+    public int? CampaignId { get; set; }
+    public int? BlueprintId { get; set; }
     public DateTime? SentAt { get; set; }
 
     public int ClientId { get; set; }

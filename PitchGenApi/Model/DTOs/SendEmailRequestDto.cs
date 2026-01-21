@@ -6,6 +6,7 @@
         public int contactid { get; set; }
         public int? DataFileId { get; set; }
         public int? SegmentId { get; set; }
+        public int? campaignid { get; set; }
         public string ToEmail { get; set; }
         public string Subject { get; set; }
         public bool isFollowUp { get; set; }

@@ -8,7 +8,7 @@ public static class EmailTrackingHelper
     public static string GetPixelTag(
      string email, int clientId, int? dataFileId, int? segmentId,
      int contactId, string fullName, string location, string company,
-     string website, string linkedin, string jobTitle, string trackingId)
+     string website, string linkedin, string jobTitle, string trackingId, int? CampaignId, int? BlueprintId)
     {
         string B64(string s) =>
             Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(s ?? ""));
@@ -16,26 +16,31 @@ public static class EmailTrackingHelper
         string B64Int(int? num) =>
             Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes((num ?? 0).ToString()));
 
-        return $@"<img src=""https://app.pitchkraft.ai/track/open?
-email={B64(email)}
-&clientId={B64Int(clientId)}
-&SegmentId={B64Int(segmentId)}
-&DataFileId={B64Int(dataFileId)}
-&contactId={B64Int(contactId)}
-&FullName={B64(fullName)}
-&Location={B64(location)}
-&Company={B64(company)}
-&Website={B64(website)}
-&linkedin_URL={B64(linkedin)}
-&JobTitle={B64(jobTitle)}
-&trackingId={B64(trackingId)}""
-width=""1"" height=""1"" style=""display:none;max-height:0;overflow:hidden;"" alt="""" />";
+        var url =
+           $"https://app.pitchkraft.ai/track/open" +
+           $"?email={B64(email)}" +
+           $"&clientId={B64Int(clientId)}" +
+           $"&SegmentId={B64Int(segmentId)}" +
+           $"&DataFileId={B64Int(dataFileId)}" +
+           $"&contactId={B64Int(contactId)}" +
+           $"&FullName={B64(fullName)}" +
+           $"&Location={B64(location)}" +
+           $"&Company={B64(company)}" +
+           $"&Website={B64(website)}" +
+           $"&linkedin_URL={B64(linkedin)}" +
+           $"&JobTitle={B64(jobTitle)}" +
+           $"&trackingId={B64(trackingId)}" +
+           $"&CampaignId={B64Int(CampaignId)}" +
+           $"&BlueprintId={B64Int(BlueprintId)}";
+
+        return
+            $"<img src=\"{url}\" width=\"1\" height=\"1\" style=\"display:none;max-height:0;overflow:hidden;\" alt=\"\" />";
     }
 
 
 
     public static string InjectClickTracking(string email, string htmlBody, int clientId, int contactId, int? DataFileId, int? SegmentId,
-      string fullName, string location, string company, string website, string linkedin, string jobtitle, string trackingId)
+      string fullName, string location, string company, string website, string linkedin, string jobtitle, string trackingId,int? CampaignId, int? BlueprintId)
     {
         string EncodeBase64(string plainText)
         {
@@ -71,8 +76,10 @@ width=""1"" height=""1"" style=""display:none;max-height:0;overflow:hidden;"" al
             var encodedcontactId = B64Int(contactId);
             var encodedDataFileId = B64Int(DataFileId);
             var encodedSegmentId = B64Int(SegmentId);
+            var encodedCampaignId = B64Int(CampaignId);
+            var encodedBlueprintId = B64Int(BlueprintId);
 
-            var trackingUrl = $"https://app.pitchkraft.ai/track/click?trackingId={encodedTrackingId}&email={encodedEmail}&url={encodedUrl}&clientId={encodedclientId}&contactId={encodedcontactId}&DataFileId={encodedDataFileId}&SegmentId={encodedSegmentId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}";
+            var trackingUrl = $"https://app.pitchkraft.ai/track/click?trackingId={encodedTrackingId}&email={encodedEmail}&url={encodedUrl}&clientId={encodedclientId}&contactId={encodedcontactId}&DataFileId={encodedDataFileId}&SegmentId={encodedSegmentId}&FullName={encodedName}&Location={encodedLocation}&Company={encodedCompany}&Website={encodedWeb}&linkedin_URL={encodedLinkedin}&JobTitle={encodedJob}&CampaignId={encodedCampaignId}&BlueprintId={encodedBlueprintId}";
 
             link.SetAttributeValue("href", trackingUrl);
         }

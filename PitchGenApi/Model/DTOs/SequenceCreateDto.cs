@@ -22,6 +22,7 @@ public class SequenceCreateDto
     public List<StepDto> Steps { get; set; }
     public int? DataFileId { get; set; }
     public int? SegmentId { get; set; }
+    public int? CampaignId { get; set; }
     public bool? IsFollowUp { get; set; }
 
 

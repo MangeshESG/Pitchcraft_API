@@ -42,4 +42,10 @@ public class EmailOpenTrackDto
 
     [NoEncodedChars]
     public string? website { get; set; }
+
+    [NoEncodedChars]
+    public string? BlueprintId { get; set; }
+
+    [NoEncodedChars]
+    public string? CampaignId { get; set; }
 }
