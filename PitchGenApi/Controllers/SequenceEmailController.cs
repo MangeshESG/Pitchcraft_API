@@ -258,7 +258,8 @@ namespace PitchGenApi.Controllers
                     smtp.Username,
                     smtp.Password,
                     smtp.UseSsl,
-                    smtp.FromEmail
+                    smtp.FromEmail,
+                    smtp.SenderName
                 });
 
                 return Ok(result);
@@ -425,11 +426,13 @@ namespace PitchGenApi.Controllers
             if (string.IsNullOrWhiteSpace(dto.FromEmail) || !dto.FromEmail.Contains("@"))
                 return BadRequest("Invalid email");
 
-            var exists = await _context.SmtpCredentials
-                .AnyAsync(x => x.ClientId == ClientId && x.FromEmail == dto.FromEmail);
+            var existingRecord = await _context.SmtpCredentials
+                .FirstOrDefaultAsync(x => x.ClientId == ClientId && x.FromEmail == dto.FromEmail);
 
-            if (exists)
+            if (dto.IsUpdate == false && existingRecord != null)
+            {
                 return BadRequest("Email already exists");
+            }
 
             // 🔥 STEP 1: SMTP FAST FAIL (NO DB TOUCH)
             try
@@ -438,7 +441,8 @@ namespace PitchGenApi.Controllers
                 {
                     Port = dto.Port,
                     Credentials = new NetworkCredential(dto.Username, dto.Password),
-                    EnableSsl = dto.UseSsl                };
+                    EnableSsl = dto.UseSsl
+                };
 
                 using var toMessage = new MailMessage
                 {
@@ -447,7 +451,7 @@ namespace PitchGenApi.Controllers
                     Body = "Test",
                     IsBodyHtml = true
                 };
-                toMessage.To.Add("info@mailtester.co.uk"); // ✅ MUST
+                toMessage.To.Add("info@mailtester.co.uk");
 
                 await smtpClient.SendMailAsync(toMessage);
             }
@@ -467,6 +471,24 @@ namespace PitchGenApi.Controllers
 
             try
             {
+                // Update existing record if IsUpdate = true
+                if (dto.IsUpdate && existingRecord != null)
+                {
+                    existingRecord.Server = dto.Server;
+                    existingRecord.Port = dto.Port;
+                    existingRecord.Username = dto.Username;
+                    existingRecord.Password = dto.Password;
+                    existingRecord.UseSsl = dto.UseSsl;
+                    existingRecord.SenderName = dto.SenderName;
+                    
+                    _context.SmtpCredentials.Update(existingRecord);
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                    
+                    return Ok("SMTP credentials updated successfully.");
+                }
+                
+                // Create new record
                 var result = await _repo.GenerateToken(
                     dto.FromEmail,
                     userId,
@@ -481,7 +503,6 @@ namespace PitchGenApi.Controllers
                     return BadRequest(result.Message);
                 }
 
-                // 🔥 SINGLE COMMIT
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
 
@@ -894,5 +915,85 @@ namespace PitchGenApi.Controllers
         }
 
 
+        [HttpPost("UpdateconfigTestMail")]
+        public async Task<IActionResult> UpdateconfigTestMail([FromQuery] string ClientId, [FromBody] SmtpCredentialDto dto)
+        {
+            ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
+
+            if (string.IsNullOrEmpty(ClientId))
+                return BadRequest("ClientId required");
+
+            if (string.IsNullOrWhiteSpace(dto.FromEmail) || !dto.FromEmail.Contains("@"))
+                return BadRequest("Invalid email");
+
+            var exists = await _context.SmtpCredentials
+                .AnyAsync(x => x.ClientId == ClientId && x.FromEmail == dto.FromEmail);
+
+            if (exists)
+                return BadRequest("Email already exists");
+
+            // 🔥 STEP 1: SMTP FAST FAIL (NO DB TOUCH)
+            try
+            {
+                using var smtpClient = new SmtpClient(dto.Server)
+                {
+                    Port = dto.Port,
+                    Credentials = new NetworkCredential(dto.Username, dto.Password),
+                    EnableSsl = dto.UseSsl
+                };
+
+                using var toMessage = new MailMessage
+                {
+                    From = new MailAddress(dto.FromEmail, dto.SenderName),
+                    Subject = "SMTP Test",
+                    Body = "Test",
+                    IsBodyHtml = true
+                };
+                toMessage.To.Add("info@mailtester.co.uk"); // ✅ MUST
+
+                await smtpClient.SendMailAsync(toMessage);
+            }
+            catch (Exception ex)
+            {
+                return BadRequest("SMTP configuration invalid: " + ex.Message);
+            }
+
+            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var userAgent = Request.Headers["User-Agent"].ToString();
+            var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+
+            int userId = int.Parse(ClientId);
+
+            // 🔥 STEP 2: ATOMIC DB TRANSACTION
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var result = await _repo.GenerateToken(
+                    dto.FromEmail,
+                    userId,
+                    dto,
+                    ipAddress,
+                    browserName
+                );
+
+                if (!result.Success)
+                {
+                    await transaction.RollbackAsync();
+                    return BadRequest(result.Message);
+                }
+
+                // 🔥 SINGLE COMMIT
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok("SMTP verified. OTP sent for domain verification.");
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(ex.Message);
+            }
+        }
     }
 }

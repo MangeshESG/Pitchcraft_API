@@ -255,6 +255,78 @@ public class ContactRepository
 
         return response;
     }
+    public async Task<object> AddContactsToSegmentAsync(int clientId, int segmentId, List<int> contactIds)
+    {
+        if (contactIds == null || !contactIds.Any())
+            throw new ArgumentException("ContactIds cannot be empty");
+
+        // Validate segment
+        bool segmentExists = await _context.segments
+            .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
+
+        if (!segmentExists)
+            throw new Exception("Invalid SegmentId or ClientId");
+
+        var requestedContactIds = contactIds.Distinct().ToList();
+
+        // Valid contacts
+        var validContactIds = await _context.contacts
+            .Where(c => requestedContactIds.Contains(c.id))
+            .Select(c => c.id)
+            .ToListAsync();
+
+        var invalidContactIds = requestedContactIds.Except(validContactIds).ToList();
+
+        if (!validContactIds.Any())
+        {
+            return new
+            {
+                message = "None of the provided contacts exist",
+                invalidContactIds
+            };
+        }
+
+        // Already added
+        var alreadyAddedContactIds = await _context.segmentContacts
+            .Where(sc => sc.SegmentId == segmentId
+                      && validContactIds.Contains(sc.ContactId))
+            .Select(sc => sc.ContactId)
+            .ToListAsync();
+
+        // New contacts
+        var newContactIds = validContactIds.Except(alreadyAddedContactIds).ToList();
+
+        if (!newContactIds.Any())
+        {
+            return new
+            {
+                message = "All valid contacts already exist in the segment",
+                alreadyPresentCount = alreadyAddedContactIds.Count
+            };
+        }
+
+        var segmentContacts = newContactIds.Select(contactId => new SegmentContact
+        {
+            SegmentId = segmentId,
+            ContactId = contactId,
+            AddedAt = DateTime.UtcNow
+        }).ToList();
+
+        _context.segmentContacts.AddRange(segmentContacts);
+        await _context.SaveChangesAsync();
+
+        return new
+        {
+            message = "Contacts added to existing segment successfully",
+            segmentId,
+            contactsRequested = requestedContactIds.Count,
+            contactsAdded = newContactIds.Count,
+            alreadyPresentCount = alreadyAddedContactIds.Count,
+            invalidContactCount = invalidContactIds.Count,
+            invalidContactIds
+        };
+    }
+
     private string? GetSourceName(EmailLog log)
     {
         if (log.DataFileId != null)

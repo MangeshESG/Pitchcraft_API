@@ -123,34 +123,51 @@ namespace PitchGenApi.Repositories
 
                 var user = await _db.ClientDetails
                     .FirstOrDefaultAsync(x => x.Id == clientId);
-
-                if (emailExists)
-                    return Fail("Email already added");
-              
-                string otp = OtpGenerator.GenerateSecureOtp();
-                dto.DomainId = domainId;
-                var smtpdetails = JsonSerializer.Serialize(dto);
-
-                var otpEntity = new EmailOtpVerification
+                if (dto.IsUpdate == false)
                 {
-                    Email = email,
-                    OTP = otp,
-                    username = email,
-                    IsVerified = false,
-                    OtpType = "DomainVerify",
-                    CreatedAt = DateTime.UtcNow,
-                    ExpiresAt = DateTime.UtcNow.AddMinutes(10),
-                    TempSmtpPayload = smtpdetails
-                };
+                    if (emailExists)
+                        return Fail("Email already added");
 
-                await _db.EmailOtpVerifications.AddAsync(otpEntity);
+                    string otp = OtpGenerator.GenerateSecureOtp();
+                    dto.DomainId = domainId;
+                    var smtpdetails = JsonSerializer.Serialize(dto);
 
-                // 🔥 OTP EMAIL AFTER COMMIT (NON-BLOCKING)
-                _ = Task.Run(() =>
-                    _reg.DomainVerifyOTP(email, otp, user.FirstName, ip, browsername, email
-                    )
-                );
+                    var otpEntity = new EmailOtpVerification
+                    {
+                        Email = email,
+                        OTP = otp,
+                        username = email,
+                        IsVerified = false,
+                        OtpType = "DomainVerify",
+                        CreatedAt = DateTime.UtcNow,
+                        ExpiresAt = DateTime.UtcNow.AddMinutes(10),
+                        TempSmtpPayload = smtpdetails
+                    };
 
+                    await _db.EmailOtpVerifications.AddAsync(otpEntity);
+
+                    // 🔥 OTP EMAIL AFTER COMMIT (NON-BLOCKING)
+                    _ = Task.Run(() =>
+                        _reg.DomainVerifyOTP(email, otp, user.FirstName, ip, browsername, email
+                        )
+                    );
+                }
+                else
+                {
+                    var smtpupdate = new SmtpCredentials
+                    {
+                        ClientId = clientId.ToString(),
+                        Server = dto.Server,
+                        Port = dto.Port,
+                        Username = dto.Username,
+                        Password = dto.Password,
+                        FromEmail = dto.FromEmail,
+                        SenderName = dto.SenderName,
+                        DomainId = domainId,
+                        UseSsl = dto.UseSsl
+                    };
+                     _db.SmtpCredentials.Update(smtpupdate);
+                }
                 return Success("Prepared for verification");
             }
             catch (Exception ex)

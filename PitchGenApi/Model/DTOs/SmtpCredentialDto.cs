@@ -30,6 +30,9 @@ namespace PitchGenApi.Model.DTOs
 
         [Required]
         public bool UseSsl { get; set; }
+        
+        [Required]
+        public bool IsUpdate { get; set; }
     }
 
 }

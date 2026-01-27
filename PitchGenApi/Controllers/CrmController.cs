@@ -1396,6 +1396,28 @@ namespace PitchGenApi.Controllers
             return Ok(result);
         }
 
+        [HttpPost("add-contacts-to-existing-segment")]
+        public async Task<IActionResult> AddContactsToExistingSegment([FromQuery] int ClientId, [FromQuery] int SegmentId, [FromBody] List<int> ContactIds)
+        {
+            try
+            {
+                var result = await _contactRepository.AddContactsToSegmentAsync(ClientId, SegmentId, ContactIds);
+
+                return Ok(result);
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = ex.Message
+                });
+            }
+        }
+
 
         //private async Task<string> BuildEmailThreadAsync(int clientId, int datafileid)
         //{
