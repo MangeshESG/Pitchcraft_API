@@ -31,4 +31,11 @@ namespace PitchGenApi.Model.DTOs
         public int CategorySequence { get; set; }
         public int PlaceholderSequence { get; set; }
     }
+
+    public class DeletePlaceholderDefinitionRequest
+    {
+        public int TemplateDefinitionId { get; set; }
+        public string PlaceholderKey { get; set; } = string.Empty;
+    }
+
 }

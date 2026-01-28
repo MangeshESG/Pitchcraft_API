@@ -1100,6 +1100,39 @@ namespace PitchGenApi.Controllers
             return Ok(result);
         }
 
+        // ============================================
+        // ❌ DELETE PLACEHOLDER DEFINITION (POST)
+        // ============================================
+        [HttpPost("placeholders/delete")]
+        public async Task<IActionResult> DeletePlaceholderDefinition(
+            [FromBody] DeletePlaceholderDefinitionRequest req)
+        {
+            if (req.TemplateDefinitionId <= 0 || string.IsNullOrWhiteSpace(req.PlaceholderKey))
+                return BadRequest(new { Message = "Invalid request data" });
+
+            var entity = await _dbContext.PlaceholderDefinitions
+                .FirstOrDefaultAsync(p =>
+                    p.TemplateDefinitionId == req.TemplateDefinitionId &&
+                    p.PlaceholderKey.ToLower() == req.PlaceholderKey.ToLower()
+                );
+
+            if (entity == null)
+                return NotFound(new { Message = "Placeholder not found" });
+
+            _dbContext.PlaceholderDefinitions.Remove(entity);
+            await _dbContext.SaveChangesAsync();
+
+            return Ok(new
+            {
+                Success = true,
+                Message = "Placeholder definition deleted",
+                PlaceholderKey = req.PlaceholderKey
+            });
+        }
+
+
+
+
 
         [HttpPost("rename-Template")]
         public async Task<IActionResult> RenameTemplate([FromBody] RenameTemplate rename)
