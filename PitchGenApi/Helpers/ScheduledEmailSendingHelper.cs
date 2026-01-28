@@ -92,7 +92,7 @@ public class ScheduledEmailSendingHelper
 
         var sentEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(step.SmtpID);
+        //bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(step.SmtpID);
 
         string smtpServer = smtpCredential.Server;
         int smtpPort = smtpCredential.Port;
@@ -105,17 +105,17 @@ public class ScheduledEmailSendingHelper
 
         foreach (var Contact in contacts)
         {
-            if (!isVerified)
-            {
-                // ❌ NOT VERIFIED → FALLBACK SMTP
-                smtpServer = "mail.sender.pitchkraft.ai";
-                smtpPort = 587;
-                useSsl = true;
-                smtpUsername = "message-service@sender.pitchkraft.ai";
-                smtpPassword = "yV%691jd9";
+            //if (!isVerified)
+            //{
+            //    // ❌ NOT VERIFIED → FALLBACK SMTP
+            //    smtpServer = "mail.sender.pitchkraft.ai";
+            //    smtpPort = 587;
+            //    useSsl = true;
+            //    smtpUsername = "message-service@sender.pitchkraft.ai";
+            //    smtpPassword = "yV%691jd9";
 
-                fromEmailToUse = "message-service@sender.pitchkraft.ai";
-            }
+            //    fromEmailToUse = "message-service@sender.pitchkraft.ai";
+            //}
 
             if (Contact == null || string.IsNullOrWhiteSpace(Contact.email))
                 continue;

@@ -511,27 +511,27 @@ namespace PitchGenApi.Repositories
                         monthlyLimit = 100;
                         break;
 
-                    case "price_1SMmZiHDCkj9hBmZ5u4UA72M":
+                    case "price_1SuX1aFNcXTjravQlGph5Xom":
                     case "price_standard":
                         credits = 1000;
                         planName = "Standard";
                         monthlyLimit = 1000;
                         break;
 
-                    case "price_1SMmZ6HDCkj9hBmZNyIzVJQL":
+                    case "price_1SuX36FNcXTjravQ9pemJ0nJ":
                     case "price_premium":
                         credits = 2000;
                         planName = "Premium";
                         monthlyLimit = 2000;
                         break;
 
-                    case "price_1SPgOFHDCkj9hBmZxSnUTzAT":
+                    case "price_1SuX1aFNcXTjravQUEKMY8Jl":
                         credits = 12000;
                         planName = "Standard";
                         monthlyLimit = 1000;
                         break;
 
-                    case "price_1SPh0hHDCkj9hBmZXtVBJ1QG":
+                    case "price_1SuX36FNcXTjravQYJ6fs6i4":
                         credits = 24000;
                         planName = "Premium";
                         monthlyLimit = 2000;
