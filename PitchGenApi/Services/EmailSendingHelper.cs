@@ -71,7 +71,7 @@ public class EmailSendingHelper
 
         var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
 
-        bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(SmtpID);
+        //bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(SmtpID);
 
         string smtpServer = smtpCredential.Server;
         int smtpPort = smtpCredential.Port;
@@ -85,16 +85,16 @@ public class EmailSendingHelper
         try
         {
 
-            if (!isVerified)
-            {
-                smtpServer = "mail.sender.pitchkraft.ai";
-                smtpPort = 587;
-                useSsl = true;
-                smtpUsername = "message-service@sender.pitchkraft.ai";
-                smtpPassword = "yV%691jd9";
+            //if (!isVerified)
+            //{
+            //    smtpServer = "mail.sender.pitchkraft.ai";
+            //    smtpPort = 587;
+            //    useSsl = true;
+            //    smtpUsername = "message-service@sender.pitchkraft.ai";
+            //    smtpPassword = "yV%691jd9";
 
-                fromEmailToUse = "message-service@sender.pitchkraft.ai";
-            }
+            //    fromEmailToUse = "message-service@sender.pitchkraft.ai";
+            //}
             string trackingId = Guid.NewGuid().ToString();
 
             using var smtpClient = new SmtpClient(smtpServer)

@@ -626,51 +626,51 @@ namespace PitchGenApi.Repositories
         }
 
 
-        public async Task<bool> IsSmtpFullyVerifiedAsync(int smtpId)
-        {
-            // 1. Get SMTP credentials
-            var smtp = await _db.SmtpCredentials
-                .FirstOrDefaultAsync(x => x.Id == smtpId);
+        //public async Task<bool> IsSmtpFullyVerifiedAsync(int smtpId)
+        //{
+        //    // 1. Get SMTP credentials
+        //    var smtp = await _db.SmtpCredentials
+        //        .FirstOrDefaultAsync(x => x.Id == smtpId);
 
-            if (smtp == null || string.IsNullOrWhiteSpace(smtp.FromEmail))
-                return false;
+        //    if (smtp == null || string.IsNullOrWhiteSpace(smtp.FromEmail))
+        //        return false;
 
-            // 2. Extract domain from FromEmail
-            var domain = GetDomain(smtp.FromEmail);
-            int userId = int.TryParse(smtp.ClientId, out var id) ? id : 0;
+        //    // 2. Extract domain from FromEmail
+        //    var domain = GetDomain(smtp.FromEmail);
+        //    int userId = int.TryParse(smtp.ClientId, out var id) ? id : 0;
 
-            if (string.IsNullOrWhiteSpace(domain))
-                return false;
+        //    if (string.IsNullOrWhiteSpace(domain))
+        //        return false;
 
-            // 3. Check domain verification (SPF / DKIM / DMARC)
-            var domainVerification = await _db.DomainVerification
-                .FirstOrDefaultAsync(x =>
-                    x.Domain == domain &&
-                    x.ClientId == userId);
+        //    // 3. Check domain verification (SPF / DKIM / DMARC)
+        //    var domainVerification = await _db.DomainVerification
+        //        .FirstOrDefaultAsync(x =>
+        //            x.Domain == domain &&
+        //            x.ClientId == userId);
 
-            if (domainVerification == null)
-                return false;
+        //    if (domainVerification == null)
+        //        return false;
 
-            if (!domainVerification.IsSpfVerified ||
-                !domainVerification.IsDkimVerified ||
-                !domainVerification.IsDmarcVerified ||
-                !domainVerification.IsVerified)
-            {
-                return false;
-            }
+        //    if (!domainVerification.IsSpfVerified ||
+        //        !domainVerification.IsDkimVerified ||
+        //        !domainVerification.IsDmarcVerified ||
+        //        !domainVerification.IsVerified)
+        //    {
+        //        return false;
+        //    }
 
-            // 4. Check FromEmail verification
-            var emailVerification = await _db.DomainEmailVerification
-                .FirstOrDefaultAsync(x =>
-                    x.Email == smtp.FromEmail &&
-                    x.ClientId == userId);
+        //    // 4. Check FromEmail verification
+        //    var emailVerification = await _db.DomainEmailVerification
+        //        .FirstOrDefaultAsync(x =>
+        //            x.Email == smtp.FromEmail &&
+        //            x.ClientId == userId);
 
-            if (emailVerification == null || !emailVerification.IsEmailVerified)
-                return false;
+        //    if (emailVerification == null || !emailVerification.IsEmailVerified)
+        //        return false;
 
-            // ✅ Everything verified
-            return true;
-        }
+        //    // ✅ Everything verified
+        //    return true;
+        //}
 
         public async Task<OperationResult> DeleteDomainAsync(int domainId, string clientId)
         {

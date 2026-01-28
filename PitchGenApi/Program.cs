@@ -141,7 +141,7 @@ builder.Services.AddSingleton<JwtService>();
 
 // ✅ Add Background Jobs
 builder.Services.AddHostedService<EmailSchedulerService>();
-//builder.Services.AddHostedService<MonthlyCreditResetService>();
+builder.Services.AddHostedService<MonthlyCreditResetService>();
 
 builder.Services.AddControllers();
 

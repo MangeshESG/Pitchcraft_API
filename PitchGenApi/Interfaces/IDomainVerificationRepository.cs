@@ -8,7 +8,7 @@ namespace PitchGenApi.Interfaces
     {
         Task<OperationResult> GenerateToken(string email, int clientId, SmtpCredentialDto dto, string ip, string browsername);
         Task<OperationResult> VerifyDomain(string domain, int clientId);
-        Task<bool> IsSmtpFullyVerifiedAsync(int smtpId);
+        //Task<bool> IsSmtpFullyVerifiedAsync(int smtpId);
         //Task<OperationResult> DomainVerifyEmailOTP(string email, string otp, int clientId);
         Task<OperationResult> GetVerifiedDomain(int clientId);
         Task<OperationResult> VerifySpfDkimDmarc(string email, string clientId);
