@@ -19,6 +19,9 @@
         public bool IsRichText { get; set; }
         public bool IsRuntimeOnly { get; set; }
 
+        public string? DefaultValue { get; set; }
+        public string? HelpLink { get; set; }
+
         // ⭐ NEW: Dropdown options (stored as JSON)
         public string? OptionsJson { get; set; }
 

@@ -858,22 +858,32 @@ namespace PitchGenApi.Controllers
         [HttpGet("placeholders/by-campaign/{campaignId}")]
         public async Task<IActionResult> GetPlaceholdersForCampaign(int campaignId)
         {
+            // 1️⃣ Load campaign
             var campaign = await _dbContext.CampaignTemplates
                 .FirstOrDefaultAsync(c => c.Id == campaignId);
 
             if (campaign == null)
                 return NotFound(new { Message = "Campaign not found" });
 
-            var values = string.IsNullOrEmpty(campaign.PlaceholderValues)
+            // 2️⃣ Deserialize campaign placeholder values
+            var values = string.IsNullOrWhiteSpace(campaign.PlaceholderValues)
                 ? new Dictionary<string, string>()
                 : JsonSerializer.Deserialize<Dictionary<string, string>>(campaign.PlaceholderValues)
                   ?? new Dictionary<string, string>();
 
-            var placeholders = await _dbContext.PlaceholderDefinitions
+            // 3️⃣ Load placeholder definitions FROM DATABASE (NO dictionary logic here)
+            var definitions = await _dbContext.PlaceholderDefinitions
                 .OrderBy(p => p.CategorySequence)
                 .ThenBy(p => p.PlaceholderSequence)
                 .ThenBy(p => p.FriendlyName)
-                .Select(p => new
+                .ToListAsync();
+
+            // 4️⃣ Apply fallback logic IN MEMORY (this fixes the error)
+            var placeholders = definitions.Select(p =>
+            {
+                values.TryGetValue(p.PlaceholderKey, out var storedValue);
+
+                return new
                 {
                     key = p.PlaceholderKey,
                     friendlyName = p.FriendlyName,
@@ -883,13 +893,20 @@ namespace PitchGenApi.Controllers
                     uiSize = p.UiSize,
                     expandable = p.IsExpandable,
                     isRuntimeOnly = p.IsRuntimeOnly,
+
+                    // ⭐ NEW FIELDS
+                    defaultValue = p.DefaultValue,
+                    helpLink = p.HelpLink,
+
                     categorySequence = p.CategorySequence,
                     placeholderSequence = p.PlaceholderSequence,
-                    value = values.ContainsKey(p.PlaceholderKey)
-                        ? values[p.PlaceholderKey]
-                        : ""
-                })
-                .ToListAsync();
+
+                    value = !string.IsNullOrEmpty(storedValue)
+                        ? storedValue
+                        : (p.DefaultValue ?? "")
+                };
+            }).ToList();
+
 
             return Ok(placeholders);
         }
@@ -1009,6 +1026,8 @@ namespace PitchGenApi.Controllers
                     entity.IsRuntimeOnly = p.IsRuntimeOnly;
                     entity.IsExpandable = p.IsExpandable;
                     entity.IsRichText = p.IsRichText;
+                    entity.DefaultValue = p.DefaultValue;
+                    entity.HelpLink = p.HelpLink;
 
                     entity.OptionsJson = p.Options != null
                         ? JsonSerializer.Serialize(p.Options)
@@ -1037,6 +1056,8 @@ namespace PitchGenApi.Controllers
                         IsRuntimeOnly = p.IsRuntimeOnly,
                         IsExpandable = p.IsExpandable,
                         IsRichText = p.IsRichText,
+                        DefaultValue = p.DefaultValue,
+                        HelpLink = p.HelpLink,
                         OptionsJson = p.Options != null
                             ? JsonSerializer.Serialize(p.Options)
                             : null,
@@ -1087,6 +1108,8 @@ namespace PitchGenApi.Controllers
                 isExpandable = p.IsExpandable,
                 isRichText = p.IsRichText,
                 isRuntimeOnly = p.IsRuntimeOnly,
+                defaultValue = p.DefaultValue,
+                helpLink = p.HelpLink,
 
                 // ⭐ MUST INCLUDE THESE OR FRONTEND BREAKS
                 categorySequence = p.CategorySequence,
