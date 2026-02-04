@@ -71,7 +71,7 @@ namespace PitchGenApi.Services
 
 
         // Single method to handle both start and continue
-        public async Task<object> ProcessChatAsync(string userId, string message, string systemPrompt, string model)
+        public async Task<object> ProcessChatAsync(string userId, string message, string systemPrompt, string model, string? imageUrl = null)
         {
             if (string.IsNullOrWhiteSpace(userId))
                 return new { assistantText = "⚠️ UserId is required", error = true };
@@ -183,7 +183,7 @@ namespace PitchGenApi.Services
             // ------------------------------------------------------
             // 🟢 5. Call GPT
             // ------------------------------------------------------
-            var response = await SendToGptAsync(session.Messages, model, userId);
+            var response = await SendToGptAsync(session.Messages, model, userId, imageUrl);
 
             return response;
         }
@@ -212,10 +212,10 @@ namespace PitchGenApi.Services
         // --------------------------
         // Responses API integration
         // --------------------------
-        private async Task<object> SendToGptAsync(List<Dictionary<string, string>> messages, string model, string userId)
+        private async Task<object> SendToGptAsync(List<Dictionary<string, string>> messages, string model, string userId, string? imageUrl = null)
         {
             if (string.IsNullOrWhiteSpace(model))
-                model = "gpt-4o";
+                model = "gpt-5.1";
 
             // Build a single role-prefixed input string for Responses API
             var sbInput = new StringBuilder();
@@ -234,14 +234,65 @@ namespace PitchGenApi.Services
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(imageUrl))
+            {
+                if (!Regex.IsMatch(imageUrl, @"\.(png|jpg|jpeg)$", RegexOptions.IgnoreCase))
+                {
+                    return new
+                    {
+                        assistantText = "Only PNG, JPG, or JPEG images are supported.",
+                        error = true
+                    };
+                }
+            }
+
+            // --------------------------------------
+            // 🔹 Build INPUT payload (TEXT or TEXT+IMAGE)
+            // --------------------------------------
+            object inputPayload;
+
+                                    if (!string.IsNullOrWhiteSpace(imageUrl))
+                                    {
+                                        // ✅ IMAGE + TEXT (Vision enabled)
+                                        inputPayload = new object[]
+                                        {
+                                new
+                                {
+                                    role = "user",
+                                    content = new object[]
+                                    {
+                                    new
+                                    {
+                                        type = "input_text",
+                                        text = messages.Last(m => m["role"] == "user")["content"]
+                                    },
+
+                                        new
+                                        {
+                                            type = "input_image",
+                                            image_url = imageUrl
+                                        }
+                                    }
+                                }
+                                        };
+                                    }
+                                    else
+                                    {
+                                        // ✅ TEXT ONLY (existing behavior)
+                                        inputPayload = sbInput.ToString();
+            }
+
             var requestBody = new Dictionary<string, object>
-    {
-        { "model", model },
-        { "input", sbInput.ToString() },
-        { "temperature", 1.0 },
-        { "max_output_tokens", 15000 },
-        { "tools", new object[] { new { type = "web_search_preview" } } }
-    };
+                        {
+                            { "model", model },
+                            { "input", inputPayload },
+                            { "temperature", 1.0 },
+                            { "max_output_tokens", 15000 },
+                            { "tools", new object[] { new { type = "web_search_preview" } } }
+                        };
+
+     
+
 
             var requestJson = JsonConvert.SerializeObject(requestBody);
             var httpContent = new StringContent(requestJson, Encoding.UTF8, "application/json");
@@ -779,7 +830,7 @@ namespace PitchGenApi.Services
                 });
 
             // Send to GPT
-            return await SendToGptAsync(_sessions[req.UserId].Messages, req.Model ?? "gpt-5.1", req.UserId);
+            return await SendToGptAsync(_sessions[req.UserId].Messages, req.Model ?? "gpt-5.1", req.UserId, req.ImageUrl);
         }
 
         public async Task<object> ContinueEditModeAsync(EditChatRequest req)
@@ -815,7 +866,7 @@ namespace PitchGenApi.Services
                 });
 
             // Send to GPT
-            return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5.1", req.UserId);
+            return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5.1", req.UserId, req.ImageUrl);
         }
 
         public async Task<CampaignTemplate?> RenameTemplate(RenameTemplate rename)

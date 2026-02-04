@@ -14,22 +14,40 @@ using PitchGenApi;
 using PitchGenApi.Repositories;
 using PitchGenApi.Helpers;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Http.Features;
+
 using static PitchGenApi.Services.CampaignPromptService;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ===============================
 // ✅ OpenAI settings
+// ===============================
 builder.Services.Configure<OpenAISettings>(
     builder.Configuration.GetSection("OpenAI"));
 
+// ===============================
 // ✅ Kestrel configuration
+// ===============================
 builder.Services.Configure<KestrelServerOptions>(options =>
 {
     options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(10);
     options.Limits.RequestHeadersTimeout = TimeSpan.FromMinutes(10);
+    options.Limits.MaxRequestBodySize = 50 * 1024 * 1024; // ✅ upload limit
 });
 
+// ===============================
+// ✅ Multipart upload limits
+// ===============================
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 50 * 1024 * 1024; // 50 MB
+});
+
+// ===============================
 // ✅ Swagger configuration
+// ===============================
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options =>
 {
@@ -53,23 +71,22 @@ builder.Services.AddSwaggerGen(options =>
                     Id = "Bearer"
                 }
             },
-            new string[] {}
+            Array.Empty<string>()
         }
     });
 });
 
+// ===============================
 // ✅ HTTP Clients
+// ===============================
 builder.Services.AddHttpClient();
+
 builder.Services.AddHttpClient<CampaignPromptService>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
     {
         SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
     });
-//builder.Services.AddHttpClient<WebSearchService>()
-//    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-//    {
-//        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
-//    });
+
 builder.Services.AddHttpClient<ZohoService>(client =>
 {
     client.BaseAddress = new Uri("https://www.zohoapis.com/");
@@ -79,18 +96,23 @@ builder.Services.AddHttpClient<ZohoService>(client =>
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
 {
     SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
-    ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true,
+    ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
     UseDefaultCredentials = false,
     AllowAutoRedirect = true,
     MaxAutomaticRedirections = 10
 });
 
+// ===============================
 // ✅ Database Context
+// ===============================
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
+// ===============================
 // ✅ JWT Authentication
+// ===============================
 var key = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]);
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
@@ -106,29 +128,39 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
+// ===============================
 // ✅ CORS Policy
+// ===============================
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("MyCorsPolicy", policy =>
     {
         policy.WithOrigins(
                 "http://localhost:3000",
-                "http://test.pitchkraft.ai",
-                "https://test.pitchkraft.ai")
+                "http://app.pitchkraft.ai",
+                "https://app.pitchkraft.ai")
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
     });
 });
 
+// ===============================
 // ✅ Dependency Injection
+// ===============================
 builder.Services.AddAuthorization();
+
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IPromptRepository, PromptRepository>();
+
+builder.Services.AddScoped<ICompanyAlertService, CompanyAlertService>();
+
+
 builder.Services.AddHttpClient<IPitchService, PitchService>(client =>
 {
     client.Timeout = TimeSpan.FromMinutes(10);
 });
+
 builder.Services.AddScoped<EmailSendingHelper>();
 builder.Services.AddScoped<EmailTemplateHelper>();
 builder.Services.AddScoped<ContactRepository>();
@@ -137,25 +169,48 @@ builder.Services.AddScoped<IDomainVerificationRepository, DomainVerificationRepo
 builder.Services.AddScoped<IRegisterEmailSender, RegisterEmailSender>();
 builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
+
 builder.Services.AddSingleton<JwtService>();
 
-// ✅ Add Background Jobs
+// ===============================
+// ✅ Background Jobs
+// ===============================
 builder.Services.AddHostedService<EmailSchedulerService>();
 builder.Services.AddHostedService<MonthlyCreditResetService>();
 
 builder.Services.AddControllers();
 
-// ✅ Register CampaignPromptService and HttpClient
-builder.Services.AddHttpClient<CampaignPromptService>(client =>
-{
-    client.Timeout = TimeSpan.FromMinutes(10);
-});
-
-
-
+// ===============================
+// 🚀 Build App
+// ===============================
 var app = builder.Build();
 
-// ✅ Swagger UI
+// ===============================
+// ✅ REQUIRED for production (reverse proxy)
+// ===============================
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor |
+        ForwardedHeaders.XForwardedProto |
+        ForwardedHeaders.XForwardedHost
+});
+
+// ===============================
+// ✅ Ensure wwwroot/uploads exists
+// ===============================
+var webRootPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+var uploadsPath = Path.Combine(webRootPath, "uploads");
+
+if (!Directory.Exists(webRootPath))
+    Directory.CreateDirectory(webRootPath);
+
+if (!Directory.Exists(uploadsPath))
+    Directory.CreateDirectory(uploadsPath);
+
+// ===============================
+// ✅ Swagger
+// ===============================
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
@@ -163,18 +218,30 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "swagger";
 });
 
+// ===============================
+// ✅ Middleware pipeline
+// ===============================
 app.UseCors("MyCorsPolicy");
 app.UseHttpsRedirection();
+
+// Serve /uploads publicly
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(
+        Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads")
+    ),
+    RequestPath = "/uploads"
+});
+
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
+
 app.MapControllers();
 
-// ✅ React fallback
-// ✅ Correct React fallback
+// React SPA fallback
 app.MapFallbackToFile("index.html");
-
 
 app.Run();

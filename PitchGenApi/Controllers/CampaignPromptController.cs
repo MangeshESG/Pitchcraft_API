@@ -8,6 +8,8 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using PitchGenApi.Model;
 using PitchGenApi.Interfaces;
+using PitchGenApi.Model.DTOs;
+
 
 
 namespace PitchGenApi.Controllers
@@ -77,7 +79,7 @@ namespace PitchGenApi.Controllers
                 await _dbContext.SaveChangesAsync();
 
                 var placeholderKeys = ExtractPlaceholderKeys(
-                    
+
                     request.PlaceholderList
                 );
 
@@ -493,7 +495,8 @@ namespace PitchGenApi.Controllers
                 request.UserId,
                 request.Message ?? "",
                 request.SystemPrompt ?? "",
-                model
+                model,
+                request.ImageUrl    // ⭐ NEW
             );
 
             return Ok(new { Response = result });
@@ -596,7 +599,7 @@ namespace PitchGenApi.Controllers
                 {
                     Prompt = filledTemplate,
                     ScrappedData = "Generate a professional example email",
-                    ModelName = req.Model 
+                    ModelName = req.Model
                 }
             );
 
@@ -623,7 +626,7 @@ namespace PitchGenApi.Controllers
                 {
                     promptTokens = pitchResult.PromptTokens,
                     completionTokens = pitchResult.CompletionTokens,
-                    searchTokens = pitchResult.SearchTokens ,   // add this line
+                    searchTokens = pitchResult.SearchTokens,   // add this line
                     totalTokens = pitchResult.TotalTokens,
                     cost = pitchResult.CurrentCost
                 }
@@ -1171,7 +1174,7 @@ namespace PitchGenApi.Controllers
         [HttpPost("clone-template")]
         public async Task<IActionResult> CloneTemplate([FromQuery] string clientId, [FromQuery] int templateId, [FromQuery] string Name)
         {
-            var clonedTemplate = await _campaignService.CloneTemplateAsync(clientId, templateId,Name);
+            var clonedTemplate = await _campaignService.CloneTemplateAsync(clientId, templateId, Name);
 
             if (clonedTemplate == null)
                 return NotFound("Original template not found.");
@@ -1179,5 +1182,49 @@ namespace PitchGenApi.Controllers
             return Ok("Template clone Successfully");
         }
 
+        // ==========================
+        // 📸 IMAGE UPLOAD (CHAT)
+        // ==========================
+        [HttpPost("images/upload-image")]
+        public async Task<IActionResult> UploadImage(
+            [FromForm] IFormFile image,
+            [FromForm] string userId,
+            [FromServices] IWebHostEnvironment env
+        )
+        {
+            if (image == null || image.Length == 0)
+                return BadRequest("No file uploaded");
+
+            if (string.IsNullOrWhiteSpace(userId))
+                return BadRequest("UserId is required");
+
+            // ✅ CORRECT ROOT PATH
+            var uploadsPath = Path.Combine(
+                env.WebRootPath,   // <-- THIS FIXES PROD
+                "uploads",
+                userId
+            );
+
+            Directory.CreateDirectory(uploadsPath);
+
+            var fileName = $"{Guid.NewGuid()}{Path.GetExtension(image.FileName)}";
+            var fullPath = Path.Combine(uploadsPath, fileName);
+
+            await using (var stream = new FileStream(fullPath, FileMode.Create))
+            {
+                await image.CopyToAsync(stream);
+            }
+
+            // ⚠️ DO NOT USE Request.Scheme/Host IN PROD
+            var imageUrl = $"https://app.pitchkraft.ai/uploads/{userId}/{fileName}";
+
+            return Ok(new ImageUploadResponse
+            {
+                ImageUrl = imageUrl
+            });
+        }
+
     }
+
+
 }

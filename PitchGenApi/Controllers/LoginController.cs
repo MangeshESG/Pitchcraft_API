@@ -25,8 +25,10 @@ namespace PitchGenApi.Controllers
         private readonly IResetPassworde _resetPassword;
         private readonly IStripeRepository _stripe;
         private readonly IRegisterEmailSender _register;
+        private readonly ICompanyAlertService _companyAlert;
 
-        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register)
+
+        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert)
         {
             _context = context;
             _userRepository = userRepository;
@@ -34,6 +36,7 @@ namespace PitchGenApi.Controllers
             _resetPassword = resetPassword;
             _stripe = stripe;
             _register = register;
+            _companyAlert = companyAlert;
         }
 
         [HttpPost("login")]
@@ -50,7 +53,22 @@ namespace PitchGenApi.Controllers
             if (user.TrustDiviceNumber != null && user.TrustDiviceNumber == dto.trustednumber && user.TrustExpiry > DateTime.Now)
             {
                 var tokenDirect = _jwtService.GeneratenewToken(dto.username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
+                var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+                var browser = EmailTrackingHelper.GetBrowserName(
+                    Request.Headers["User-Agent"]
+                );
+
+                try
+                {
+                    await _companyAlert.SendUserLoginAlert(user, ip, browser);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Login alert email failed: " + ex.Message);
+                }
                 return Ok(new
+
+
                 {
                     Token = tokenDirect,
                     user.IsAdmin
@@ -244,6 +262,19 @@ namespace PitchGenApi.Controllers
             // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);
             _context.SaveChanges(); // Save everything
+
+            var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var browser = EmailTrackingHelper.GetBrowserName(
+                Request.Headers["User-Agent"]
+            );
+            try
+            {
+                await _companyAlert.SendUserRegisteredAlert(client, ip, browser);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Register  alert email failed: " + ex.Message);
+            }
 
 
             return Ok("Registration complete.");
