@@ -92,6 +92,12 @@ public class ScheduledEmailSendingHelper
 
         var sentEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        bool active = await context.UserCredits
+               .AnyAsync(u =>
+                   u.ClientId == step.ClientId &&
+                   u.Status == "active"
+               );
+
         //bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(step.SmtpID);
 
         string smtpServer = smtpCredential.Server;
@@ -203,6 +209,14 @@ public class ScheduledEmailSendingHelper
 
             string finalEmailBody = Contact.email_body;
 
+            string emailFooter = @"<br/><br/>
+                <hr style='border:none;border-top:1px solid #e5e7eb;'/>
+                <p style='font-size:12px;color:#6b7280;text-align:center;'>
+                This message was sent from 
+                <a href='https://app.pitchkraft.ai/' target='_blank' style='color:#2563eb;text-decoration:none;font-weight:bold;'>
+                Pitchkraft.ai
+                </a>
+                </p>";
             if (step.IsFollowUp == true)
             {
                 string oldThread = await _contactRepository
@@ -214,6 +228,10 @@ public class ScheduledEmailSendingHelper
                 {oldThread}";
             }
 
+            if (!active)
+            {
+                finalEmailBody += emailFooter;
+            }
             sentEmails.Add(Contact.email);
 
             string subject = Contact.email_subject;

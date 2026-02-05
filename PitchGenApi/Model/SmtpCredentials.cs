@@ -12,5 +12,7 @@
         public string? SenderName { get; set; }
         public int? DomainId { get; set; }
         public bool UseSsl { get; set; }
+        public string? SecurityType { get; set; }
+
     }
 }

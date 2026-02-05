@@ -259,7 +259,8 @@ namespace PitchGenApi.Controllers
                     smtp.Password,
                     smtp.UseSsl,
                     smtp.FromEmail,
-                    smtp.SenderName
+                    smtp.SenderName,
+                    smtp.SecurityType
                 });
 
                 return Ok(result);
