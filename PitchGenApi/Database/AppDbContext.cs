@@ -47,6 +47,7 @@ namespace PitchGenApi.Database
         public DbSet<PlaceholderDefinition> PlaceholderDefinitions { get; set; }
         public DbSet<DomainVerification> DomainVerification { get; set; }
         public DbSet<DomainEmailVerification> DomainEmailVerification { get; set; }
+        public DbSet<Notes> Notes { get; set; }
         public DbSet<UploadedImage> UploadedImages { get; set; }
 
 

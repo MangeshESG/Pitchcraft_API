@@ -259,7 +259,8 @@ namespace PitchGenApi.Controllers
                     smtp.Password,
                     smtp.UseSsl,
                     smtp.FromEmail,
-                    smtp.SenderName
+                    smtp.SenderName,
+                    smtp.SecurityType
                 });
 
                 return Ok(result);
@@ -276,6 +277,8 @@ namespace PitchGenApi.Controllers
         {
             try
             {
+                Console.WriteLine($"contactid: {dto.contactid
+                    }");
                 ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
                 var nowUtc = DateTime.UtcNow;

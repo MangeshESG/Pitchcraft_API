@@ -47,6 +47,13 @@ public class EmailSendingHelper
 
         var Blueprint = await _context.Campaigns.FirstOrDefaultAsync(x => x.Id == CampaignId);
 
+        bool active = await _context.UserCredits
+                .AnyAsync(u =>
+                    u.ClientId == clientId &&
+                    u.Status == "active"
+                );
+
+
         if (smtpCredential == null || string.IsNullOrEmpty(smtpCredential.Server))
         {
             _context.EmailLogs.Add(new EmailLog
@@ -106,6 +113,15 @@ public class EmailSendingHelper
 
             string finalEmailBody = EmailDetails.email_body;
 
+            string emailFooter = @"<br/><br/>
+                <hr style='border:none;border-top:1px solid #e5e7eb;'/>
+                <p style='font-size:12px;color:#6b7280;text-align:center;'>
+                This message was sent from 
+                <a href='https://app.pitchkraft.ai/' target='_blank' style='color:#2563eb;text-decoration:none;font-weight:bold;'>
+                Pitchkraft.ai
+                </a>
+                </p>";
+
 
             if (dataFileId == null)
             {
@@ -120,21 +136,18 @@ public class EmailSendingHelper
                     string oldThread = await _repository.BuildEmailThreadAsync(clientId, list.DataFileId, EmailDetails.id, SegmentId);
 
                     finalEmailBody =
-                    $@"{EmailDetails.email_body}
+                     $@"{EmailDetails.email_body}
 
-                {oldThread}";
+                    {oldThread}
+                    {emailFooter}";
+
                 }
             }
 
 
-            if (isFollowUp)
+            if (!active)
             {
-                string oldThread = await _repository.BuildEmailThreadAsync(clientId, dataFileId, EmailDetails.id, SegmentId);
-
-                finalEmailBody =
-                $@"{EmailDetails.email_body}
-
-                {oldThread}";
+                finalEmailBody += emailFooter;
             }
 
             // Send main email

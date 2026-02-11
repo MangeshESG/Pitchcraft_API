@@ -169,6 +169,7 @@ builder.Services.AddScoped<IDomainVerificationRepository, DomainVerificationRepo
 builder.Services.AddScoped<IRegisterEmailSender, RegisterEmailSender>();
 builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
+builder.Services.AddScoped<INoteRepository, NoteRepository>();
 
 builder.Services.AddSingleton<JwtService>();
 

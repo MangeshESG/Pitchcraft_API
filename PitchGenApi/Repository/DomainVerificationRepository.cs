@@ -164,7 +164,8 @@ namespace PitchGenApi.Repositories
                         FromEmail = dto.FromEmail,
                         SenderName = dto.SenderName,
                         DomainId = domainId,
-                        UseSsl = dto.UseSsl
+                        UseSsl = dto.UseSsl,
+                        SecurityType = dto.SecurityType
                     };
                      _db.SmtpCredentials.Update(smtpupdate);
                 }
@@ -528,6 +529,7 @@ namespace PitchGenApi.Repositories
                     SenderName = smtpDto.SenderName,
                     UseSsl = smtpDto.UseSsl,
                     DomainId = smtpDto.DomainId,
+                    SecurityType = smtpDto.SecurityType,
                 };
                 
                 var emailRecord = new DomainEmailVerification
