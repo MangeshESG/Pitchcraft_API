@@ -277,6 +277,8 @@ namespace PitchGenApi.Controllers
         {
             try
             {
+                Console.WriteLine($"contactid: {dto.contactid
+                    }");
                 ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
                 var nowUtc = DateTime.UtcNow;
