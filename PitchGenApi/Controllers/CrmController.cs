@@ -607,9 +607,8 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("gettrackinglogs")]
-        public async Task<IActionResult> GettrackingLogs([FromQuery] int clientId, [FromQuery] int dataFileId)
+        public async Task<IActionResult> GettrackingLogs(int clientId, int dataFileId)
         {
-            // Step 1: Validate dataFileId belongs to clientId
             bool isValid = await _context.data_files
                 .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
 
@@ -618,41 +617,73 @@ namespace PitchGenApi.Controllers
                 return BadRequest("Invalid clientId or dataFileId.");
             }
 
-            // Step 2: Get EmailTrackingLogs
-            var logs = await _context.EmailTrackingLogs
-                .Where(e => e.ClientId == clientId && e.DataFileId == dataFileId)
-                .OrderByDescending(e => e.Timestamp)
-                .Take(1000)
-                .ToListAsync();
+            var logs = await (
+                from t in _context.EmailTrackingLogs
+                join e in _context.EmailLogs
+                    on new { t.TrackingId, t.ClientId, t.DataFileId }
+                    equals new { e.TrackingId, e.ClientId, e.DataFileId }
+                    into emailGroup
+                from e in emailGroup.DefaultIfEmpty()   // 👈 left join
+                where t.ClientId == clientId && t.DataFileId == dataFileId
+                orderby t.Timestamp descending
+                select new
+                {
+                    t.Id,
+                    t.Email,
+                    t.EventType,
+                    t.Timestamp,
+                    t.ClientId,
+                    t.TargetUrl,
+                    t.ZohoViewName,
+                    t.Full_Name,
+                    t.Location,
+                    t.Company,
+                    t.JobTitle,
+                    t.linkedin_URL,
+                    t.website,
+                    t.TrackingId,
+                    t.UserAgent,
+                    t.IPAddress,
+                    t.IsBot,
+                    t.Browser,
+                    t.DataFileId,
+                    t.ContactId,
+                    t.SegmentId,
+                    t.CampaignId,
+                    t.BlueprintId,
+                    SentAt = e != null ? e.SentAt : null   // 👈 Second table se field
+                }
+            )
+            .Take(1000)
+            .ToListAsync();
 
             return Ok(logs);
         }
-
         [HttpGet("getlogs-by-segment")]
         public async Task<IActionResult> GetLogsBySegment([FromQuery] int clientId, [FromQuery] int segmentId)
         {
-            // Step 1: Validate segmentId belongs to clientId
             bool isValid = await _context.segments
                 .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
 
             if (!isValid)
                 return BadRequest("Invalid clientId or segmentId.");
 
-            // Step 2: Use a join approach
             var logs = await (
                 from log in _context.EmailLogs
-                join sc in _context.segmentContacts on log.ContactId equals sc.ContactId
-                join contact in _context.contacts on log.ContactId equals contact.id into contactGroup
+                join contact in _context.contacts
+                    on log.ContactId equals contact.id into contactGroup
                 from contact in contactGroup.DefaultIfEmpty()
-                where sc.SegmentId == segmentId && log.ClientId == clientId
+                where log.ClientId == clientId
+                      && log.SegmentId == segmentId   // 👈 Direct filter
                 orderby log.SentAt descending
                 select new
                 {
-                    // Email log details
                     log.Id,
                     log.ContactId,
                     log.ClientId,
                     log.DataFileId,
+                    log.TrackingId,
+                    log.SegmentId,
                     log.Subject,
                     log.Body,
                     log.SentAt,
@@ -661,7 +692,6 @@ namespace PitchGenApi.Controllers
                     log.ToEmail,
                     log.process_name,
 
-                    // Contact details
                     Name = contact.full_name,
                     Email = contact.email,
                     Address = contact.country_or_address,
@@ -689,11 +719,41 @@ namespace PitchGenApi.Controllers
 
             // Step 2: Use a join approach
             var logs = await (
-                from log in _context.EmailTrackingLogs
-                join sc in _context.segmentContacts on log.ContactId equals sc.ContactId
-                where sc.SegmentId == segmentId && log.ClientId == clientId
-                orderby log.Timestamp descending
-                select log
+                from t in _context.EmailTrackingLogs
+                join e in _context.EmailLogs
+                    on new { t.TrackingId, t.ClientId, t.SegmentId }
+                    equals new { e.TrackingId, e.ClientId, e.SegmentId }
+                    into emailGroup
+                from e in emailGroup.DefaultIfEmpty()   // 👈 left join
+                where t.ClientId == clientId && t.SegmentId == segmentId
+                orderby t.Timestamp descending
+                select new
+                {
+                    t.Id,
+                    t.Email,
+                    t.EventType,
+                    t.Timestamp,
+                    t.ClientId,
+                    t.TargetUrl,
+                    t.ZohoViewName,
+                    t.Full_Name,
+                    t.Location,
+                    t.Company,
+                    t.JobTitle,
+                    t.linkedin_URL,
+                    t.website,
+                    t.TrackingId,
+                    t.UserAgent,
+                    t.IPAddress,
+                    t.IsBot,
+                    t.Browser,
+                    t.DataFileId,
+                    t.ContactId,
+                    t.SegmentId,
+                    t.CampaignId,
+                    t.BlueprintId,
+                    SentAt = e != null ? e.SentAt : null   // 👈 Second table se field
+                }
             )
             .Take(1000)
             .ToListAsync();
