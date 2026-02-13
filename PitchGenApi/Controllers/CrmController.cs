@@ -63,7 +63,7 @@ namespace PitchGenApi.Controllers
                     CompanyIndustry = c.CompanyIndustry,
                     CompanyLinkedInURL = c.CompanyLinkedInURL,
                     //CompanyEventLink = c.CompanyEventLink,
-                    Notes = c.Notes,
+                    linkedIninformation = c.linkedIninformation,
                     created_at = DateTime.UtcNow,
                     updated_at = null
                 }).ToList();
@@ -131,7 +131,7 @@ namespace PitchGenApi.Controllers
                     //CompanyEventLink = request.CompanyEventLink,
                     created_at = DateTime.UtcNow,
                     updated_at = null,
-                    Notes = request.Notes
+                    linkedIninformation = request.linkedIninformation
                 };
 
                 _context.contacts.Add(contact);
@@ -189,7 +189,7 @@ namespace PitchGenApi.Controllers
                 contact.CompanyLinkedInURL = model.CompanyLinkedInURL;
                 contact.CompanyIndustry = model.CompanyIndustry;
                 contact.CompanyEmployeeCount = model.CompanyEmployeeCount;
-                contact.Notes = model.Notes;
+                contact.linkedIninformation = model.linkedIninformation;
                 contact.updated_at = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
@@ -204,7 +204,7 @@ namespace PitchGenApi.Controllers
 
         [HttpPost]
         [Route("Update-Notes")]
-        public async Task<IActionResult> UpdateNotes([FromQuery] int contactid, [FromQuery] string Notes)
+        public async Task<IActionResult> UpdateNotes([FromQuery] int contactid, [FromQuery] string linkedIninformation)
         {
             try
             {
@@ -217,7 +217,7 @@ namespace PitchGenApi.Controllers
                 }
 
                 // Update fields
-                contact.Notes = Notes;
+                contact.linkedIninformation = linkedIninformation;
                 contact.updated_at = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
@@ -347,9 +347,9 @@ namespace PitchGenApi.Controllers
                     c.CompanyEmployeeCount,
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
-                    c.Notes
+                    c.linkedIninformation
                     //c.CompanyEventLink
-            });
+                });
             }
 
             return Ok(new
@@ -412,7 +412,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
                         //c.CompanyEventLink,
-                        c.Notes
+                        c.linkedIninformation
                     })
                     .ToListAsync();
 
@@ -438,7 +438,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
                         //c.CompanyEventLink,
-                        c.Notes,
+                        c.linkedIninformation,
 
                         unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
                     })
@@ -1049,7 +1049,7 @@ namespace PitchGenApi.Controllers
                     c.CompanyEmployeeCount,
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
-                    c.Notes
+                    c.linkedIninformation
                     //c.CompanyEventLink
                 });
             }
@@ -1070,7 +1070,7 @@ namespace PitchGenApi.Controllers
                     return BadRequest(new
                     {
                         success = false,
-                        message = "clientId aur segmentId dono 0 se bade hone chahiye."
+                        message = "clientId and segmentId must be greater  than 0"
                     });
 
                 // Step 1: Check Segment exists
@@ -1078,7 +1078,7 @@ namespace PitchGenApi.Controllers
                     .FirstOrDefaultAsync(x => x.Id == segmentId && x.ClientId == clientId);
 
                 if (seg == null)
-                    return NotFound(new { success = false, message = "Segment nahi mila." });
+                    return NotFound(new { success = false, message = "Segment not found." });
 
                 // Step 2: SegmentContacts → ContactId list nikaalo
                 var contactIds = await _context.segmentContacts
@@ -1130,7 +1130,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
                         //c.CompanyEventLink,
-                        c.Notes,
+                        c.linkedIninformation,
 
                         unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
                     })
@@ -1148,7 +1148,7 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new
                 {
                     success = false,
-                    message = "Server error aaya.",
+                    message = "Server error .",
                     error = ex.Message
                 });
             }

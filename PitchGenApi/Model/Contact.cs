@@ -29,7 +29,7 @@ namespace PitchGenApi.Models
         public string? CompanyIndustry { get; set; }
         public string? CompanyLinkedInURL { get; set; }
         //public string? CompanyEventLink { get; set; }
-        public string? Notes { get; set; }
+        public string? linkedIninformation { get; set; }
 
         public DateTime? email_sent_at { get; set; } // Nullable to allow for unset values
 
