@@ -44,6 +44,10 @@ namespace PitchGenApi.Controllers
         {
             var user = await _userRepository.GetUser(dto.username);
 
+            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var userAgent = Request.Headers["User-Agent"].ToString();
+            var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+
             if (user == null || !VerifyPassword(dto.password, user.PasswordHash))
             {
                 return Unauthorized(new { Message = "Invalid credentials" });
@@ -53,14 +57,10 @@ namespace PitchGenApi.Controllers
             if (user.TrustDiviceNumber != null && user.TrustDiviceNumber == dto.trustednumber && user.TrustExpiry > DateTime.Now)
             {
                 var tokenDirect = _jwtService.GeneratenewToken(dto.username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
-                var ip = HttpContext.Connection.RemoteIpAddress?.ToString();
-                var browser = EmailTrackingHelper.GetBrowserName(
-                    Request.Headers["User-Agent"]
-                );
 
                 try
                 {
-                    await _companyAlert.SendUserLoginAlert(user, ip, browser);
+                    await _register.LoginDetect(user, ipAddress, browserName);
                 }
                 catch (Exception ex)
                 {
@@ -80,9 +80,6 @@ namespace PitchGenApi.Controllers
 
             if (user.TrustDiviceNumber == null || user.TrustDiviceNumber != dto.trustednumber)
             {
-                var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-                var userAgent = Request.Headers["User-Agent"].ToString();
-                var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
                 await _register.TrustOtpEmail(user.Email, otp, user.FirstName, ipAddress, browserName);
             }
 
@@ -124,8 +121,13 @@ namespace PitchGenApi.Controllers
         {
             var user = await _userRepository.GetUser(username);
 
-            var otpDetails = await _userRepository.GetOtpDetails(otp, username);
+            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+            var userAgent = Request.Headers["User-Agent"].ToString();
+            var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
 
+            var otpDetails = await _userRepository.GetOtpDetails(otp, username);
+            
+                await _register.TrustOtpEmail(user.Email, otp, user.FirstName, ipAddress, browserName);
 
             if (string.IsNullOrEmpty(otp) ||
                 user == null ||
@@ -156,6 +158,14 @@ namespace PitchGenApi.Controllers
             }
 
             var token = _jwtService.GeneratenewToken(user.Username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
+            try
+            {
+                await _register.LoginDetect(user, ipAddress, browserName);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Login alert email failed: " + ex.Message);
+            }
             return Ok(new
             {
                 user.IsAdmin,
@@ -269,7 +279,7 @@ namespace PitchGenApi.Controllers
             );
             try
             {
-                await _companyAlert.SendUserRegisteredAlert(client, ip, browser);
+                await _register.RegistrationDetect(client, ip, browser);
             }
             catch (Exception ex)
             {

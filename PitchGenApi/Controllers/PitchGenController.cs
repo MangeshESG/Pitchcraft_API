@@ -6,12 +6,15 @@ using System.Text.RegularExpressions;
 using HtmlAgilityPack;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Internal;
 using Microsoft.Identity.Client;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
+using PitchGenApi.Helpers;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model;
 using PitchGenApi.Services;
+using Stripe.Reporting;
 using UglyToad.PdfPig;
 
 
@@ -21,6 +24,7 @@ namespace PitchGenApi.Controllers
     [Route("api/auth")]
     public class AuthController : ControllerBase
     {
+        private readonly IRegisterEmailSender _reg;
         private readonly IUserRepository _userRepository;
         private readonly JwtService _jwtService;
         private readonly IPromptRepository _promptRepository;
@@ -32,8 +36,9 @@ namespace PitchGenApi.Controllers
 
 
 
-        public AuthController(IUserRepository userRepository, JwtService jwtService, IPromptRepository promptRepository, IPitchService pitchservice, IPitchGenDataRepository pitchgenDataRepository, AppDbContext context, ZohoService zohoService, ILogger<AuthController> logger)
+        public AuthController(IRegisterEmailSender registeredServices,IUserRepository userRepository, JwtService jwtService, IPromptRepository promptRepository, IPitchService pitchservice, IPitchGenDataRepository pitchgenDataRepository, AppDbContext context, ZohoService zohoService, ILogger<AuthController> logger)
         {
+            _reg = registeredServices;
             _userRepository = userRepository;
             _jwtService = jwtService;
             _promptRepository = promptRepository;
@@ -367,51 +372,49 @@ namespace PitchGenApi.Controllers
             }
         }
 
-     
 
-        [HttpPost("sendemail")] // Email Send Code
-        public IActionResult SendEmail([FromBody] EmailRequest emailRequest)
+
+        [HttpPost("sendemail")]
+        public async Task<IActionResult> SendEmail([FromBody] EmailRequest emailRequest)
         {
-            ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true; //  disables SSL/TLS certificate validation checks.
-            if (emailRequest == null || string.IsNullOrWhiteSpace(emailRequest.To) || string.IsNullOrWhiteSpace(emailRequest.Subject) || string.IsNullOrWhiteSpace(emailRequest.Body))
-            {
-                return BadRequest(new { Message = "Invalid email request data." });
-            }
-
             try
             {
-                var fromEmail = "pitchcraft@dataji.co"; // sender email
-                var fromPassword = "z7d&73W2f"; //  sender email password
+                if (emailRequest == null)
+                    return BadRequest("Invalid email request");
 
-                var smtpClient = new SmtpClient("213.171.222.69") //  SMTP server
+                var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Unknown";
+                var userAgent = Request.Headers["User-Agent"].ToString();
+                var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+
+                await _reg.StopGenrationMail(emailRequest, ipAddress, browserName);
+
+                return Ok(new
                 {
-                    Port = 587, //  SMTP port
-                    Credentials = new NetworkCredential(fromEmail, fromPassword),
-                    EnableSsl = true,
-                };
-
-                var mailMessage = new MailMessage
+                    message = "Email sent successfully"
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                // Validation or bad input errors
+                return BadRequest(new
                 {
-                    From = new MailAddress(fromEmail),
-                    Subject = emailRequest.Subject,
-                    Body = emailRequest.Body,
-                    IsBodyHtml = true,
-                };
-
-                mailMessage.To.Add(emailRequest.To);
-
-                smtpClient.Send(mailMessage);
-
-                return Ok(new { Message = "Email sent successfully." });
+                    message = ex.Message
+                });
             }
             catch (Exception ex)
             {
-                // Log the exception
-                Console.Error.WriteLine(ex);
+                // Log exception here (recommended)
+                // _logger.LogError(ex, "Error while sending email");
 
-                return StatusCode(500, new { Message = "An error occurred while sending the email." });
+                return StatusCode(500, new
+                {
+                    message = "An error occurred while sending the email",
+                    error = ex.Message // remove in production if needed
+                });
             }
         }
+
+
 
         [HttpGet("pitchgenData/{zohoviewId}")]
         public async Task<IActionResult> MyAction(string zohoviewId, string pageToken = null)
