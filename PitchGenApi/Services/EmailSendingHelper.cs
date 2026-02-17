@@ -145,7 +145,7 @@ public class EmailSendingHelper
             }
 
 
-            if (active)
+            if (!active)
             {
                 finalEmailBody += emailFooter;
             }
