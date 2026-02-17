@@ -483,7 +483,7 @@ namespace PitchGenApi.Controllers
                     existingRecord.Password = dto.Password;
                     existingRecord.UseSsl = dto.UseSsl;
                     existingRecord.SenderName = dto.SenderName;
-                    
+                    existingRecord.SecurityType = dto.SecurityType;
                     _context.SmtpCredentials.Update(existingRecord);
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();

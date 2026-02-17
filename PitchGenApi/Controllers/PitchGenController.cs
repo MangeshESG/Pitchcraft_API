@@ -825,72 +825,77 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                // Add null check for context
                 if (_context == null)
                 {
                     _logger.LogError("Database context is null");
                     return StatusCode(500, new { Message = "Database connection error" });
                 }
 
-                // Check if Campaigns table exists and has data
-                var campaignsExist = await _context.Campaigns.AnyAsync();
-                if (!campaignsExist)
-                {
-                    _logger.LogWarning("No campaigns found in database");
-                    return Ok(new List<object>());
-                }
-
                 var campaigns = await _context.Campaigns
-                 .Where(c => c.ClientId == clientId)
+                    .Where(c => c.ClientId == clientId)
 
-                 // LEFT JOIN Segment
-                 .GroupJoin(_context.segments,
-                     c => c.SegmentId,
-                     s => s.Id,
-                     (c, segments) => new { c, segments })
-                 .SelectMany(
-                     x => x.segments.DefaultIfEmpty(),
-                     (x, s) => new { x.c, Segment = s })
+                    // LEFT JOIN Segment
+                    .GroupJoin(_context.segments,
+                        c => c.SegmentId,
+                        s => s.Id,
+                        (c, segments) => new { c, segments })
+                    .SelectMany(
+                        x => x.segments.DefaultIfEmpty(),
+                        (x, s) => new { x.c, Segment = s })
 
-                 // LEFT JOIN DataFile
-                 .GroupJoin(_context.data_files,
-                    cs => cs.c.ZohoViewId,        // string
-                    df => df.id.ToString(),       // int → string
-                    (cs, dataFiles) => new { cs.c, cs.Segment, dataFiles })
+                    // LEFT JOIN DataFile
+                    .GroupJoin(_context.data_files,
+                        cs => cs.c.ZohoViewId,
+                        df => df.id.ToString(),
+                        (cs, dataFiles) => new { cs.c, cs.Segment, dataFiles })
+                    .SelectMany(
+                        x => x.dataFiles.DefaultIfEmpty(),
+                        (x, df) => new { x.c, x.Segment, DataFile = df })
 
-                 .SelectMany(
-                     x => x.dataFiles.DefaultIfEmpty(),
-                     (x, df) => new
-                     {
-                         x.c.Id,
-                         x.c.CampaignName,
-                         x.c.PromptId,
-                         x.c.ZohoViewId,
-                         x.c.TemplateId,
-                         x.c.SegmentId,
-                         x.c.ClientId,
-                         x.c.Description,
+                    // 🔥 LEFT JOIN CampaignTemplates
+                    .GroupJoin(_context.CampaignTemplates,
+                        x => x.c.TemplateId,
+                        ct => ct.Id,
+                        (x, templates) => new { x.c, x.Segment, x.DataFile, templates })
+                    .SelectMany(
+                        x => x.templates.DefaultIfEmpty(),
+                        (x, ct) => new
+                        {
+                            x.c.Id,
+                            x.c.CampaignName,
+                            x.c.PromptId,
+                            x.c.ZohoViewId,
+                            x.c.TemplateId,
+                            x.c.SegmentId,
+                            x.c.ClientId,
+                            x.c.Description,
 
-                         SegmentName = x.Segment != null ? x.Segment.Name : null,
-                         DataFileName = df != null ? df.name : null,
+                            SegmentName = x.Segment != null ? x.Segment.Name : null,
+                            DataFileName = x.DataFile != null ? x.DataFile.name : null,
 
-                         DataSource = x.Segment != null
-                             ? "Segment"
-                             : "DataFile"
-                     })
+                            // ✅ FROM CampaignTemplates
+                            TemplateDefinitionId = ct != null ? (int?)ct.TemplateDefinitionId : null,
+                            TemplateName = ct != null ? ct.TemplateName : null,
 
-                 .OrderBy(c => c.CampaignName)
-                 .ToListAsync();
+                            DataSource = x.Segment != null ? "Segment" : "DataFile"
+                        })
 
+                    .OrderBy(c => c.CampaignName)
+                    .ToListAsync();
 
                 return Ok(campaigns);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error retrieving campaigns for client {ClientId}", clientId);
-                return StatusCode(500, new { Message = "Failed to retrieve campaigns", Error = ex.Message });
+                return StatusCode(500, new
+                {
+                    Message = "Failed to retrieve campaigns",
+                    Error = ex.Message
+                });
             }
         }
+
 
         /// Get campaign by ID
 

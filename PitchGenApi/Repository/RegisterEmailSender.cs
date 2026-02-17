@@ -26,7 +26,7 @@ namespace PitchGenApi.Helpers
         private readonly string _companyEmail;
 
         private const string FromEmail = "support@pitchkraft.ai";
-        private const string FromName = "PitchGen";
+        private const string FromName = "PitchKraft";
         private const string FromPassword = "Mdx020*0m";
 
         public RegisterEmailSender(AppDbContext context, EmailTemplateHelper templateHelper, IConfiguration configuration)
