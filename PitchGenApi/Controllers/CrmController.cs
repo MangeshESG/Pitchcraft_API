@@ -203,7 +203,7 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpPost]
-        [Route("Update-Notes")]
+        [Route("Update-linkedIninformation")]
         public async Task<IActionResult> UpdateNotes([FromQuery] int contactid, [FromQuery] string linkedIninformation)
         {
             try
