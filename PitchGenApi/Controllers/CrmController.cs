@@ -1456,6 +1456,119 @@ namespace PitchGenApi.Controllers
             return Ok(result);
         }
 
+        [HttpGet("contact-details")]
+        public async Task<IActionResult> GetContactDetails([FromQuery] int contactId)
+        {
+            if (contactId <= 0)
+                return BadRequest("Invalid contactId");
+
+            try
+            {
+                var contact = await _context.contacts
+                    .Where(c => c.id == contactId)
+                    .Select(c => new
+                    {
+                        // 🔹 Contact Info
+                        ContactId = c.id,
+                        FullName = c.full_name,
+                        Email = c.email,
+                        CreatedAt = c.created_at,
+                        DataFileId = c.DataFileId,
+
+                        // 🔹 DataFile Info
+                        DataFile = _context.data_files
+                            .Where(df => df.id == c.DataFileId)
+                            .Select(df => new
+                            {
+                                DataFileId = df.id,
+                                DataFileName = df.name,
+                                CreatedAt = df.created_at
+                            })
+                            .FirstOrDefault(),
+
+                        // 🔹 Segments
+                        Segments = _context.segmentContacts
+                            .Where(sc => sc.ContactId == contactId)
+                            .Select(sc => new
+                            {
+                                SegmentId = sc.SegmentId,
+                                SegmentName = sc.Segment.Name,
+                                Description = sc.Segment.Description,
+                                AddedAt = sc.AddedAt,
+                            })
+                            .ToList(),
+
+                        // 🔹 Campaigns
+                        Campaigns = _context.Campaigns
+                            .Where(camp =>
+                                camp.ZohoViewId == c.DataFileId.ToString() ||
+                                _context.segmentContacts
+                                    .Where(sc => sc.ContactId == contactId)
+                                    .Select(sc => sc.SegmentId)
+                                    .Contains(camp.SegmentId.Value))
+                            .Select(camp => new
+                            {
+                                CampaignId = camp.Id,
+                                CampaignName = camp.CampaignName,
+                                Description = camp.Description,
+                                CreatedAt = camp.CreatedAt,
+                                TemplateId = camp.TemplateId,
+
+                                // 🔸 Campaign Source
+                                SourceType = camp.ZohoViewId == c.DataFileId.ToString()
+                                    ? "DataFile"
+                                    : "Segment",
+
+                                SourceId = camp.ZohoViewId == c.DataFileId.ToString()
+                                    ? c.DataFileId
+                                    : camp.SegmentId,
+
+                                SourceName = camp.ZohoViewId == c.DataFileId.ToString()
+                                    ? _context.data_files
+                                        .Where(df => df.id == c.DataFileId)
+                                        .Select(df => df.name)
+                                        .FirstOrDefault()
+                                    : _context.segments
+                                        .Where(s => s.Id == camp.SegmentId)
+                                        .Select(s => s.Name)
+                                        .FirstOrDefault(),
+
+                                // 🔸 Template Info
+                                Template = camp.TemplateId != null
+                                    ? _context.CampaignTemplates
+                                        .Where(t => t.Id == camp.TemplateId)
+                                        .Select(t => new
+                                        {
+                                            TemplateId = t.Id,
+                                            TemplateName = t.TemplateName,
+                                            SelectedModel = t.SelectedModel,
+                                            TemplateDefinitionId = t.TemplateDefinitionId,
+                                            CreatedAt = t.CreatedAt
+                                        })
+                                        .FirstOrDefault()
+                                    : null
+                            })
+                            .ToList()
+                    })
+                    .FirstOrDefaultAsync();
+
+                if (contact == null)
+                    return NotFound($"Contact with ID {contactId} not found");
+
+                return Ok(contact);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Internal server error",
+                    error = ex.Message
+                });
+            }
+        }
+
+
+
         [HttpPost("add-contacts-to-existing-segment")]
         public async Task<IActionResult> AddContactsToExistingSegment([FromQuery] int ClientId, [FromQuery] int SegmentId, [FromBody] List<int> ContactIds)
         {
