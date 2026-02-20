@@ -901,6 +901,33 @@ namespace PitchGenApi.Controllers
             return Ok(segments);
         }
 
+        [HttpGet("get-list-by-client")]
+        public async Task<IActionResult> GetListByClientId([FromQuery] int clientId)
+        {
+            var List = await _context.data_files
+                .Where(s => s.client_id == clientId)
+                .Select(s => new
+                {
+                    s.id,
+                    s.name,
+                    s.description,
+                    s.client_id,
+                    s.created_at,
+
+                    // 👇 Count contacts mapped to this segment
+                    contactCount = _context.contacts
+                        .Count(c => c.DataFileId == s.id)
+                })
+                .ToListAsync();
+
+            if (List == null || List.Count == 0)
+            {
+                return NotFound(new { message = "No segments found for this client." });
+            }
+
+            return Ok(List);
+        }
+
         [HttpPost("delete-Datafile-contact")]
         public async Task<IActionResult> DeleteContact([FromQuery] int contactId)
         {
@@ -1591,7 +1618,226 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpGet("allcontacts/list-by-clientId")]
+        public async Task<IActionResult> GetContactsByClientId([FromQuery] int clientId)
+        {
+            try
+            {
+                if (clientId <= 0)
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "clientId must be greater than 0."
+                    });
 
+                // 1️⃣ Get all DataFileIds for this client
+                var dataFileIds = await _context.data_files
+                    .Where(df => df.client_id == clientId)
+                    .Select(df => df.id)
+                    .ToListAsync();
+
+                if (!dataFileIds.Any())
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "No data files found for this client."
+                    });
+
+                // 2️⃣ Load unsubscribed emails
+                var unsubscribedEmails = await _context.UnsubscribedContacts
+                    .Where(u => u.ClientId == clientId)
+                    .Select(u => u.Email)
+                    .ToListAsync();
+
+                // ✅ Performance optimization
+                var unsubscribedSet = new HashSet<string>(unsubscribedEmails);
+
+                // 3️⃣ Load contacts from ALL data files of this client
+                var contactsRaw = await _context.contacts
+                    .Where(c => c.DataFileId.HasValue &&
+                                dataFileIds.Contains(c.DataFileId.Value))
+                    .OrderBy(c => c.id)
+                    .Select(c => new
+                    {
+                        c.id,
+                        DataFileId = c.DataFileId.Value,
+                        c.full_name,
+                        c.email,
+                        c.website,
+                        c.company_name,
+                        c.job_title,
+                        c.linkedin_url,
+                        c.country_or_address,
+                        c.created_at,
+                        c.updated_at,
+                        c.email_sent_at,
+                        c.CompanyTelephone,
+                        c.CompanyEmployeeCount,
+                        c.CompanyIndustry,
+                        c.CompanyLinkedInURL,
+                        c.linkedIninformation
+                    })
+                    .ToListAsync();
+
+                // 4️⃣ Add unsubscribe flag safely
+                var contacts = contactsRaw.Select(c => new
+                {
+                    c.id,
+                    c.DataFileId,
+                    c.full_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    c.created_at,
+                    c.updated_at,
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    c.linkedIninformation,
+                    unsubscribe = unsubscribedSet.Contains(c.email) ? "Yes" : "No"
+                }).ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    dataFileCount = dataFileIds.Count,
+                    contactCount = contacts.Count,
+                    contacts
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "An unexpected server error occurred.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        [HttpGet("allcontacts/count-by-clientId")]
+        public async Task<IActionResult> GetContactCountByClientId([FromQuery] int clientId)
+        {
+            try
+            {
+                if (clientId <= 0)
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "clientId must be greater than 0."
+                    });
+
+                // 1️⃣ Get all DataFileIds for this client
+                var dataFileIds = await _context.data_files
+                    .Where(df => df.client_id == clientId)
+                    .Select(df => df.id)
+                    .ToListAsync();
+
+                if (!dataFileIds.Any())
+                    return Ok(new
+                    {
+                        success = true,
+                        contactCount = 0
+                    });
+
+                // 2️⃣ Count contacts directly (NO data loading)
+                var contactCount = await _context.contacts
+                    .CountAsync(c => c.DataFileId.HasValue &&
+                                     dataFileIds.Contains(c.DataFileId.Value));
+
+                return Ok(new
+                {
+                    success = true,
+                    contactCount
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "An unexpected server error occurred.",
+                    error = ex.Message
+                });
+            }
+        }
+        [HttpPost("clone-contact")]
+        public async Task<IActionResult> CloneContact([FromQuery] int contactId)
+        {
+            if (contactId <= 0)
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Invalid contactId"
+                });
+
+            try
+            {
+                // 1️⃣ Existing contact fetch
+                var existingContact = await _context.contacts
+                    .FirstOrDefaultAsync(c => c.id == contactId);
+
+                if (existingContact == null)
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "Contact not found"
+                    });
+
+                // 2️⃣ Clone contact (new object)
+                var clonedContact = new Contact
+                {
+                    DataFileId = existingContact.DataFileId,
+                    full_name = existingContact.full_name,
+                    email = existingContact.email,
+                    website = existingContact.website,
+                    company_name = existingContact.company_name,
+                    job_title = existingContact.job_title,
+                    linkedin_url = existingContact.linkedin_url,
+                    country_or_address = existingContact.country_or_address,
+                    email_subject = existingContact.email_subject,
+                    email_body = existingContact.email_body,
+                    CompanyTelephone = existingContact.CompanyTelephone,
+                    CompanyLinkedInURL = existingContact.CompanyLinkedInURL,
+                    CompanyIndustry = existingContact.CompanyIndustry,
+                    CompanyEmployeeCount = existingContact.CompanyEmployeeCount,
+                    linkedIninformation = existingContact.linkedIninformation,
+
+                    created_at = DateTime.UtcNow,
+                    updated_at = DateTime.UtcNow,
+                    email_sent_at = null
+                };
+
+                // 3️⃣ Save new contact
+                _context.contacts.Add(clonedContact);
+                await _context.SaveChangesAsync();
+
+                // 4️⃣ Response
+                return Ok(new
+                {
+                    success = true,
+                    message = "Contact cloned successfully",
+                    originalContactId = contactId,
+                    newContactId = clonedContact.id,
+                    dataFileId = clonedContact.DataFileId
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Error while cloning contact",
+                    error = ex.Message
+                });
+            }
+        }
         //private async Task<string> BuildEmailThreadAsync(int clientId, int datafileid)
         //{
         //    var logs = await _context.EmailLogs
