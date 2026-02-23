@@ -80,7 +80,7 @@ namespace PitchGenApi.Controllers
 
         // ================= UPDATE =================
         [HttpPost("Update-Note")]
-        public async Task<IActionResult> Update([FromQuery] UpdateNotesDto update )
+        public async Task<IActionResult> Update([FromBody] UpdateNotesDto update )
         {
             try
             {
