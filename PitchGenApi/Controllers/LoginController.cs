@@ -277,6 +277,22 @@ namespace PitchGenApi.Controllers
             var browser = EmailTrackingHelper.GetBrowserName(
                 Request.Headers["User-Agent"]
             );
+
+            if (request.trustthisdivice)
+            {
+                Random rnd = new Random();
+                int r = rnd.Next(100000, 999999);
+                DateTime expiry = DateTime.Now.AddDays(30);
+
+                client.TrustDiviceNumber = r;
+                client.TrustExpiry = expiry;
+
+                await _userRepository.Update(client);
+
+                //return Ok(new { message = "Device trusted for 30 days", code = r });
+            }
+            var token = _jwtService.GeneratenewToken(client.Username, client.Id, client.FirstName.ToString(), client.LastName.ToString());
+
             try
             {
                 await _register.RegistrationDetect(client, ip, browser);
@@ -287,7 +303,12 @@ namespace PitchGenApi.Controllers
             }
 
 
-            return Ok("Registration complete.");
+            return Ok(new
+            {
+                client.IsAdmin,
+                Token = token,
+                trustenumber = client.TrustDiviceNumber,
+            });
         }
 
         [HttpPost("restpass_send-otp")]
