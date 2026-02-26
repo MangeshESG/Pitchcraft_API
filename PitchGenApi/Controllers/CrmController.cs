@@ -1838,6 +1838,23 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
+
+        [HttpPost("contacts/delete-linkedin-info")]
+        public async Task<IActionResult> DeleteLinkedInInfoBulk(int contactId)
+        {
+            var contact = await _context.contacts
+                .FirstOrDefaultAsync(x => x.id == contactId);
+
+            if (contact == null)
+                return NotFound("Contact not found");
+
+            contact.linkedIninformation = null; // ✅ delete linkedin info
+            contact.updated_at = DateTime.Now;
+
+            await _context.SaveChangesAsync();
+
+            return Ok("LinkedIn information deleted successfully");
+        }
         //private async Task<string> BuildEmailThreadAsync(int clientId, int datafileid)
         //{
         //    var logs = await _context.EmailLogs
