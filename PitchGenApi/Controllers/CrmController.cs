@@ -1855,6 +1855,30 @@ namespace PitchGenApi.Controllers
 
             return Ok("LinkedIn information deleted successfully");
         }
+
+        [HttpGet("contact-by-id")]
+        public async Task<IActionResult> GetContactById([FromQuery] int contactId, [FromQuery] int clientId)
+        {
+            try
+            {
+                var contact = await _context.contacts
+                    .Where(c => c.id == contactId)
+                    .FirstOrDefaultAsync();
+
+                if (contact == null)
+                {
+                    return NotFound(new { message = "Contact not found" });
+                }
+
+                return Ok(contact);
+            }
+            catch (Exception ex)
+            {
+                //_logger.LogError(ex, "Error fetching contact by ID");
+                return StatusCode(500, new { message = "Error fetching contact" });
+            }
+        }
+
         //private async Task<string> BuildEmailThreadAsync(int clientId, int datafileid)
         //{
         //    var logs = await _context.EmailLogs
