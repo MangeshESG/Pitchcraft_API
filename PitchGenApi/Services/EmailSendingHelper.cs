@@ -153,14 +153,15 @@ public class EmailSendingHelper
             // Send main email
             if (!string.IsNullOrWhiteSpace(toEmail))
             {
-                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, finalEmailBody, clientId,contactId, dataFileId, SegmentId, fullname, location, company, website, linkedin, jobtitle, trackingId,CampaignId,Blueprint.TemplateId);
-                bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullname, location, company, website, linkedin, jobtitle, trackingId,CampaignId,Blueprint.TemplateId);
+                //string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, finalEmailBody, clientId,contactId, dataFileId, SegmentId, fullname, location, company, website, linkedin, jobtitle, trackingId,CampaignId,Blueprint.TemplateId);
+                //bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullname, location, company, website, linkedin, jobtitle, trackingId,CampaignId,Blueprint.TemplateId);
 
                 using var toMessage = new MailMessage
                 {
                     From = new MailAddress(fromEmailToUse,senderName),
                     Subject = subject,
-                    Body = bodyWithTracking,
+                    Body = finalEmailBody,   //Body = finalEmailBody- for non traking     Body = bodyWithTracking- for traking
+
                     IsBodyHtml = true
                 };
 
