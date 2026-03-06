@@ -49,6 +49,7 @@ namespace PitchGenApi.Database
         public DbSet<DomainEmailVerification> DomainEmailVerification { get; set; }
         public DbSet<Notes> Notes { get; set; }
         public DbSet<UploadedImage> UploadedImages { get; set; }
+        public DbSet<ContactAttachments> ContactAttachments { get; set; }
 
 
 

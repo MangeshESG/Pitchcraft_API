@@ -188,72 +188,97 @@ public class ContactRepository
 
     public async Task<ContactEmailTimelineDto?> GetEmailTimeline(int contactId)
     {
-        var rows = await (
-            from c in _context.contacts
-            join el in _context.EmailLogs
-                on c.id equals el.ContactId
-            join et in _context.EmailTrackingLogs
-                on el.TrackingId equals et.TrackingId into etg
-            from et in etg.DefaultIfEmpty()
-            where c.id == contactId
-                  && el.TrackingId != null
-                  && (et == null || et.EventType == "OPEN" || et.EventType == "CLICK")
-            select new
+        var contact = await _context.contacts
+            .AsNoTracking()
+            .Where(x => x.id == contactId)
+            .Select(x => new
             {
-                Contact = c,
-                EmailLog = el,
-                Tracking = et
-            }
-        ).ToListAsync();
+                x.id,
+                x.full_name,
+                x.email,
+                x.created_at
+            })
+            .FirstOrDefaultAsync();
 
-        if (!rows.Any())
+        if (contact == null)
             return null;
 
-        var response = new ContactEmailTimelineDto
-        {
-            ContactId = contactId,
-            FullName = rows.First().Contact.full_name,
-            Email = rows.First().Contact.email,
-            ContactCreatedAt = rows.First().Contact.created_at,
+        var emailLogs = await _context.EmailLogs
+            .AsNoTracking()
+            .Where(x => x.ContactId == contactId && x.TrackingId != null)
+            .ToListAsync();
 
-            Emails = rows
-                .GroupBy(x => new
-                {
-                    x.EmailLog.TrackingId,
-                    x.EmailLog.SentAt,
-                    x.EmailLog.SenderEmailId,
-                    x.EmailLog.Subject
-                })
-                .OrderBy(g => g.Key.SentAt)
-                .Select(g =>
-                {
-                    var log = g.First().EmailLog;
+        var trackingIds = emailLogs
+            .Select(x => x.TrackingId)
+            .Distinct()
+            .ToList();
 
-                    return new SentEmailDto
+        var trackingEvents = await _context.EmailTrackingLogs
+            .AsNoTracking()
+            .Where(x => trackingIds.Contains(x.TrackingId) &&
+                   (x.EventType == "OPEN" || x.EventType == "CLICK"))
+            .ToListAsync();
+
+        var notes = await _context.Notes
+            .AsNoTracking()
+            .Where(x => x.ContactId == contactId)
+            .OrderByDescending(x => x.CreatedAt)
+            .Select(x => new ContactNoteDto
+            {
+                Id = x.Id,
+                Note = x.Note,
+                CreatedAt = x.CreatedAt,
+                IsPin = x.IsPin
+            })
+            .ToListAsync();
+
+        var attachments = await _context.ContactAttachments
+            .AsNoTracking()
+            .Where(x => x.ContactId == contactId)
+            .OrderByDescending(x => x.CreatedDate)
+            .Select(x => new ContactAttachmentDto
+            {
+                Id = x.Id,
+                FileName = x.FileName,
+                FileUrl = x.FileUrl,
+                CreatedDate = x.CreatedDate
+            })
+            .ToListAsync();
+
+        var emails = emailLogs
+            .OrderBy(x => x.SentAt)
+            .Select(log => new SentEmailDto
+            {
+                TrackingId = log.TrackingId.ToString(),
+                SentAt = log.SentAt,
+                SenderEmailId = log.SenderEmailId,
+                Subject = log.Subject,
+                Body = log.Body,
+                Source = GetSourceName(log),
+
+                Events = trackingEvents
+                    .Where(e => e.TrackingId == log.TrackingId)
+                    .OrderBy(e => e.Timestamp)
+                    .Select(e => new EmailEventDto
                     {
-                        TrackingId = g.Key.TrackingId.ToString(),
-                        SentAt = g.Key.SentAt,
-                        SenderEmailId = g.Key.SenderEmailId,
-                        Subject = g.Key.Subject,
-                        Body = log.Body,
-                        Source = GetSourceName(log),
+                        EventType = e.EventType,
+                        EventAt = e.Timestamp,
+                        TargetUrl = e.TargetUrl
+                    })
+                    .ToList()
+            })
+            .ToList();
 
-                        Events = g
-                            .Where(x => x.Tracking != null)
-                            .OrderBy(x => x.Tracking.Timestamp)
-                            .Select(x => new EmailEventDto
-                            {
-                                EventType = x.Tracking.EventType,
-                                EventAt = x.Tracking.Timestamp,
-                                TargetUrl = x.Tracking.TargetUrl
-                            })
-                            .ToList()
-                    };
-                })
-                .ToList()
+        return new ContactEmailTimelineDto
+        {
+            ContactId = contact.id,
+            FullName = contact.full_name,
+            Email = contact.email,
+            ContactCreatedAt = contact.created_at,
+            Emails = emails,
+            Notes = notes,
+            Attachments = attachments
         };
-
-        return response;
     }
     public async Task<object> AddContactsToSegmentAsync(int clientId, int segmentId, List<int> contactIds)
     {
