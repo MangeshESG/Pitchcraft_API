@@ -19,5 +19,9 @@ namespace PitchGenApi.Repository
             await _context.SaveChangesAsync();
             return attachment;
         }
+        public async Task<ContactAttachments> GetById(int id)
+        {
+            return await _context.ContactAttachments.FindAsync(id);
+        }
     }
 }
