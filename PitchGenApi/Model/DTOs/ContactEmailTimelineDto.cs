@@ -8,6 +8,8 @@
         public DateTime ContactCreatedAt { get; set; }
 
         public List<SentEmailDto> Emails { get; set; }
+        public List<ContactNoteDto> Notes { get; set; }
+        public List<ContactAttachmentDto> Attachments { get; set; }
     }
 
     public class EmailEventDto
@@ -29,6 +31,20 @@
         public List<EmailEventDto> Events { get; set; }
     }
 
-   
+    public class ContactNoteDto
+    {
+        public int Id { get; set; }
+        public string Note { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public bool IsPin { get; set; }
+        public bool IsUseInGenration { get; set; }
+    }
 
+}
+public class ContactAttachmentDto
+{
+    public int Id { get; set; }
+    public string FileName { get; set; }
+    public string FileUrl { get; set; }
+    public DateTime CreatedDate { get; set; }
 }
