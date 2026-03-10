@@ -52,6 +52,8 @@ namespace PitchGenApi.Database
         public DbSet<ContactAttachments> ContactAttachments { get; set; }
         public DbSet<CrmCustomField> crm_custom_fields { get; set; }
         public DbSet<ContactCustomFieldValue> contact_custom_field_values { get; set; }
+    
+
 
 
 

@@ -305,7 +305,7 @@ namespace PitchGenApi.Controllers
 
         [HttpPost]
         [Route("update-contact")]
-        public async Task<IActionResult> UpdateContact([FromQuery]int id ,[FromBody] ContactDto model)
+        public async Task<IActionResult> UpdateContact([FromQuery] int id, [FromBody] ContactDto model)
         {
             try
             {
@@ -324,8 +324,6 @@ namespace PitchGenApi.Controllers
                 contact.website = model.website;
                 contact.linkedin_url = model.linkedInUrl;
                 contact.company_name = model.companyName;
-                contact.company_name = model.companyName;
-                contact.company_name = model.companyName;
                 contact.country_or_address = model.countryOrAddress;
                 contact.email_subject = model.emailSubject;
                 contact.email_body = model.emailBody;
@@ -338,6 +336,41 @@ namespace PitchGenApi.Controllers
 
                 await _context.SaveChangesAsync();
 
+                // ✅ ADD THIS BLOCK (custom fields update)
+                if (model.customFields != null)
+                {
+                    foreach (var field in model.customFields)
+                    {
+                        var fieldDef = await _context.crm_custom_fields
+                            .FirstOrDefaultAsync(f => f.field_name == field.Key);
+
+                        if (fieldDef == null)
+                            continue;
+
+                        var existingValue = await _context.contact_custom_field_values
+                            .FirstOrDefaultAsync(v =>
+                                v.contact_id == id &&
+                                v.field_id == fieldDef.id);
+
+                        if (existingValue != null)
+                        {
+                            existingValue.value = field.Value;
+                        }
+                        else
+                        {
+                            _context.contact_custom_field_values.Add(
+                                new ContactCustomFieldValue
+                                {
+                                    contact_id = id,
+                                    field_id = fieldDef.id,
+                                    value = field.Value
+                                });
+                        }
+                    }
+
+                    await _context.SaveChangesAsync();
+                }
+
                 return Ok(new { message = "Contact updated successfully" });
             }
             catch (Exception ex)
@@ -345,7 +378,6 @@ namespace PitchGenApi.Controllers
                 return BadRequest(new { error = ex.Message });
             }
         }
-
         [HttpPost]
         [Route("Update-linkedIninformation")]
         public async Task<IActionResult> UpdateNotes([FromQuery] int contactid, [FromBody] string linkedIninformation)
@@ -2035,23 +2067,61 @@ namespace PitchGenApi.Controllers
             try
             {
                 var contact = await _context.contacts
-                    .Where(c => c.id == contactId)
-                    .FirstOrDefaultAsync();
+                    .Include(c => c.data_file)
+                    .FirstOrDefaultAsync(c => c.id == contactId && c.data_file.client_id == clientId);
 
                 if (contact == null)
                 {
                     return NotFound(new { message = "Contact not found" });
                 }
 
-                return Ok(contact);
+                // Custom fields
+                var customFields = await (
+                    from value in _context.contact_custom_field_values
+                    join field in _context.crm_custom_fields
+                        on value.field_id equals field.id
+                    where value.contact_id == contactId
+                    select new
+                    {
+                        field.field_name,
+                        value.value
+                    }
+                ).ToDictionaryAsync(x => x.field_name, x => x.value);
+
+                // Return SAFE object (no circular reference)
+                var result = new
+                {
+                    contact.id,
+                    contact.full_name,
+                    contact.email,
+                    contact.website,
+                    contact.company_name,
+                    contact.job_title,
+                    contact.linkedin_url,
+                    contact.country_or_address,
+                    contact.email_subject,
+                    contact.email_body,
+                    contact.CompanyTelephone,
+                    contact.CompanyEmployeeCount,
+                    contact.CompanyIndustry,
+                    contact.CompanyLinkedInURL,
+                    contact.linkedIninformation,
+                    contact.created_at,
+                    contact.updated_at,
+                    customFields
+                };
+
+                return Ok(result);
             }
             catch (Exception ex)
             {
-                //_logger.LogError(ex, "Error fetching contact by ID");
-                return StatusCode(500, new { message = "Error fetching contact" });
+                return StatusCode(500, new
+                {
+                    message = "Error fetching contact",
+                    error = ex.Message
+                });
             }
         }
-
         //private async Task<string> BuildEmailThreadAsync(int clientId, int datafileid)
         //{
         //    var logs = await _context.EmailLogs
