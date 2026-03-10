@@ -27,6 +27,91 @@ namespace PitchGenApi.Controllers
 
         }
 
+        [HttpPost("custom-field")]
+        public async Task<IActionResult> CreateCustomField([FromBody] CreateCustomFieldDto dto)
+        {
+            var fieldCount = await _context.crm_custom_fields
+                .CountAsync(x => x.client_id == dto.ClientId);
+
+            if (fieldCount >= 10)
+                return BadRequest("Maximum 10 custom fields allowed.");
+
+            var field = new CrmCustomField
+            {
+                client_id = dto.ClientId,
+                field_name = dto.FieldName,
+                field_key = dto.FieldKey,
+                field_type = dto.FieldType,
+                options_json = dto.OptionsJson,
+                created_at = DateTime.UtcNow
+            };
+
+            _context.crm_custom_fields.Add(field);
+            await _context.SaveChangesAsync();
+
+            return Ok(field);
+        }
+
+        [HttpPost("save-custom-value")]
+        public async Task<IActionResult> SaveCustomValue([FromBody] SaveCustomFieldValueDto dto)
+        {
+            var existing = await _context.contact_custom_field_values
+                .FirstOrDefaultAsync(x =>
+                    x.contact_id == dto.ContactId &&
+                    x.field_id == dto.FieldId);
+
+            if (existing != null)
+            {
+                existing.value = dto.Value;
+            }
+            else
+            {
+                var value = new ContactCustomFieldValue
+                {
+                    client_id = dto.ClientId,
+                    contact_id = dto.ContactId,
+                    field_id = dto.FieldId,
+                    value = dto.Value,
+                    created_at = DateTime.UtcNow
+                };
+
+                _context.contact_custom_field_values.Add(value);
+            }
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Saved successfully");
+        }
+
+        [HttpGet("contact-custom-values")]
+        public async Task<IActionResult> GetContactCustomValues(int contactId)
+        {
+            var values = await (
+                from v in _context.contact_custom_field_values
+                join f in _context.crm_custom_fields
+                    on v.field_id equals f.id
+                where v.contact_id == contactId
+                select new
+                {
+                    f.field_name,
+                    f.field_type,
+                    v.value
+                }).ToListAsync();
+
+            return Ok(values);
+        }
+
+
+        [HttpGet("custom-fields")]
+        public async Task<IActionResult> GetCustomFields(int clientId)
+        {
+            var fields = await _context.crm_custom_fields
+                .Where(x => x.client_id == clientId)
+                .ToListAsync();
+
+            return Ok(fields);
+        }
+
         [HttpPost("uploadcontacts")]
         public async Task<IActionResult> UploadContacts([FromBody] DataFileWithContactsDto request)
         {

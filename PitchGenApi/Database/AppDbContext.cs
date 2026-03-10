@@ -49,6 +49,8 @@ namespace PitchGenApi.Database
         public DbSet<DomainEmailVerification> DomainEmailVerification { get; set; }
         public DbSet<Notes> Notes { get; set; }
         public DbSet<UploadedImage> UploadedImages { get; set; }
+        public DbSet<CrmCustomField> crm_custom_fields { get; set; }
+        public DbSet<ContactCustomFieldValue> contact_custom_field_values { get; set; }
 
 
 
