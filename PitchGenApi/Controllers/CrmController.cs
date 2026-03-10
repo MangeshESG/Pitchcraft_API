@@ -119,6 +119,7 @@ namespace PitchGenApi.Controllers
 
             try
             {
+                // Create DataFile
                 var dataFile = new DataFile
                 {
                     client_id = request.clientId,
@@ -131,6 +132,7 @@ namespace PitchGenApi.Controllers
                 _context.data_files.Add(dataFile);
                 await _context.SaveChangesAsync();
 
+                // Create Contacts
                 var contacts = request.contacts.Select(c => new Contact
                 {
                     DataFileId = dataFile.id,
@@ -147,7 +149,6 @@ namespace PitchGenApi.Controllers
                     CompanyEmployeeCount = c.CompanyEmployeeCount,
                     CompanyIndustry = c.CompanyIndustry,
                     CompanyLinkedInURL = c.CompanyLinkedInURL,
-                    //CompanyEventLink = c.CompanyEventLink,
                     linkedIninformation = c.linkedIninformation,
                     created_at = DateTime.UtcNow,
                     updated_at = null
@@ -155,6 +156,60 @@ namespace PitchGenApi.Controllers
 
                 _context.contacts.AddRange(contacts);
                 await _context.SaveChangesAsync();
+
+                // Load Custom Fields (Case insensitive dictionary)
+                var customFieldMap = await _context.crm_custom_fields
+                    .Where(f => f.client_id == request.clientId)
+                    .ToDictionaryAsync(
+                        f => f.field_name.ToLower(),
+                        f => f.id
+                    );
+
+                var customValues = new List<ContactCustomFieldValue>();
+
+                for (int i = 0; i < contacts.Count; i++)
+                {
+                    var contact = contacts[i];
+                    var dto = request.contacts[i];
+
+                    if (dto.customFields == null || dto.customFields.Count == 0)
+                        continue;
+
+                    var processedFields = new HashSet<string>();
+
+                    foreach (var field in dto.customFields)
+                    {
+                        var key = field.Key.ToLower();
+
+                        // Prevent duplicate fields
+                        if (processedFields.Contains(key))
+                            continue;
+
+                        processedFields.Add(key);
+
+                        if (string.IsNullOrWhiteSpace(field.Value))
+                            continue;
+
+                        if (!customFieldMap.TryGetValue(key, out var fieldId))
+                            continue;
+
+                        customValues.Add(new ContactCustomFieldValue
+                        {
+                            client_id = request.clientId,
+                            contact_id = contact.id,
+                            field_id = fieldId,
+                            value = field.Value,
+                            created_at = DateTime.UtcNow
+                        });
+                    }
+                }
+
+                if (customValues.Any())
+                {
+                    _context.contact_custom_field_values.AddRange(customValues);
+                    await _context.SaveChangesAsync();
+                }
+
                 await transaction.CommitAsync();
 
                 return Ok(new
@@ -168,6 +223,7 @@ namespace PitchGenApi.Controllers
             catch (Exception ex)
             {
                 await transaction.RollbackAsync();
+
                 return BadRequest(new
                 {
                     success = false,
@@ -176,6 +232,9 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
+
+
+
         [HttpPost("add-single-contact")]
         public async Task<IActionResult> AddSingleContact([FromQuery] int DataFileId, ContactDto request)
         {
@@ -340,7 +399,6 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                // Step 1: Check if data_file exists
                 var dataFile = await _context.data_files
                     .FirstOrDefaultAsync(df => df.id == dataFileId && df.client_id == clientId);
 
@@ -349,16 +407,24 @@ namespace PitchGenApi.Controllers
                     return NotFound("Data file not found for the given client.");
                 }
 
-                // Step 2: Delete related contacts in bulk (fast)
-                // Changed DataFileId to data_file_id (or whatever your actual column name is)
-                int deletedContacts = await _context.Database.ExecuteSqlInterpolatedAsync(
-                    $"DELETE FROM contacts WHERE data_file_id = {dataFileId}");
+                // 1️⃣ Delete custom field values first
+                await _context.Database.ExecuteSqlInterpolatedAsync($@"
+            DELETE ccfv
+            FROM contact_custom_field_values ccfv
+            INNER JOIN contacts c ON c.id = ccfv.contact_id
+            WHERE c.data_file_id = {dataFileId}
+        ");
 
-                // Step 3: Delete the data file
+                // 2️⃣ Delete contacts
+                int deletedContacts = await _context.Database.ExecuteSqlInterpolatedAsync($@"
+            DELETE FROM contacts
+            WHERE data_file_id = {dataFileId}
+        ");
+
+                // 3️⃣ Delete data file
                 _context.data_files.Remove(dataFile);
                 await _context.SaveChangesAsync();
 
-                // Step 4: Return result
                 return Ok(new
                 {
                     Message = $"Deleted {deletedContacts} contacts and data file ID {dataFileId} successfully."
@@ -366,10 +432,13 @@ namespace PitchGenApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { Message = "Internal server error", Error = ex.Message });
+                return StatusCode(500, new
+                {
+                    Message = "Internal server error",
+                    Error = ex.Message
+                });
             }
         }
-
 
         [HttpGet("contacts/by-client-datafile")]
         public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId, [FromQuery] bool isFollowUp)
@@ -473,7 +542,9 @@ namespace PitchGenApi.Controllers
                     .Select(u => u.Email)
                     .ToListAsync();
 
-                // 1️⃣ Step 1: Load contacts from SQL (simple projection)
+                var unsubscribedSet = new HashSet<string>(unsubscribedEmails);
+
+                // 1️⃣ Load contacts
                 var contactsRaw = await _context.contacts
                     .Where(c => c.DataFileId == dataFileId)
                     .OrderBy(c => c.id)
@@ -496,12 +567,27 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        //c.CompanyEventLink,
                         c.linkedIninformation
                     })
                     .ToListAsync();
 
-                // 2️⃣ Step 2: Add unsubscribe flag in C#
+                var contactIds = contactsRaw.Select(c => c.id).ToList();
+
+                // 2️⃣ Load custom field values
+                var customValues = await (
+                    from v in _context.contact_custom_field_values
+                    join f in _context.crm_custom_fields
+                        on v.field_id equals f.id
+                    where contactIds.Contains(v.contact_id)
+                    select new
+                    {
+                        v.contact_id,
+                        f.field_name,
+                        v.value
+                    }
+                ).ToListAsync();
+
+                // 3️⃣ Attach custom fields to contacts
                 var contacts = contactsRaw
                     .Select(c => new
                     {
@@ -522,10 +608,13 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        //c.CompanyEventLink,
                         c.linkedIninformation,
 
-                        unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
+                        unsubscribe = unsubscribedSet.Contains(c.email) ? "Yes" : "No",
+
+                        customFields = customValues
+                            .Where(v => v.contact_id == c.id)
+                            .ToDictionary(v => v.field_name, v => v.value)
                     })
                     .ToList();
 
@@ -546,7 +635,6 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
-
 
         [HttpPost("update-datafile")]
         public async Task<IActionResult> UpdateDataFileById([FromQuery] int id, [FromQuery] string name, [FromQuery] string description, [FromQuery] string dataFileName)
