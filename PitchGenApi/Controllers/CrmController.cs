@@ -112,6 +112,43 @@ namespace PitchGenApi.Controllers
             return Ok(fields);
         }
 
+
+        [HttpPut("custom-field-rename/{id}")]
+        public async Task<IActionResult> UpdateCustomField(int id, [FromBody] CreateCustomFieldDto dto)
+        {
+            var field = await _context.crm_custom_fields.FindAsync(id);
+
+            if (field == null)
+                return NotFound("Field not found");
+
+            field.field_name = dto.FieldName;
+            field.field_type = dto.FieldType;
+            field.options_json = dto.OptionsJson;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(field);
+        }
+
+        [HttpPost("custom-field-delete/{id}")]
+        public async Task<IActionResult> DeleteCustomField(int id)
+        {
+            var field = await _context.crm_custom_fields.FindAsync(id);
+
+            if (field == null)
+                return NotFound();
+
+            var values = _context.contact_custom_field_values
+                .Where(v => v.field_id == id);
+
+            _context.contact_custom_field_values.RemoveRange(values);
+            _context.crm_custom_fields.Remove(field);
+
+            await _context.SaveChangesAsync();
+
+            return Ok("Field deleted");
+        }
+
         [HttpPost("uploadcontacts")]
         public async Task<IActionResult> UploadContacts([FromBody] DataFileWithContactsDto request)
         {
@@ -317,7 +354,7 @@ namespace PitchGenApi.Controllers
                     return NotFound(new { message = "Contact not found" });
                 }
 
-                // Update fields
+                // Update base fields
                 contact.full_name = model.fullName;
                 contact.email = model.email;
                 contact.job_title = model.jobTitle;
@@ -336,34 +373,48 @@ namespace PitchGenApi.Controllers
 
                 await _context.SaveChangesAsync();
 
-                // ✅ ADD THIS BLOCK (custom fields update)
-                if (model.customFields != null)
+                // ===============================
+                // CUSTOM FIELD SAVE / UPDATE
+                // ===============================
+
+                if (model.customFields != null && model.customFields.Any())
                 {
+                    // Load all custom field definitions for this client
+                    var fieldDefs = await _context.crm_custom_fields
+                        .Where(f => f.client_id == model.clientId)
+                        .ToDictionaryAsync(f => f.field_name, f => f);
+
+                    // Load existing values for this contact
+                    var existingValues = await _context.contact_custom_field_values
+                        .Where(v => v.contact_id == id)
+                        .ToListAsync();
+
                     foreach (var field in model.customFields)
                     {
-                        var fieldDef = await _context.crm_custom_fields
-                            .FirstOrDefaultAsync(f => f.field_name == field.Key);
-
-                        if (fieldDef == null)
+                        if (!fieldDefs.TryGetValue(field.Key, out var fieldDef))
                             continue;
 
-                        var existingValue = await _context.contact_custom_field_values
-                            .FirstOrDefaultAsync(v =>
-                                v.contact_id == id &&
-                                v.field_id == fieldDef.id);
+                        var value = field.Value?.ToString();
 
-                        if (existingValue != null)
+                        var existing = existingValues
+                            .FirstOrDefault(v => v.field_id == fieldDef.id);
+
+                        if (existing != null)
                         {
-                            existingValue.value = field.Value;
+                            // UPDATE existing value
+                            existing.value = value;
                         }
                         else
                         {
+                            // CREATE new value
                             _context.contact_custom_field_values.Add(
                                 new ContactCustomFieldValue
                                 {
                                     contact_id = id,
+                                    client_id = model.clientId,
                                     field_id = fieldDef.id,
-                                    value = field.Value
+                                    value = value,
+                                    created_at = DateTime.UtcNow
                                 });
                         }
                     }
@@ -378,6 +429,7 @@ namespace PitchGenApi.Controllers
                 return BadRequest(new { error = ex.Message });
             }
         }
+
         [HttpPost]
         [Route("Update-linkedIninformation")]
         public async Task<IActionResult> UpdateNotes([FromQuery] int contactid, [FromBody] string linkedIninformation)

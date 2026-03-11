@@ -17,6 +17,7 @@
         public string? CompanyLinkedInURL { get; set; }
         //public string? CompanyEventLink { get; set; }
         public string? linkedIninformation { get; set; }
+        public int clientId { get; set; }
         public Dictionary<string, string>? customFields { get; set; }
     }
 }
