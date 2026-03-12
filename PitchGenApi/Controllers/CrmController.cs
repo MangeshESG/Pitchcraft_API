@@ -121,6 +121,35 @@ namespace PitchGenApi.Controllers
             if (field == null)
                 return NotFound("Field not found");
 
+            // Only check dropdown options
+            if (field.field_type == "dropdown" && !string.IsNullOrEmpty(field.options_json))
+            {
+                var oldOptions = System.Text.Json.JsonSerializer.Deserialize<List<string>>(field.options_json) ?? new List<string>();
+                var newOptions = System.Text.Json.JsonSerializer.Deserialize<List<string>>(dto.OptionsJson ?? "[]") ?? new List<string>();
+
+                // Find removed options
+                var removedOptions = oldOptions.Except(newOptions).ToList();
+
+                if (removedOptions.Any())
+                {
+                    // Check if removed options are used in contacts
+                    var usedOptions = await _context.contact_custom_field_values
+                        .Where(v => v.field_id == id && removedOptions.Contains(v.value))
+                        .Select(v => v.value)
+                        .Distinct()
+                        .ToListAsync();
+
+                    if (usedOptions.Any())
+                    {
+                        return BadRequest(new
+                        {
+                            message = "Cannot delete option because it is used in contacts",
+                            usedOptions = usedOptions
+                        });
+                    }
+                }
+            }
+
             field.field_name = dto.FieldName;
             field.field_type = dto.FieldType;
             field.options_json = dto.OptionsJson;
