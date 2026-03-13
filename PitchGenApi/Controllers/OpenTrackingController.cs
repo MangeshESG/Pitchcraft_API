@@ -16,14 +16,129 @@ public class OpenTrackingController : ControllerBase
         _context = context;
     }
 
+    //[HttpGet("open")]
+    //public async Task<IActionResult> TrackOpen([FromQuery] EmailOpenTrackDto dto)
+    //{
+    //    // --- Helper Functions ---
+    //    string DecodeB64(string encoded, out bool success)
+    //    {
+    //        success = false;
+    //        if (string.IsNullOrWhiteSpace(encoded)) return "";
+    //        try
+    //        {
+    //            byte[] bytes = Convert.FromBase64String(encoded);
+    //            success = true;
+    //            return Encoding.UTF8.GetString(bytes);
+    //        }
+    //        catch
+    //        {
+    //            return encoded; // fallback if not Base64
+    //        }
+    //    }
+
+    //    int DecodeInt(string encoded, out bool success)
+    //    {
+    //        var decoded = DecodeB64(encoded, out success);
+    //        return int.TryParse(decoded, out var val) ? val : 0;
+    //    }
+
+    //    Guid DecodeGuid(string encoded, out bool success)
+    //    {
+    //        var decoded = DecodeB64(encoded, out success);
+    //        return Guid.TryParse(decoded, out var val) ? val : Guid.Empty;
+    //    }
+
+    //    // Decode all fields with Base64 check
+    //    bool emailOk, clientOk, segmentOk, dataFileOk, contactOk, trackingOk, BlueprintOk;
+    //    bool fullNameOk, locationOk, companyOk, jobTitleOk, linkedinOk, websiteOk, CampaignOk;
+
+    //    var email = DecodeB64(dto.Email, out emailOk);
+    //    var clientId = DecodeInt(dto.ClientId, out clientOk);
+    //    var segmentId = DecodeInt(dto.SegmentId, out segmentOk);
+    //    var dataFileId = DecodeInt(dto.DataFileId, out dataFileOk);
+    //    var contactId = DecodeInt(dto.contactId, out contactOk);
+        
+    //    var trackingId = DecodeGuid(dto.TrackingId, out trackingOk);
+
+    //    var fullName = DecodeB64(dto.FullName, out fullNameOk);
+    //    var location = DecodeB64(dto.Location, out locationOk);
+    //    var company = DecodeB64(dto.Company, out companyOk);
+    //    var jobTitle = DecodeB64(dto.JobTitle, out jobTitleOk);
+    //    var linkedin = DecodeB64(dto.linkedin_URL, out linkedinOk);
+    //    var website = DecodeB64(dto.website, out websiteOk);
+    //    var BlueprintId = DecodeInt(dto.BlueprintId, out BlueprintOk);
+    //    var CampaignId = DecodeInt(dto.CampaignId, out CampaignOk);
+    //    // If any field failed Base64 decoding → return pixel directly
+    //    if (!emailOk || !clientOk || !segmentOk || !dataFileOk || !contactOk || !trackingOk ||
+    //        !fullNameOk || !locationOk || !companyOk || !jobTitleOk || !linkedinOk || !websiteOk || !CampaignOk || !BlueprintOk)
+    //    {
+    //        byte[] pixelBytesFallback = Convert.FromBase64String(
+    //            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
+    //        return File(pixelBytesFallback, "image/png");
+    //    }
+
+    //    // Bot detection
+    //    var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
+    //    var suspiciousAgents = new[] {"thunderbird", "bot", "crawler", "preview", "scanner", "monitor" };
+    //    if (suspiciousAgents.Any(agent => userAgent.Contains(agent)))
+    //    {
+    //        byte[] botPixelBytes = Convert.FromBase64String(
+    //            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
+    //        return File(botPixelBytes, "image/png");
+    //    }
+
+    //    // Prevent duplicate logs
+    //    var alreadyExists = await _context.EmailTrackingLogs
+    //        .AnyAsync(x => x.TrackingId == trackingId && x.EventType == "Open");
+
+    //    if (!alreadyExists)
+    //    {
+    //        _context.EmailTrackingLogs.Add(new EmailTrackingLog
+    //        {
+    //            TrackingId = trackingId,
+    //            Email = email,
+    //            ContactId = contactId,
+    //            EventType = "Open",
+    //            Timestamp = DateTime.UtcNow,
+    //            ClientId = clientId,
+    //            DataFileId = dataFileId,
+    //            SegmentId = segmentId,
+    //            CampaignId = CampaignId,
+    //            BlueprintId = BlueprintId,
+    //            Full_Name = fullName,
+    //            Location = location,
+    //            Company = company,
+    //            JobTitle = jobTitle,
+    //            linkedin_URL = linkedin,
+    //            website = website,
+    //            ZohoViewName = "from pitch craft",
+    //            UserAgent = userAgent,
+    //            IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+    //            IsBot = false
+    //        });
+
+    //        await _context.SaveChangesAsync();
+    //    }
+
+    //    // Return 1px transparent PNG
+    //    byte[] pixelBytes = Convert.FromBase64String(
+    //        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
+    //    return File(pixelBytes, "image/png");
+    //}
+
     [HttpGet("open")]
     public async Task<IActionResult> TrackOpen([FromQuery] EmailOpenTrackDto dto)
     {
-        // --- Helper Functions ---
+        // -------- 1px pixel --------
+        byte[] pixelBytes = Convert.FromBase64String(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
+
+        // -------- Helper Functions --------
         string DecodeB64(string encoded, out bool success)
         {
             success = false;
             if (string.IsNullOrWhiteSpace(encoded)) return "";
+
             try
             {
                 byte[] bytes = Convert.FromBase64String(encoded);
@@ -32,14 +147,8 @@ public class OpenTrackingController : ControllerBase
             }
             catch
             {
-                return encoded; // fallback if not Base64
+                return encoded;
             }
-        }
-
-        int DecodeInt(string encoded, out bool success)
-        {
-            var decoded = DecodeB64(encoded, out success);
-            return int.TryParse(decoded, out var val) ? val : 0;
         }
 
         Guid DecodeGuid(string encoded, out bool success)
@@ -48,92 +157,276 @@ public class OpenTrackingController : ControllerBase
             return Guid.TryParse(decoded, out var val) ? val : Guid.Empty;
         }
 
-        // Decode all fields with Base64 check
-        bool emailOk, clientOk, segmentOk, dataFileOk, contactOk, trackingOk, BlueprintOk;
-        bool fullNameOk, locationOk, companyOk, jobTitleOk, linkedinOk, websiteOk, CampaignOk;
+        // -------- Decode Fields --------
+        bool trackingOk;
 
-        var email = DecodeB64(dto.Email, out emailOk);
-        var clientId = DecodeInt(dto.ClientId, out clientOk);
-        var segmentId = DecodeInt(dto.SegmentId, out segmentOk);
-        var dataFileId = DecodeInt(dto.DataFileId, out dataFileOk);
-        var contactId = DecodeInt(dto.contactId, out contactOk);
-        
         var trackingId = DecodeGuid(dto.TrackingId, out trackingOk);
-
-        var fullName = DecodeB64(dto.FullName, out fullNameOk);
-        var location = DecodeB64(dto.Location, out locationOk);
-        var company = DecodeB64(dto.Company, out companyOk);
-        var jobTitle = DecodeB64(dto.JobTitle, out jobTitleOk);
-        var linkedin = DecodeB64(dto.linkedin_URL, out linkedinOk);
-        var website = DecodeB64(dto.website, out websiteOk);
-        var BlueprintId = DecodeInt(dto.BlueprintId, out BlueprintOk);
-        var CampaignId = DecodeInt(dto.CampaignId, out CampaignOk);
-        // If any field failed Base64 decoding → return pixel directly
-        if (!emailOk || !clientOk || !segmentOk || !dataFileOk || !contactOk || !trackingOk ||
-            !fullNameOk || !locationOk || !companyOk || !jobTitleOk || !linkedinOk || !websiteOk || !CampaignOk || !BlueprintOk)
+        if ( !trackingOk)
         {
-            byte[] pixelBytesFallback = Convert.FromBase64String(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
-            return File(pixelBytesFallback, "image/png");
+            return File(pixelBytes, "image/png");
         }
 
-        // Bot detection
+        // -------- Bot Detection --------
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
-        var suspiciousAgents = new[] {"thunderbird", "bot", "crawler", "preview", "scanner", "monitor" };
-        if (suspiciousAgents.Any(agent => userAgent.Contains(agent)))
-        {
-            byte[] botPixelBytes = Convert.FromBase64String(
-                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
-            return File(botPixelBytes, "image/png");
-        }
 
-        // Prevent duplicate logs
+        var suspiciousAgents = new[]
+        {
+        "bot","crawler","preview","scanner","monitor",
+        "proofpoint","barracuda","mimecast"
+    };
+
+        bool noLang = string.IsNullOrEmpty(Request.Headers["Accept-Language"].ToString());
+
+        // Apple Mail Privacy Protection detection
+        bool isAppleMPP =
+            userAgent.Contains("applewebkit") &&
+            userAgent.Contains("mozilla") &&
+            noLang;
+
+        bool isKnownBot = suspiciousAgents.Any(agent => userAgent.Contains(agent));
+
+        bool isBot = isAppleMPP || isKnownBot;
+
+        // -------- Prevent duplicate open --------
         var alreadyExists = await _context.EmailTrackingLogs
             .AnyAsync(x => x.TrackingId == trackingId && x.EventType == "Open");
+
+        var emaillog = await _context.EmailLogs.FirstOrDefaultAsync(x => x.TrackingId == trackingId);
+
+        var contact = await _context.contacts.FindAsync(emaillog.ContactId);
 
         if (!alreadyExists)
         {
             _context.EmailTrackingLogs.Add(new EmailTrackingLog
             {
                 TrackingId = trackingId,
-                Email = email,
-                ContactId = contactId,
+                Email = emaillog.ToEmail,
+                ContactId = emaillog.ContactId,
                 EventType = "Open",
                 Timestamp = DateTime.UtcNow,
-                ClientId = clientId,
-                DataFileId = dataFileId,
-                SegmentId = segmentId,
-                CampaignId = CampaignId,
-                BlueprintId = BlueprintId,
-                Full_Name = fullName,
-                Location = location,
-                Company = company,
-                JobTitle = jobTitle,
-                linkedin_URL = linkedin,
-                website = website,
+                ClientId = emaillog.ClientId,
+                DataFileId = emaillog.DataFileId,
+                SegmentId = emaillog.SegmentId,
+                CampaignId = emaillog.CampaignId,
+                BlueprintId = emaillog.BlueprintId,
+                Full_Name = emaillog.EmailRecipientName,
+                Location = contact.country_or_address,
+                Company = contact.company_name,
+                JobTitle = contact.job_title,
+                linkedin_URL = contact.linkedin_url,
+                website = contact.website,
                 ZohoViewName = "from pitch craft",
                 UserAgent = userAgent,
                 IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
-                IsBot = false
+                IsBot = isBot
             });
 
             await _context.SaveChangesAsync();
         }
 
-        // Return 1px transparent PNG
-        byte[] pixelBytes = Convert.FromBase64String(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=");
+        // -------- Return pixel --------
         return File(pixelBytes, "image/png");
     }
 
+    //[HttpGet("click")]
+    //public async Task<IActionResult> TrackClick([FromQuery] EmailOpenTrackDto dto)
+    //{
+    //    // ============================================
+    //    // Helper: Decode Base64 → string
+    //    // ============================================
+    //    string DecodeB64(string input, out bool ok)
+    //    {
+    //        ok = false;
+    //        if (string.IsNullOrWhiteSpace(input)) return null;
 
+    //        try
+    //        {
+    //            byte[] bytes = Convert.FromBase64String(input);
+    //            ok = true;
+    //            return Encoding.UTF8.GetString(bytes);
+    //        }
+    //        catch
+    //        {
+    //            return null; // invalid base64
+    //        }
+    //    }
+
+    //    // ============================================
+    //    // Helper: Decode Base64 → int
+    //    // ============================================
+    //    int DecodeInt(string input, out bool ok)
+    //    {
+    //        ok = false;
+    //        var decoded = DecodeB64(input, out var baseOk);
+    //        if (!baseOk) return 0;
+
+    //        ok = int.TryParse(decoded, out var val);
+    //        return val;
+    //    }
+
+    //    // ============================================
+    //    // Helper: Decode Base64 → Guid
+    //    // ============================================
+    //    Guid DecodeGuid(string input, out bool ok)
+    //    {
+    //        ok = false;
+    //        var decoded = DecodeB64(input, out var baseOk);
+    //        if (!baseOk) return Guid.Empty;
+
+    //        ok = Guid.TryParse(decoded, out var val);
+    //        return val;
+    //    }
+
+    //    // ============================================
+    //    // Decode required base64 fields
+    //    // ============================================
+    //    var email = DecodeB64(dto.Email, out var emailOk);
+    //    var url = DecodeB64(dto.Url, out var urlOk);
+
+    //    var clientId = DecodeInt(dto.ClientId, out var clientOk);
+    //    var contactId = DecodeInt(dto.contactId, out var contactOk);
+    //    var segmentId = DecodeInt(dto.SegmentId, out var segmentOk);
+    //    var dataFileId = DecodeInt(dto.DataFileId, out var dfOk);
+
+    //    var trackingId = DecodeGuid(dto.TrackingId, out var trackingOk);
+
+    //    var fullName = DecodeB64(dto.FullName, out var fullNameOk);
+    //    var location = DecodeB64(dto.Location, out var locationOk);
+    //    var company = DecodeB64(dto.Company, out var companyOk);
+    //    var jobTitle = DecodeB64(dto.JobTitle, out var jobTitleOk);
+    //    var linkedin = DecodeB64(dto.linkedin_URL, out var linkedinOk);
+    //    var website = DecodeB64(dto.website, out var websiteOk);
+    //    var BlueprintId = DecodeInt(dto.BlueprintId, out var BlueprintOk);
+    //    var CampaignId = DecodeInt(dto.CampaignId, out var CampaignOk);
+    //    // If any field failed Base64 decoding → return pixel directly
+    //    if (!emailOk || !clientOk || !segmentOk || !dfOk || !contactOk || !trackingOk ||
+    //        !fullNameOk || !locationOk || !companyOk || !jobTitleOk || !linkedinOk || !websiteOk || !CampaignOk || !BlueprintOk)
+    //    {
+    //        return Redirect(url); // fallback
+    //    }
+
+    //    // ============================================
+    //    // Basic required validation
+    //    // ============================================
+    //    if (string.IsNullOrWhiteSpace(email) ||
+    //        string.IsNullOrWhiteSpace(url) ||
+    //        trackingId == Guid.Empty ||
+    //        clientId == 0 ||
+    //        (segmentId == 0 && dataFileId == 0))
+    //    {
+    //        return Redirect(url);
+    //    }
+
+    //    // ============================================
+    //    // Browser Detection
+    //    // ============================================
+    //    var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
+    //    string browser = GetBrowserName(userAgent);
+
+    //    var suspiciousAgents = new[]
+    //    {
+    //    "curl","bot","preview","spider","crawler",
+    //    "scraper","headless","phantom","selenium","puppeteer",
+    //    "wget","fetch","scanner","monitor","python","java","ruby","perl"
+    //};
+
+    //    bool isTrustedBrowser = userAgent.Contains("chrome") ||
+    //                            userAgent.Contains("firefox") ||
+    //                            userAgent.Contains("safari") ||
+    //                            userAgent.Contains("edge");
+
+    //    bool suspicious = suspiciousAgents.Any(a => userAgent.Contains(a));
+    //    bool isAutomatedPattern = userAgent.Length < 30 ||
+    //                              userAgent.Contains("http://") ||
+    //                              userAgent.Contains("https://");
+
+    //    bool noLang = string.IsNullOrEmpty(Request.Headers["Accept-Language"].ToString());
+
+    //    if ((suspicious && !isTrustedBrowser) || noLang || isAutomatedPattern)
+    //    {
+    //        return Redirect(url);
+    //    }
+
+    //    // ============================================
+    //    // Check EmailLog for timing validation
+    //    // ============================================
+    //    var sentEmail = await _context.EmailLogs.FirstOrDefaultAsync(x => x.TrackingId == trackingId);
+    //    if (sentEmail == null) return Redirect(url);
+
+    //    if (sentEmail.SentAt.HasValue)
+    //    {
+    //        var seconds = (DateTime.UtcNow - sentEmail.SentAt.Value).TotalSeconds;
+    //        if (seconds < 5) return Redirect(url); // too fast → bot
+    //    }
+
+    //    // ============================================
+    //    // Email + File/Segment match
+    //    // ============================================
+    //    bool emailMatch = string.Equals(sentEmail.ToEmail?.Trim(), email.Trim(),
+    //                                  StringComparison.OrdinalIgnoreCase);
+    //    bool fileMatch = sentEmail.DataFileId == dataFileId;
+    //    bool segMatch = sentEmail.SegmentId == segmentId;
+
+    //    if (!(emailMatch && (fileMatch || segMatch))) return Redirect(url);
+
+    //    // ============================================
+    //    // Prevent duplicate tracking logs
+    //    // ============================================
+    //    bool alreadyClicked = await _context.EmailTrackingLogs.AnyAsync(x =>
+    //        x.TrackingId == trackingId &&
+    //        x.TargetUrl == url &&
+    //        x.EventType == "Click" &&
+    //        x.IsBot == false
+    //    );
+    //    bool hasOpenLog = await _context.EmailTrackingLogs.AnyAsync(x =>
+    //        x.TrackingId == trackingId &&
+    //        x.EventType == "Open" &&
+    //        x.IsBot == false
+    //    );
+
+    //    if (!hasOpenLog)
+    //    {
+    //        // ❌ Open nahi hua → click track nahi karna
+    //        return Redirect(url);
+    //    }
+    //    if (!alreadyClicked)
+    //    {
+    //        _context.EmailTrackingLogs.Add(new EmailTrackingLog
+    //        {
+    //            TrackingId = trackingId,
+    //            ContactId = contactId,
+    //            EventType = "Click",
+    //            TargetUrl = url,
+    //            ClientId = clientId,
+    //            SegmentId = segmentId,
+    //            DataFileId = dataFileId,
+    //            CampaignId = CampaignId,
+    //            BlueprintId = BlueprintId,
+    //            Email = email,
+    //            Full_Name = fullName,
+    //            Location = location,
+    //            Company = company,
+    //            JobTitle = jobTitle,
+    //            linkedin_URL = linkedin,
+    //            website = website,
+    //            UserAgent = userAgent,
+    //            Browser = browser,
+    //            IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
+    //            Timestamp = DateTime.UtcNow,
+    //            ZohoViewName = "from pitch craft",
+    //            IsBot = false
+    //        });
+
+    //        await _context.SaveChangesAsync();
+    //    }
+
+    //    return Redirect(url);
+    //}
 
     [HttpGet("click")]
-    public async Task<IActionResult> TrackClick([FromQuery] EmailOpenTrackDto dto)
+    public async Task<IActionResult> TrackClick([FromQuery] string TrackingId, [FromQuery] string Url)
     {
-        // ============================================
-        // Helper: Decode Base64 → string
-        // ============================================
+        // -------- Helper: Decode Base64 → string --------
         string DecodeB64(string input, out bool ok)
         {
             ok = false;
@@ -147,13 +440,11 @@ public class OpenTrackingController : ControllerBase
             }
             catch
             {
-                return null; // invalid base64
+                return null;
             }
         }
 
-        // ============================================
-        // Helper: Decode Base64 → int
-        // ============================================
+        // -------- Helper: Decode Base64 → int --------
         int DecodeInt(string input, out bool ok)
         {
             ok = false;
@@ -164,9 +455,7 @@ public class OpenTrackingController : ControllerBase
             return val;
         }
 
-        // ============================================
-        // Helper: Decode Base64 → Guid
-        // ============================================
+        // -------- Helper: Decode Base64 → Guid --------
         Guid DecodeGuid(string input, out bool ok)
         {
             ok = false;
@@ -177,49 +466,27 @@ public class OpenTrackingController : ControllerBase
             return val;
         }
 
-        // ============================================
-        // Decode required base64 fields
-        // ============================================
-        var email = DecodeB64(dto.Email, out var emailOk);
-        var url = DecodeB64(dto.Url, out var urlOk);
+        // -------- Decode fields --------
+        var url = DecodeB64(Url, out var urlOk);
+        var trackingId = DecodeGuid(TrackingId, out var trackingOk);
 
-        var clientId = DecodeInt(dto.ClientId, out var clientOk);
-        var contactId = DecodeInt(dto.contactId, out var contactOk);
-        var segmentId = DecodeInt(dto.SegmentId, out var segmentOk);
-        var dataFileId = DecodeInt(dto.DataFileId, out var dfOk);
-
-        var trackingId = DecodeGuid(dto.TrackingId, out var trackingOk);
-
-        var fullName = DecodeB64(dto.FullName, out var fullNameOk);
-        var location = DecodeB64(dto.Location, out var locationOk);
-        var company = DecodeB64(dto.Company, out var companyOk);
-        var jobTitle = DecodeB64(dto.JobTitle, out var jobTitleOk);
-        var linkedin = DecodeB64(dto.linkedin_URL, out var linkedinOk);
-        var website = DecodeB64(dto.website, out var websiteOk);
-        var BlueprintId = DecodeInt(dto.BlueprintId, out var BlueprintOk);
-        var CampaignId = DecodeInt(dto.CampaignId, out var CampaignOk);
-        // If any field failed Base64 decoding → return pixel directly
-        if (!emailOk || !clientOk || !segmentOk || !dfOk || !contactOk || !trackingOk ||
-            !fullNameOk || !locationOk || !companyOk || !jobTitleOk || !linkedinOk || !websiteOk || !CampaignOk || !BlueprintOk)
-        {
-            return Redirect(url); // fallback
-        }
-
-        // ============================================
-        // Basic required validation
-        // ============================================
-        if (string.IsNullOrWhiteSpace(email) ||
-            string.IsNullOrWhiteSpace(url) ||
-            trackingId == Guid.Empty ||
-            clientId == 0 ||
-            (segmentId == 0 && dataFileId == 0))
+        if (!trackingOk)
         {
             return Redirect(url);
         }
 
-        // ============================================
-        // Browser Detection
-        // ============================================
+        var emaillog = await _context.EmailLogs.FirstOrDefaultAsync(x => x.TrackingId == trackingId);
+
+        var contact = await _context.contacts.FindAsync(emaillog.ContactId);
+
+        // -------- Basic validation --------
+        if (string.IsNullOrWhiteSpace(url) ||
+            trackingId == Guid.Empty)
+        {
+            return Redirect(url);
+        }
+
+        // -------- Browser detection --------
         var userAgent = Request.Headers["User-Agent"].ToString()?.ToLower() ?? "";
         string browser = GetBrowserName(userAgent);
 
@@ -227,57 +494,51 @@ public class OpenTrackingController : ControllerBase
         {
         "curl","bot","preview","spider","crawler",
         "scraper","headless","phantom","selenium","puppeteer",
-        "wget","fetch","scanner","monitor","python","java","ruby","perl"
-    };
+        "wget","fetch","scanner","monitor","python","java","ruby","perl",
+        "proofpoint","barracuda","mimecast",
+        };
 
-        bool isTrustedBrowser = userAgent.Contains("chrome") ||
-                                userAgent.Contains("firefox") ||
-                                userAgent.Contains("safari") ||
-                                userAgent.Contains("edge");
+        bool isTrustedBrowser =
+            userAgent.Contains("chrome") ||
+            userAgent.Contains("firefox") ||
+            userAgent.Contains("safari") ||
+            userAgent.Contains("edge");
 
         bool suspicious = suspiciousAgents.Any(a => userAgent.Contains(a));
-        bool isAutomatedPattern = userAgent.Length < 30 ||
-                                  userAgent.Contains("http://") ||
-                                  userAgent.Contains("https://");
+
+        bool isAutomatedPattern =
+            userAgent.Length < 30 ||
+            userAgent.Contains("http://") ||
+            userAgent.Contains("https://");
 
         bool noLang = string.IsNullOrEmpty(Request.Headers["Accept-Language"].ToString());
 
-        if ((suspicious && !isTrustedBrowser) || noLang || isAutomatedPattern)
-        {
-            return Redirect(url);
-        }
+        // Apple Mail Privacy Protection detection
+        bool isAppleMPP =
+            userAgent.Contains("applewebkit") &&
+            userAgent.Contains("mozilla") &&
+            noLang;
 
-        // ============================================
-        // Check EmailLog for timing validation
-        // ============================================
+        bool isBot = (suspicious && !isTrustedBrowser) || noLang || isAutomatedPattern || isAppleMPP;
+
+        // -------- Email log validation --------
         var sentEmail = await _context.EmailLogs.FirstOrDefaultAsync(x => x.TrackingId == trackingId);
         if (sentEmail == null) return Redirect(url);
 
         if (sentEmail.SentAt.HasValue)
         {
             var seconds = (DateTime.UtcNow - sentEmail.SentAt.Value).TotalSeconds;
-            if (seconds < 5) return Redirect(url); // too fast → bot
+            if (seconds < 5) isBot = true;
         }
 
-        // ============================================
-        // Email + File/Segment match
-        // ============================================
-        bool emailMatch = string.Equals(sentEmail.ToEmail?.Trim(), email.Trim(),
-                                      StringComparison.OrdinalIgnoreCase);
-        bool fileMatch = sentEmail.DataFileId == dataFileId;
-        bool segMatch = sentEmail.SegmentId == segmentId;
-
-        if (!(emailMatch && (fileMatch || segMatch))) return Redirect(url);
-
-        // ============================================
-        // Prevent duplicate tracking logs
-        // ============================================
+        // -------- Prevent duplicate click --------
         bool alreadyClicked = await _context.EmailTrackingLogs.AnyAsync(x =>
             x.TrackingId == trackingId &&
             x.TargetUrl == url &&
             x.EventType == "Click" &&
             x.IsBot == false
         );
+
         bool hasOpenLog = await _context.EmailTrackingLogs.AnyAsync(x =>
             x.TrackingId == trackingId &&
             x.EventType == "Open" &&
@@ -286,35 +547,35 @@ public class OpenTrackingController : ControllerBase
 
         if (!hasOpenLog)
         {
-            // ❌ Open nahi hua → click track nahi karna
             return Redirect(url);
         }
+
         if (!alreadyClicked)
         {
             _context.EmailTrackingLogs.Add(new EmailTrackingLog
             {
                 TrackingId = trackingId,
-                ContactId = contactId,
+                ContactId = emaillog.ContactId,
                 EventType = "Click",
                 TargetUrl = url,
-                ClientId = clientId,
-                SegmentId = segmentId,
-                DataFileId = dataFileId,
-                CampaignId = CampaignId,
-                BlueprintId = BlueprintId,
-                Email = email,
-                Full_Name = fullName,
-                Location = location,
-                Company = company,
-                JobTitle = jobTitle,
-                linkedin_URL = linkedin,
-                website = website,
+                ClientId = emaillog.ClientId,
+                SegmentId = emaillog.SegmentId,
+                DataFileId = emaillog.DataFileId,
+                CampaignId = emaillog.CampaignId,
+                BlueprintId = emaillog.BlueprintId,
+                Email = emaillog.ToEmail,
+                Full_Name = emaillog.EmailRecipientName,
+                Location = contact.country_or_address,
+                Company = contact.company_name,
+                JobTitle = contact.job_title,
+                linkedin_URL = contact.linkedin_url,
+                website = contact.website,
                 UserAgent = userAgent,
                 Browser = browser,
                 IPAddress = HttpContext.Connection.RemoteIpAddress?.ToString(),
                 Timestamp = DateTime.UtcNow,
                 ZohoViewName = "from pitch craft",
-                IsBot = false
+                IsBot = isBot
             });
 
             await _context.SaveChangesAsync();
@@ -322,8 +583,6 @@ public class OpenTrackingController : ControllerBase
 
         return Redirect(url);
     }
-
-
     [HttpGet("logs/by-client-viewid")]
     public async Task<IActionResult> GetEmailTrackingLogsByClient([FromQuery] int clientId, [FromQuery] string zohoViewName)
     {

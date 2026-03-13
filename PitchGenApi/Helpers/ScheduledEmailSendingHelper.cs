@@ -237,43 +237,12 @@ public class ScheduledEmailSendingHelper
             string subject = Contact.email_subject;
             string toEmail = Contact.email;
 
-            // ✅ Use finalEmailBody (fix)
-            string bodyWithTracking = finalEmailBody;
-
-            bodyWithTracking = EmailTrackingHelper.InjectClickTracking(
-                Contact.email,
-                bodyWithTracking,
-                step.ClientId,
-                Contact.id,
-                step.DataFileId ?? 0,
-                step.SegmentId ?? 0,
-                Contact.full_name,
-                Contact.country_or_address,
-                Contact.company_name,
-                Contact.website,
-                Contact.linkedin_url,
-                Contact.job_title,
-                trackingId,
-                step.CampaignId,
-                Blueprint.TemplateId
-            );
-
-            bodyWithTracking += EmailTrackingHelper.GetPixelTag(
-                Contact.email,
-                step.ClientId,
-                step.DataFileId ?? 0,
-                step.SegmentId ?? 0,
-                Contact.id,
-                Contact.full_name,
-                Contact.country_or_address,
-                Contact.company_name,
-                Contact.website,
-                Contact.linkedin_url,
-                Contact.job_title,
-                trackingId,
-                step.CampaignId,
-                Blueprint.TemplateId
-            );
+            if (user.IsTracking)
+            {
+                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
+                bodyWithTracking += EmailTrackingHelper.GetPixelTag(trackingId);
+                finalEmailBody = bodyWithTracking;
+            }
 
             try
             {
@@ -288,7 +257,7 @@ public class ScheduledEmailSendingHelper
                 {
                     From = new MailAddress(fromEmailToUse, senderName),
                     Subject = subject,
-                    Body = bodyWithTracking,
+                    Body = finalEmailBody,
                     IsBodyHtml = true,
                     BodyEncoding = System.Text.Encoding.UTF8,
                     SubjectEncoding = System.Text.Encoding.UTF8,

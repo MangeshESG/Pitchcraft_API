@@ -277,51 +277,16 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                Console.WriteLine($"contactid: {dto.contactid
-                    }");
                 ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
 
                 var nowUtc = DateTime.UtcNow;
-                var unsubscribedcontact = await _context.UnsubscribedContacts.FirstOrDefaultAsync(x => x.ClientId == dto.clientId && x.Email == dto.ToEmail);
 
-                if (unsubscribedcontact != null)
-                    return BadRequest("Unsubscribed Contact");   // correct
+                var success = await _emailHelper.SendEmailUsingSmtp( dto.clientId, dto.contactid, dto.campaignid, dto.isFollowUp, dto.BccEmail, dto.SmtpId );
 
-                var emailBody = await _context.contacts
-                    .Where(x => x.id == dto.contactid)
-                    .Select(x => x.email_body)
-                    .FirstOrDefaultAsync();
-
-                if (string.IsNullOrWhiteSpace(dto.Subject) ||
-                  dto.Subject.Trim().ToUpper() == "N/A" ||
-                  string.IsNullOrWhiteSpace(emailBody) ||
-                  emailBody.Trim().ToUpper() == "N/A")
+                if (!success.Success)
                 {
-                    return BadRequest("Email body or subject is incorrect.");
+                    return StatusCode(500,success.Message);
                 }
-                // 1) Send email
-                var success = await _emailHelper.SendEmailUsingSmtp(
-                    dto.clientId,
-                    dto.contactid,
-                    dto.DataFileId,
-                    dto.SegmentId ,
-                     dto.campaignid,
-                    dto.ToEmail,
-                    dto.Subject,
-                    dto.isFollowUp,
-                    dto.BccEmail,
-                    dto.SmtpId,
-                    dto.FullName,
-                    dto.CountryOrAddress,
-                    dto.CompanyName,
-                    dto.Website,
-                    dto.LinkedinUrl,
-                    dto.JobTitle
-                );
-
-                if (!success)
-                    return StatusCode(500, "Failed to send email. Please try again later.");
-
                 // 2) Sirf success ke baad update (ContactId -> DataFileId+Email -> Email fallback)
                 Contact contact = null;
 
@@ -330,17 +295,7 @@ namespace PitchGenApi.Controllers
                     contact = await _context.contacts
                         .FirstOrDefaultAsync(c => c.id == dto.contactid);
                 }
-                else if (dto.DataFileId > 0)
-                {
-                    contact = await _context.contacts
-                        .FirstOrDefaultAsync(c => c.DataFileId == dto.DataFileId && c.email == dto.ToEmail);
-                }
-                else
-                {
-                    contact = await _context.contacts
-                        .FirstOrDefaultAsync(c => c.email == dto.ToEmail);
-                }
-
+                
                 if (contact != null)
                 {
                     contact.email_sent_at = nowUtc;
@@ -350,7 +305,7 @@ namespace PitchGenApi.Controllers
 
                 return Ok(new
                 {
-                    message = $"Email sent successfully to {dto.ToEmail}.",
+                    message = success.Message,
                     emailSentAtUtc = nowUtc
                 });
             }

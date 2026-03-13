@@ -8,6 +8,8 @@ using PitchGenApi.Model;
 using System.Text.RegularExpressions;
 using PitchGenApi.Interfaces;
 using Org.BouncyCastle.Crypto;
+using PitchGenApi.Model.DTOs;
+using static PitchGenApi.Model.ChatGptResponse;
 
 public class EmailSendingHelper
 {
@@ -22,23 +24,7 @@ public class EmailSendingHelper
         _domain = domain;
     }
 
-    public async Task<bool> SendEmailUsingSmtp(
-        int clientId,
-        int contactId,
-        int? dataFileId,
-        int? SegmentId,
-        int? CampaignId,
-        string toEmail,
-        string subject,
-        bool isFollowUp,
-        string BccEmail = "",
-        int SmtpID = 0,
-        string fullname = "",
-        string location = "",
-        string company = "",
-        string website = "",
-        string linkedin = "",
-        string jobtitle = "")
+    public async Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId,bool isFollowUp, string BccEmail = "", int SmtpID = 0)
     {
         var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
 
@@ -46,6 +32,25 @@ public class EmailSendingHelper
         var smtpCredential = await _context.SmtpCredentials.FirstOrDefaultAsync(x => x.Id == SmtpID);
 
         var Blueprint = await _context.Campaigns.FirstOrDefaultAsync(x => x.Id == CampaignId);
+        int DataFileId = 0;
+
+        if (!string.IsNullOrWhiteSpace(Blueprint.ZohoViewId))
+        {
+            int.TryParse(Blueprint.ZohoViewId, out DataFileId);
+        }
+
+
+        if (string.IsNullOrWhiteSpace(EmailDetails.email_subject) ||
+                 EmailDetails.email_subject.Trim().ToUpper() == "N/A" ||
+                 string.IsNullOrWhiteSpace(EmailDetails.email_body) ||
+                 EmailDetails.email_body.Trim().ToUpper() == "N/A")
+        {
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = "Email body or subject is incorrect."
+            };
+        }
 
         bool active = await _context.UserCredits
                 .AnyAsync(u =>
@@ -60,12 +65,12 @@ public class EmailSendingHelper
             {
                 ClientId = clientId,
                 ContactId = contactId,
-                DataFileId = dataFileId,
+                DataFileId = DataFileId,
                 CampaignId = CampaignId,
                 BlueprintId = Blueprint.TemplateId,
-                SegmentId = SegmentId,
-                ToEmail = toEmail,
-                Subject = subject,
+                SegmentId = Blueprint.SegmentId,
+                ToEmail = EmailDetails.email,
+                Subject = EmailDetails.email_subject,
                 Body = EmailDetails.email_body,
                 IsSuccess = false,
                 ErrorMessage = "SMTP credentials not found or invalid.",
@@ -73,7 +78,12 @@ public class EmailSendingHelper
                 SentAt = DateTime.UtcNow
             });
             await _context.SaveChangesAsync();
-            return false;
+
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = "SMTP credentials not found or invalid."
+            };
         }
 
         var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
@@ -123,17 +133,17 @@ public class EmailSendingHelper
                 </p>";
 
 
-            if (dataFileId == null)
+            if (DataFileId == null)
             {
                 var list = await _context.segments
-                    .FirstOrDefaultAsync(s => s.Id == SegmentId && s.ClientId == clientId);
+                    .FirstOrDefaultAsync(s => s.Id == Blueprint.SegmentId && s.ClientId == clientId);
 
                 
 
 
                 if (isFollowUp)
                 {
-                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, list.DataFileId, EmailDetails.id, SegmentId);
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, list.DataFileId, EmailDetails.id, Blueprint.SegmentId);
 
                     finalEmailBody =
                      $@"{EmailDetails.email_body}
@@ -151,21 +161,23 @@ public class EmailSendingHelper
             }
 
             // Send main email
-            if (!string.IsNullOrWhiteSpace(toEmail))
+            if (!string.IsNullOrWhiteSpace(EmailDetails.email))
             {
-                //string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(toEmail, finalEmailBody, clientId,contactId, dataFileId, SegmentId, fullname, location, company, website, linkedin, jobtitle, trackingId,CampaignId,Blueprint.TemplateId);
-                //bodyWithTracking += EmailTrackingHelper.GetPixelTag(toEmail, clientId, dataFileId, SegmentId, contactId, fullname, location, company, website, linkedin, jobtitle, trackingId,CampaignId,Blueprint.TemplateId);
-
+                if (user.IsTracking)
+                {
+                    string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
+                    bodyWithTracking += EmailTrackingHelper.GetPixelTag(trackingId);
+                    finalEmailBody = bodyWithTracking;
+                }
                 using var toMessage = new MailMessage
                 {
                     From = new MailAddress(fromEmailToUse,senderName),
-                    Subject = subject,
+                    Subject = EmailDetails.email_subject,
                     Body = finalEmailBody,   //Body = finalEmailBody- for non traking     Body = bodyWithTracking- for traking
-
                     IsBodyHtml = true
                 };
 
-                toMessage.To.Add(toEmail);
+                toMessage.To.Add(EmailDetails.email);
                 await smtpClient.SendMailAsync(toMessage);
 
                 _context.EmailLogs.Add(new EmailLog
@@ -174,15 +186,15 @@ public class EmailSendingHelper
                     ContactId = contactId,
                     CampaignId = CampaignId,
                     BlueprintId = Blueprint.TemplateId,
-                    ToEmail = toEmail,
-                    Subject = subject,
+                    ToEmail = EmailDetails.email,
+                    Subject = EmailDetails.email_subject,
                     Body = EmailDetails.email_body,
-                    EmailRecipientName = fullname,
+                    EmailRecipientName = EmailDetails.full_name,
                     EmailSenderName = senderName,
                     SenderEmailId = fromEmailToUse,
                     zohoViewName = "from pitch craft",
-                    DataFileId = dataFileId,
-                    SegmentId = SegmentId,
+                    DataFileId = DataFileId,
+                    SegmentId = Blueprint.SegmentId,
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
                     TrackingId = Guid.Parse(trackingId),
@@ -196,7 +208,7 @@ public class EmailSendingHelper
                 using var bccMessage = new MailMessage
                 {
                     From = new MailAddress(fromEmailToUse),
-                    Subject = subject,
+                    Subject = EmailDetails.email_subject,
                     Body = EmailDetails.email_body,
                     IsBodyHtml = true
                 };
@@ -208,7 +220,12 @@ public class EmailSendingHelper
             }
 
             await _context.SaveChangesAsync();
-            return true;
+            return new EmailSendResult
+            {
+                Success = true,
+                Message = $"Email sent successfully to {EmailDetails.email}.",
+
+            };
         }
         catch (Exception ex)
         {
@@ -218,23 +235,28 @@ public class EmailSendingHelper
                 ContactId = contactId,
                 CampaignId = CampaignId,
                 BlueprintId = Blueprint.TemplateId,
-                ToEmail = toEmail,
-                Subject = subject,
+                ToEmail = EmailDetails.email,
+                Subject = EmailDetails.email_subject,
                 Body = EmailDetails.email_body,
-                EmailRecipientName = fullname,
+                EmailRecipientName = EmailDetails.full_name,
                 EmailSenderName = senderName,
                 SenderEmailId = fromEmailToUse,
                 IsSuccess = false,
                 ErrorMessage = ex.Message,
                 zohoViewName = "from pitch craft",
-                DataFileId= dataFileId,
-                SegmentId = SegmentId,
+                DataFileId= DataFileId,
+                SegmentId = Blueprint.SegmentId,
                 SentAt = DateTime.UtcNow,
                 process_name = "Single"
             });
 
             await _context.SaveChangesAsync();
-            return false;
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = ex.Message,
+
+            };
         }
     }
 }
