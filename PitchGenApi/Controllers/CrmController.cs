@@ -1631,52 +1631,52 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        [HttpGet("get-tone-settings")]
-        public async Task<IActionResult> GetToneSettings([FromQuery] int clientId)
-        {
-            if (clientId <= 0)
-                return BadRequest("Invalid clientId");
+        //[HttpGet("get-tone-settings")]
+        //public async Task<IActionResult> GetToneSettings([FromQuery] int clientId)
+        //{
+        //    if (clientId <= 0)
+        //        return BadRequest("Invalid clientId");
 
-            try
-            {
-                var settings = await _context.ToneSettings
-                    .FirstOrDefaultAsync(ts => ts.ClientId == clientId);
+        //    try
+        //    {
+        //        var settings = await _context.ToneSettings
+        //            .FirstOrDefaultAsync(ts => ts.ClientId == clientId);
 
-                if (settings == null)
-                {
-                    // Return default settings if none exist
-                    return Ok(new ToneSettingsDto
-                    {
-                        Language = "English",
-                        SubjectTemplate = "",
-                        Emojis = "None",
-                        Tone = "Professional",
-                        ChattyLevel = "Medium",
-                        CreativityLevel = "Medium",
-                        ReasoningLevel = "Medium",
-                        DateGreeting = "No",
-                        DateFarewell = "No"
-                    });
-                }
+        //        if (settings == null)
+        //        {
+        //            // Return default settings if none exist
+        //            return Ok(new ToneSettingsDto
+        //            {
+        //                Language = "English",
+        //                SubjectTemplate = "",
+        //                Emojis = "None",
+        //                Tone = "Professional",
+        //                ChattyLevel = "Medium",
+        //                CreativityLevel = "Medium",
+        //                ReasoningLevel = "Medium",
+        //                DateGreeting = "No",
+        //                DateFarewell = "No"
+        //            });
+        //        }
 
-                return Ok(new ToneSettingsDto
-                {
-                    Language = settings.Language,
-                    SubjectTemplate = settings.SubjectTemplate,
-                    Emojis = settings.Emojis,
-                    Tone = settings.Tone,
-                    ChattyLevel = settings.ChattyLevel,
-                    CreativityLevel = settings.CreativityLevel,
-                    ReasoningLevel = settings.ReasoningLevel,
-                    DateGreeting = settings.DateGreeting,
-                    DateFarewell = settings.DateFarewell
-                });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, new { message = "Internal server error", error = ex.Message });
-            }
-        }
+        //        return Ok(new ToneSettingsDto
+        //        {
+        //            Language = settings.Language,
+        //            SubjectTemplate = settings.SubjectTemplate,
+        //            Emojis = settings.Emojis,
+        //            Tone = settings.Tone,
+        //            ChattyLevel = settings.ChattyLevel,
+        //            CreativityLevel = settings.CreativityLevel,
+        //            ReasoningLevel = settings.ReasoningLevel,
+        //            DateGreeting = settings.DateGreeting,
+        //            DateFarewell = settings.DateFarewell
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        return StatusCode(500, new { message = "Internal server error", error = ex.Message });
+        //    }
+        //}
 
         [HttpPost("save-tone-settings")]
         public async Task<IActionResult> SaveToneSettings([FromQuery] int clientId, [FromBody] ToneSettingsDto dto)
@@ -2230,7 +2230,52 @@ namespace PitchGenApi.Controllers
         //    return sb.ToString();
         //}
 
+        [HttpPost("updatetracking")]
+        public async Task<IActionResult> UpdateCampaign([FromQuery] int clientId, [FromQuery] bool IsTracking)
+        {
+            try
+            {
+                var tracking = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
+                // Update campaign properties
+                tracking.IsTracking = IsTracking;
+                // Update in database
+                _context.ClientDetails.Update(tracking);
+                await _context.SaveChangesAsync();
 
+                return Ok("tracking updated successfully");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = "An error occurred while updating the campaign", Error = ex.Message });
+            }
+        }
+
+        [HttpGet("tracking-by-id")]
+        public async Task<IActionResult> GetTrackingById([FromQuery] int clientId)
+        {
+            try
+            {
+                var tracking = await _context.ClientDetails
+                    .Where(c => c.Id == clientId)
+                    .Select(c => c.IsTracking)
+                    .FirstOrDefaultAsync();
+
+                if (tracking == null)
+                {
+                    return NotFound(new { message = "Client not found" });
+                }
+
+                return Ok(new
+                {
+                    clientId = clientId,
+                    isTracking = tracking
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = "Error fetching tracking status" });
+            }
+        }
 
     }
 }
