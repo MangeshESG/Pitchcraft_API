@@ -52,7 +52,13 @@ namespace PitchGenApi.Database
         public DbSet<ContactAttachments> ContactAttachments { get; set; }
         public DbSet<CrmCustomField> crm_custom_fields { get; set; }
         public DbSet<ContactCustomFieldValue> contact_custom_field_values { get; set; }
-    
+
+        public DbSet<CrmView> crm_views { get; set; }
+
+        public DbSet<CrmViewDatafile> crm_view_datafiles { get; set; }
+
+        public DbSet<CrmViewSegment> crm_view_segments { get; set; }
+
 
 
 

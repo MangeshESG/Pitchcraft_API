@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Model;
 using System.Text;
+using Stripe;
 
 
 namespace PitchGenApi.Controllers
@@ -799,7 +800,7 @@ namespace PitchGenApi.Controllers
             // 🧠 Deduct credit only from FinalUserCredit when GPTGenerate = true
             if (request.GPTGenerate == true)
             {
-              await _contactRepository.CreditDeduction(request.ClientId);
+                await _contactRepository.CreditDeduction(request.ClientId);
             }
 
             await _context.SaveChangesAsync();
@@ -2274,6 +2275,119 @@ namespace PitchGenApi.Controllers
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = "Error fetching tracking status" });
+            }
+        }
+
+
+        [HttpPost("create-view")]
+        public async Task<IActionResult> CreateView([FromBody] CreateViewDto dto)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var view = new CrmView
+                {
+                    client_id = dto.ClientId,
+                    name = dto.Name,
+                    description = dto.Description,
+                    filters_json = dto.FiltersJson,
+                    created_at = DateTime.UtcNow
+                };
+
+                _context.crm_views.Add(view);
+                await _context.SaveChangesAsync();
+
+                if (dto.DataFileIds != null && dto.DataFileIds.Any())
+                {
+                    foreach (var df in dto.DataFileIds)
+                    {
+                        _context.crm_view_datafiles.Add(new CrmViewDatafile
+                        {
+                            view_id = view.id,
+                            datafile_id = df
+                        });
+                    }
+                }
+
+                if (dto.SegmentIds != null && dto.SegmentIds.Any())
+                {
+                    foreach (var seg in dto.SegmentIds)
+                    {
+                        _context.crm_view_segments.Add(new CrmViewSegment
+                        {
+                            view_id = view.id,
+                            segment_id = seg
+                        });
+                    }
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(view);
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(ex.Message);
+            }
+        }
+
+        [HttpGet("views-by-client")]
+        public async Task<IActionResult> GetViewsByClient(int clientId)
+        {
+            var views = await _context.crm_views
+                .Where(v => v.client_id == clientId)
+                .Select(v => new
+                {
+                    v.id,
+                    v.name,
+                    v.description,
+                    v.created_at
+                })
+                .ToListAsync();
+
+            return Ok(views);
+        }
+
+
+
+
+        [HttpPost("delete-view")]
+        public async Task<IActionResult> DeleteView(int viewId)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var view = await _context.crm_views
+                    .FirstOrDefaultAsync(v => v.id == viewId);
+
+                if (view == null)
+                    return NotFound();
+
+                var datafiles = _context.crm_view_datafiles
+                    .Where(x => x.view_id == viewId);
+
+                var segments = _context.crm_view_segments
+                    .Where(x => x.view_id == viewId);
+
+                _context.crm_view_datafiles.RemoveRange(datafiles);
+                _context.crm_view_segments.RemoveRange(segments);
+
+                _context.crm_views.Remove(view);
+
+                await _context.SaveChangesAsync();
+
+                await transaction.CommitAsync();
+
+                return Ok("View deleted");
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(ex.Message);
             }
         }
 
