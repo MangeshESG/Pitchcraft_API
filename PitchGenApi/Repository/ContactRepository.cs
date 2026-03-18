@@ -351,7 +351,27 @@ public class ContactRepository
             invalidContactIds
         };
     }
+    public async Task<FullTrackingDataResponse> GetFullTrackingData(int clientId, int dataFileId)
+    {
+        var contacts = await _context.contacts
+            .Where(c => c.DataFileId == dataFileId)
+            .ToListAsync();
 
+        var trackingLogs = await _context.EmailTrackingLogs
+            .Where(t => t.ClientId == clientId && t.DataFileId == dataFileId)
+            .ToListAsync();
+
+        var emailLogs = await _context.EmailLogs
+            .Where(e => e.ClientId == clientId && e.DataFileId == dataFileId)
+            .ToListAsync();
+
+        return new FullTrackingDataResponse
+        {
+            Contacts = contacts,
+            EmailTrackingLogs = trackingLogs,
+            EmailLogs = emailLogs
+        };
+    }
     private string? GetSourceName(EmailLog log)
     {
         if (log.DataFileId != null)
