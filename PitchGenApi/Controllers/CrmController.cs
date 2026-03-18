@@ -1287,69 +1287,65 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("contacts/by-client-segment")]
-        public async Task<IActionResult> GetContactsBySegmentId([FromQuery] int clientId, [FromQuery] int segmentId, [FromQuery] bool isFollowUp)
+        public async Task<IActionResult> GetContactsBySegmentId(
+     [FromQuery] int clientId,
+     [FromQuery] int segmentId,
+     [FromQuery] bool isFollowUp,
+     [FromQuery] bool notKrafted,
+     [FromQuery] bool kraftedNotSent)
         {
             if (clientId <= 0 || segmentId <= 0)
                 return BadRequest("clientId aur segmentId dono 0 se bade hone chahiye.");
 
-            // Step 1: Check Segment exists and belongs to same client
             var segment = await _context.segments
                 .FirstOrDefaultAsync(s => s.Id == segmentId && s.ClientId == clientId);
 
             if (segment == null)
                 return NotFound("Is client ke liye segment nahi mila.");
 
-            // Step 2: Get contact IDs from SegmentContacts
-            var contactIds = await _context.segmentContacts
-                .Where(sc => sc.SegmentId == segmentId)
-                .Select(sc => sc.ContactId)
-                .ToListAsync();
+            // ✅ Base Query (JOIN with SegmentContacts)
+            var query = _context.contacts
+                .Where(c =>
+                    _context.segmentContacts
+                        .Any(sc => sc.SegmentId == segmentId && sc.ContactId == c.id)
+                    &&
+                    !_context.UnsubscribedContacts
+                        .Any(uc => uc.ClientId == clientId && uc.Email == c.email)
+                );
 
-            if (!contactIds.Any())
-                return Ok(new { contactCount = 0, contacts = new List<object>() });
-
-            // Step 3: Load contacts one-by-one using foreach (SQL error fix)
-            var contactsRaw = new List<Contact>();
-
-            foreach (var cid in contactIds)
+            // ✅ Filter: Not Krafted
+            if (notKrafted)
             {
-                if (cid <= 0)
-                    continue;
-
-                var contact = await _context.contacts
-                    .FirstOrDefaultAsync(c => c.id == cid);
-
-                if (contact != null)
-                    contactsRaw.Add(contact);
+                query = query.Where(c => c.updated_at == null);
             }
 
-            // Step 4: Load unsubscribed emails
-            var unsubscribedEmails = await _context.UnsubscribedContacts
-                .Where(u => u.ClientId == clientId)
-                .Select(u => u.Email)
+            // ✅ Filter: Krafted but Not Sent
+            if (kraftedNotSent)
+            {
+                query = query.Where(c => c.updated_at != null && c.email_sent_at == null);
+            }
+
+            var contacts = await query
+                .OrderBy(c => c.id)
                 .ToListAsync();
 
             var result = new List<object>();
-            // Step 5: Build final response
-            foreach (var c in contactsRaw)
-            {
-                // skip unsubscribed emails
-                if (unsubscribedEmails.Contains(c.email))
-                    continue;
 
+            foreach (var c in contacts)
+            {
                 string finalEmailBody = c.email_body;
 
-                // Add follow-up thread
                 if (isFollowUp)
                 {
                     if (c.updated_at < c.email_sent_at)
                     {
-                        c.email_body = "You have not krafted any email after sending the last email. Please kraft to continue.";
+                        finalEmailBody = "You have not krafted any email after sending the last email. Please kraft to continue.";
                     }
 
-                    string oldThread = await _contactRepository.BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
-                    finalEmailBody =
-                    $@"{c.email_body}
+                    string oldThread = await _contactRepository
+                        .BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
+
+                    finalEmailBody = $@"{finalEmailBody}
 
                     {oldThread}";
                 }
@@ -1374,7 +1370,6 @@ namespace PitchGenApi.Controllers
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
                     c.linkedIninformation
-                    //c.CompanyEventLink
                 });
             }
 
