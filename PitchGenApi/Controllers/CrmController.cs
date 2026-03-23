@@ -34,7 +34,7 @@ namespace PitchGenApi.Controllers
             var fieldCount = await _context.crm_custom_fields
                 .CountAsync(x => x.client_id == dto.ClientId);
 
-            if (fieldCount >= 10)
+            if (fieldCount >= 20)
                 return BadRequest("Maximum 10 custom fields allowed.");
 
             var field = new CrmCustomField
@@ -2394,5 +2394,75 @@ namespace PitchGenApi.Controllers
             }
         }
 
+
+        [HttpPost("update-view")]
+        public async Task<IActionResult> UpdateView([FromBody] UpdateViewDto dto)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
+            {
+                var view = await _context.crm_views
+                    .FirstOrDefaultAsync(v => v.id == dto.ViewId);
+
+                if (view == null)
+                    return NotFound("View not found");
+
+                // ✅ Update main fields
+                view.name = dto.Name;
+                view.description = dto.Description;
+                view.filters_json = dto.FiltersJson;
+
+                _context.crm_views.Update(view);
+
+                // ------------------------------
+                // ✅ UPDATE DATAFILES
+                // ------------------------------
+                var existingDatafiles = _context.crm_view_datafiles
+                    .Where(x => x.view_id == dto.ViewId);
+
+                _context.crm_view_datafiles.RemoveRange(existingDatafiles);
+
+                if (dto.DataFileIds != null && dto.DataFileIds.Any())
+                {
+                    var newDatafiles = dto.DataFileIds.Select(df => new CrmViewDatafile
+                    {
+                        view_id = dto.ViewId,
+                        datafile_id = df
+                    });
+
+                    await _context.crm_view_datafiles.AddRangeAsync(newDatafiles);
+                }
+
+                // ------------------------------
+                // ✅ UPDATE SEGMENTS
+                // ------------------------------
+                var existingSegments = _context.crm_view_segments
+                    .Where(x => x.view_id == dto.ViewId);
+
+                _context.crm_view_segments.RemoveRange(existingSegments);
+
+                if (dto.SegmentIds != null && dto.SegmentIds.Any())
+                {
+                    var newSegments = dto.SegmentIds.Select(seg => new CrmViewSegment
+                    {
+                        view_id = dto.ViewId,
+                        segment_id = seg
+                    });
+
+                    await _context.crm_view_segments.AddRangeAsync(newSegments);
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok("View updated successfully");
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(ex.Message);
+            }
+        }
     }
 }
