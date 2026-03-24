@@ -541,8 +541,9 @@ public class OpenTrackingController : ControllerBase
 
         bool hasOpenLog = await _context.EmailTrackingLogs.AnyAsync(x =>
             x.TrackingId == trackingId &&
-            x.EventType == "Open" &&
-            x.IsBot == false
+            x.EventType == "Open"
+            //&&
+            //x.IsBot == false
         );
 
         if (!hasOpenLog)

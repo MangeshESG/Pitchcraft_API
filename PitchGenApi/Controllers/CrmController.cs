@@ -555,45 +555,58 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("contacts/by-client-datafile")]
-        public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] int clientId, [FromQuery] int dataFileId, [FromQuery] bool isFollowUp)
+        public async Task<IActionResult> GetContactsByClientAndDataFileId([FromQuery] ContactFilterDto request)
         {
-            if (clientId <= 0 || dataFileId <= 0)
+            if (request.ClientId <= 0 || request.DataFileId <= 0)
                 return BadRequest("Both clientId and dataFileId must be greater than 0.");
 
             var dataFileExists = await _context.data_files
-                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+                .AnyAsync(df => df.id == request.DataFileId && df.client_id == request.ClientId);
 
             if (!dataFileExists)
                 return NotFound("No data file found for this client.");
 
-            // Fetch contacts except unsubscribed
-            var contacts = await _context.contacts
-                .Where(c => c.DataFileId == dataFileId &&
+            // Base query
+            var query = _context.contacts
+                .Where(c => c.DataFileId == request.DataFileId &&
                     !_context.UnsubscribedContacts
-                        .Any(uc => uc.ClientId == clientId && uc.Email == c.email))
+                        .Any(uc => uc.ClientId == request.ClientId && uc.Email == c.email));
+
+            // ✅ Filter: Not Krafted
+            if (request.NotKrafted)
+            {
+                query = query.Where(c => c.updated_at == null);
+            }
+
+            // ✅ Filter: Krafted but Not Sent
+            if (request.KraftedNotSent)
+            {
+                query = query.Where(c => c.updated_at != null && c.email_sent_at == null);
+            }
+
+            var contacts = await query
                 .OrderBy(c => c.id)
                 .ToListAsync();
-            // Yaha follow-up logic apply hoga
+
             var result = new List<object>();
 
             foreach (var c in contacts)
             {
                 string finalEmailBody = c.email_body;
 
-                if (isFollowUp)
+                if (request.IsFollowUp)
                 {
-
                     if (c.updated_at < c.email_sent_at)
                     {
-                        c.email_body = "You have not krafted any email after sending the last email. Please kraft to continue.";
+                        finalEmailBody = "You have not krafted any email after sending the last email. Please kraft to continue.";
                     }
 
-                    string oldThread = await _contactRepository.BuildEmailThreadAsync(clientId, dataFileId, c.id, null);
+                    string oldThread = await _contactRepository
+                        .BuildEmailThreadAsync(request.ClientId, request.DataFileId, c.id, null);
 
-                    finalEmailBody =
-                    $@"{c.email_body}
+                    finalEmailBody = $@"{finalEmailBody}
 
-                {oldThread}";
+                    {oldThread}";
                 }
 
                 result.Add(new
@@ -616,7 +629,6 @@ namespace PitchGenApi.Controllers
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
                     c.linkedIninformation
-                    //c.CompanyEventLink
                 });
             }
 
@@ -626,7 +638,6 @@ namespace PitchGenApi.Controllers
                 contacts = result
             });
         }
-
 
         [HttpGet("contacts/List-by-CleinteId")]
         public async Task<IActionResult> GetContactsByClientAndDataFileIdList([FromQuery] int clientId, [FromQuery] int dataFileId)
@@ -1277,69 +1288,65 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("contacts/by-client-segment")]
-        public async Task<IActionResult> GetContactsBySegmentId([FromQuery] int clientId, [FromQuery] int segmentId, [FromQuery] bool isFollowUp)
+        public async Task<IActionResult> GetContactsBySegmentId(
+     [FromQuery] int clientId,
+     [FromQuery] int segmentId,
+     [FromQuery] bool isFollowUp,
+     [FromQuery] bool notKrafted,
+     [FromQuery] bool kraftedNotSent)
         {
             if (clientId <= 0 || segmentId <= 0)
                 return BadRequest("clientId aur segmentId dono 0 se bade hone chahiye.");
 
-            // Step 1: Check Segment exists and belongs to same client
             var segment = await _context.segments
                 .FirstOrDefaultAsync(s => s.Id == segmentId && s.ClientId == clientId);
 
             if (segment == null)
                 return NotFound("Is client ke liye segment nahi mila.");
 
-            // Step 2: Get contact IDs from SegmentContacts
-            var contactIds = await _context.segmentContacts
-                .Where(sc => sc.SegmentId == segmentId)
-                .Select(sc => sc.ContactId)
-                .ToListAsync();
+            // ✅ Base Query (JOIN with SegmentContacts)
+            var query = _context.contacts
+                .Where(c =>
+                    _context.segmentContacts
+                        .Any(sc => sc.SegmentId == segmentId && sc.ContactId == c.id)
+                    &&
+                    !_context.UnsubscribedContacts
+                        .Any(uc => uc.ClientId == clientId && uc.Email == c.email)
+                );
 
-            if (!contactIds.Any())
-                return Ok(new { contactCount = 0, contacts = new List<object>() });
-
-            // Step 3: Load contacts one-by-one using foreach (SQL error fix)
-            var contactsRaw = new List<Contact>();
-
-            foreach (var cid in contactIds)
+            // ✅ Filter: Not Krafted
+            if (notKrafted)
             {
-                if (cid <= 0)
-                    continue;
-
-                var contact = await _context.contacts
-                    .FirstOrDefaultAsync(c => c.id == cid);
-
-                if (contact != null)
-                    contactsRaw.Add(contact);
+                query = query.Where(c => c.updated_at == null);
             }
 
-            // Step 4: Load unsubscribed emails
-            var unsubscribedEmails = await _context.UnsubscribedContacts
-                .Where(u => u.ClientId == clientId)
-                .Select(u => u.Email)
+            // ✅ Filter: Krafted but Not Sent
+            if (kraftedNotSent)
+            {
+                query = query.Where(c => c.updated_at != null && c.email_sent_at == null);
+            }
+
+            var contacts = await query
+                .OrderBy(c => c.id)
                 .ToListAsync();
 
             var result = new List<object>();
-            // Step 5: Build final response
-            foreach (var c in contactsRaw)
-            {
-                // skip unsubscribed emails
-                if (unsubscribedEmails.Contains(c.email))
-                    continue;
 
+            foreach (var c in contacts)
+            {
                 string finalEmailBody = c.email_body;
 
-                // Add follow-up thread
                 if (isFollowUp)
                 {
                     if (c.updated_at < c.email_sent_at)
                     {
-                        c.email_body = "You have not krafted any email after sending the last email. Please kraft to continue.";
+                        finalEmailBody = "You have not krafted any email after sending the last email. Please kraft to continue.";
                     }
 
-                    string oldThread = await _contactRepository.BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
-                    finalEmailBody =
-                    $@"{c.email_body}
+                    string oldThread = await _contactRepository
+                        .BuildEmailThreadAsync(clientId, segment.DataFileId, c.id, segmentId);
+
+                    finalEmailBody = $@"{finalEmailBody}
 
                     {oldThread}";
                 }
@@ -1364,7 +1371,6 @@ namespace PitchGenApi.Controllers
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
                     c.linkedIninformation
-                    //c.CompanyEventLink
                 });
             }
 
@@ -2278,6 +2284,30 @@ namespace PitchGenApi.Controllers
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = "Error fetching tracking status" });
+            }
+        }
+        [HttpGet("full-tracking-data")]
+        public async Task<IActionResult> GetFullTrackingData([FromQuery] int clientId, [FromQuery] int dataFileId)
+        {
+            try
+            {
+                var result = await _contactRepository.GetFullTrackingData(clientId, dataFileId);
+
+                if (result == null ||
+                   (!result.Contacts.Any() && !result.EmailTrackingLogs.Any() && !result.EmailLogs.Any()))
+                {
+                    return NotFound(new { message = "No data found" });
+                }
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = "Something went wrong",
+                    error = ex.Message
+                });
             }
         }
 
