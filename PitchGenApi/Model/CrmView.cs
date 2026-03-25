@@ -19,5 +19,6 @@ namespace PitchGenApi.Model
         public string filters_json { get; set; }
 
         public DateTime created_at { get; set; }
+        public bool use_all_datafiles { get; set; } // NEW
     }
 }

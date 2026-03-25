@@ -2342,17 +2342,30 @@ namespace PitchGenApi.Controllers
                     name = dto.Name,
                     description = dto.Description,
                     filters_json = dto.FiltersJson,
-                    created_at = DateTime.UtcNow
+                    created_at = DateTime.UtcNow,
+                    use_all_datafiles = dto.UseAllDataFiles
                 };
 
                 _context.crm_views.Add(view);
                 await _context.SaveChangesAsync();
 
-                if (dto.DataFileIds != null && dto.DataFileIds.Any())
+                if (!dto.UseAllDataFiles && dto.DataFileIds != null && dto.DataFileIds.Any())
                 {
                     foreach (var df in dto.DataFileIds)
                     {
                         _context.crm_view_datafiles.Add(new CrmViewDatafile
+                        {
+                            view_id = view.id,
+                            datafile_id = df
+                        });
+                    }
+                }
+
+                if (dto.UseAllDataFiles && dto.ExcludedDataFileIds != null && dto.ExcludedDataFileIds.Any())
+                {
+                    foreach (var df in dto.ExcludedDataFileIds)
+                    {
+                        _context.crm_view_excluded_datafiles.Add(new CrmViewExcludedDatafile
                         {
                             view_id = view.id,
                             datafile_id = df
@@ -2394,15 +2407,13 @@ namespace PitchGenApi.Controllers
                     v.id,
                     v.name,
                     v.description,
-                    v.created_at
+                    v.created_at,
+                    v.use_all_datafiles
                 })
                 .ToListAsync();
 
             return Ok(views);
         }
-
-
-
 
         [HttpPost("delete-view")]
         public async Task<IActionResult> DeleteView(int viewId)
@@ -2423,13 +2434,16 @@ namespace PitchGenApi.Controllers
                 var segments = _context.crm_view_segments
                     .Where(x => x.view_id == viewId);
 
+                var excluded = _context.crm_view_excluded_datafiles
+                    .Where(x => x.view_id == viewId);
+
                 _context.crm_view_datafiles.RemoveRange(datafiles);
                 _context.crm_view_segments.RemoveRange(segments);
+                _context.crm_view_excluded_datafiles.RemoveRange(excluded);
 
                 _context.crm_views.Remove(view);
 
                 await _context.SaveChangesAsync();
-
                 await transaction.CommitAsync();
 
                 return Ok("View deleted");
@@ -2440,7 +2454,6 @@ namespace PitchGenApi.Controllers
                 return BadRequest(ex.Message);
             }
         }
-
 
         [HttpPost("update-view")]
         public async Task<IActionResult> UpdateView([FromBody] UpdateViewDto dto)
@@ -2455,35 +2468,52 @@ namespace PitchGenApi.Controllers
                 if (view == null)
                     return NotFound("View not found");
 
-                // ✅ Update main fields
                 view.name = dto.Name;
                 view.description = dto.Description;
                 view.filters_json = dto.FiltersJson;
+                view.use_all_datafiles = dto.UseAllDataFiles;
 
                 _context.crm_views.Update(view);
 
-                // ------------------------------
-                // ✅ UPDATE DATAFILES
-                // ------------------------------
+                // Clear existing datafile links
                 var existingDatafiles = _context.crm_view_datafiles
                     .Where(x => x.view_id == dto.ViewId);
-
                 _context.crm_view_datafiles.RemoveRange(existingDatafiles);
 
-                if (dto.DataFileIds != null && dto.DataFileIds.Any())
-                {
-                    var newDatafiles = dto.DataFileIds.Select(df => new CrmViewDatafile
-                    {
-                        view_id = dto.ViewId,
-                        datafile_id = df
-                    });
+                // Clear exclusions
+                var existingExcluded = _context.crm_view_excluded_datafiles
+                    .Where(x => x.view_id == dto.ViewId);
+                _context.crm_view_excluded_datafiles.RemoveRange(existingExcluded);
 
-                    await _context.crm_view_datafiles.AddRangeAsync(newDatafiles);
+                if (dto.UseAllDataFiles)
+                {
+                    // Store exclusions (unchecked)
+                    if (dto.ExcludedDataFileIds != null && dto.ExcludedDataFileIds.Any())
+                    {
+                        var newExcluded = dto.ExcludedDataFileIds.Select(df => new CrmViewExcludedDatafile
+                        {
+                            view_id = dto.ViewId,
+                            datafile_id = df
+                        });
+
+                        await _context.crm_view_excluded_datafiles.AddRangeAsync(newExcluded);
+                    }
+                }
+                else
+                {
+                    if (dto.DataFileIds != null && dto.DataFileIds.Any())
+                    {
+                        var newDatafiles = dto.DataFileIds.Select(df => new CrmViewDatafile
+                        {
+                            view_id = dto.ViewId,
+                            datafile_id = df
+                        });
+
+                        await _context.crm_view_datafiles.AddRangeAsync(newDatafiles);
+                    }
                 }
 
-                // ------------------------------
-                // ✅ UPDATE SEGMENTS
-                // ------------------------------
+                // Update segments
                 var existingSegments = _context.crm_view_segments
                     .Where(x => x.view_id == dto.ViewId);
 
@@ -2511,5 +2541,6 @@ namespace PitchGenApi.Controllers
                 return BadRequest(ex.Message);
             }
         }
+
     }
 }

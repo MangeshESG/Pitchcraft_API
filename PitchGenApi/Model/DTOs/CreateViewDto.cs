@@ -13,5 +13,8 @@
         public List<int>? SegmentIds { get; set; }
 
         public string? FiltersJson { get; set; }
+
+        public bool UseAllDataFiles { get; set; } // NEW
+        public List<int>? ExcludedDataFileIds { get; set; } // optional
     }
 }

@@ -59,6 +59,9 @@ namespace PitchGenApi.Database
 
         public DbSet<CrmViewSegment> crm_view_segments { get; set; }
 
+        public DbSet<CrmViewExcludedDatafile> crm_view_excluded_datafiles { get; set; }
+
+
 
 
 
@@ -68,6 +71,9 @@ namespace PitchGenApi.Database
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
             modelBuilder.Entity<zohoViewIddetails>().ToTable("zohoViewIddetails");
             modelBuilder.Entity<SettingspgViewIddetails>().ToTable("Settingspg");
+
+            modelBuilder.Entity<CrmViewExcludedDatafile>()
+                 .HasKey(x => new { x.view_id, x.datafile_id });
 
             modelBuilder.Entity<Campaign>()
                 .HasIndex(c => c.ClientId);
@@ -116,6 +122,9 @@ namespace PitchGenApi.Database
                       .HasForeignKey<CampaignConversation>(c => c.CampaignTemplateId)
                       .OnDelete(DeleteBehavior.Cascade);
             });
+
+
+        
 
             // ✅ CampaignConversation Configuration
             modelBuilder.Entity<CampaignConversation>(entity =>

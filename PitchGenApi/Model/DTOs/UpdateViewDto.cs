@@ -11,5 +11,8 @@
 
         public List<int>? DataFileIds { get; set; }
         public List<int>? SegmentIds { get; set; }
+
+        public bool UseAllDataFiles { get; set; } // NEW
+        public List<int>? ExcludedDataFileIds { get; set; } // NEW
     }
 }
