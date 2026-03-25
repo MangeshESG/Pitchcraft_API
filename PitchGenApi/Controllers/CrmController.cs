@@ -398,7 +398,6 @@ namespace PitchGenApi.Controllers
                 contact.CompanyLinkedInURL = model.CompanyLinkedInURL;
                 contact.CompanyIndustry = model.CompanyIndustry;
                 contact.CompanyEmployeeCount = model.CompanyEmployeeCount;
-                contact.linkedIninformation = model.linkedIninformation;
                 contact.updated_at = DateTime.UtcNow;
 
                 await _context.SaveChangesAsync();
@@ -698,6 +697,14 @@ namespace PitchGenApi.Controllers
 
                 var contactIds = contactsRaw.Select(c => c.id).ToList();
 
+                // Load notes (only ContactIds)
+                var notesContactIds = await _context.Notes
+                    .Where(n => n.ClientId == clientId)
+                    .Select(n => n.ContactId)
+                    .Distinct()
+                    .ToListAsync();
+
+                var notesSet = new HashSet<int>(notesContactIds);
                 // 2️⃣ Load custom field values
                 var customValues = await (
                     from v in _context.contact_custom_field_values
@@ -733,8 +740,10 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.linkedIninformation,
 
+                        hasLinkedInInfo = !string.IsNullOrEmpty(c.linkedIninformation),
+
+                        hasNotes = notesSet.Contains(c.id),
                         unsubscribe = unsubscribedSet.Contains(c.email) ? "Yes" : "No",
 
                         customFields = customValues
@@ -1408,7 +1417,14 @@ namespace PitchGenApi.Controllers
 
                 if (!contactIds.Any())
                     return Ok(new { success = true, contactCount = 0, contacts = new List<object>() });
+                // Load notes (only ContactIds)
+                var notesContactIds = await _context.Notes
+                    .Where(n => n.ClientId == clientId)
+                    .Select(n => n.ContactId)
+                    .Distinct()
+                    .ToListAsync();
 
+                var notesSet = new HashSet<int>(notesContactIds);
                 // Step 3: Unsubscribed emails list
                 var unsubscribedEmails = await _context.UnsubscribedContacts
                     .Where(u => u.ClientId == clientId)
@@ -1450,8 +1466,9 @@ namespace PitchGenApi.Controllers
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
                         //c.CompanyEventLink,
-                        c.linkedIninformation,
+                        hasLinkedInInfo = !string.IsNullOrEmpty(c.linkedIninformation),
 
+                        hasNotes = notesSet.Contains(c.id),
                         unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
                     })
                     .ToList();
