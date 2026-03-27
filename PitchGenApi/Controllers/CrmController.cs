@@ -310,20 +310,50 @@ namespace PitchGenApi.Controllers
 
             try
             {
-                // Check DataFile exist karti hai ya nahi
-                var dataFile = await _context.data_files
-                    .FirstOrDefaultAsync(df => df.id == DataFileId);
+                DataFile dataFile = null;
 
-                if (dataFile == null)
+                // 🔹 CASE 1: DataFileId = 0 → Manual DataFile handle karo
+                if (DataFileId <= 0)
                 {
-                    return NotFound(new
+                    dataFile = await _context.data_files
+                        .FirstOrDefaultAsync(df =>
+                            df.client_id == request.clientId &&
+                            df.name == "All manually added contacts");
+
+                    // Agar nahi mila → create new
+                    if (dataFile == null)
                     {
-                        success = false,
-                        message = "DataFile not found"
-                    });
+                        dataFile = new DataFile
+                        {
+                            client_id = request.clientId,
+                            name = "All manually added contacts",
+                            data_file_name = "All manually added contacts",
+                            created_at = DateTime.UtcNow
+                        };
+
+                        _context.data_files.Add(dataFile);
+                        await _context.SaveChangesAsync();
+                    }
+
+                    DataFileId = dataFile.id; // 👈 important
+                }
+                else
+                {
+                    // 🔹 CASE 2: Existing DataFile check
+                    dataFile = await _context.data_files
+                        .FirstOrDefaultAsync(df => df.id == DataFileId);
+
+                    if (dataFile == null)
+                    {
+                        return NotFound(new
+                        {
+                            success = false,
+                            message = "DataFile not found"
+                        });
+                    }
                 }
 
-                // Create contact from DTO
+                // 🔹 Create Contact
                 var contact = new Contact
                 {
                     DataFileId = DataFileId,
@@ -340,7 +370,6 @@ namespace PitchGenApi.Controllers
                     CompanyEmployeeCount = request.CompanyEmployeeCount,
                     CompanyIndustry = request.CompanyIndustry,
                     CompanyLinkedInURL = request.CompanyLinkedInURL,
-                    //CompanyEventLink = request.CompanyEventLink,
                     created_at = DateTime.UtcNow,
                     updated_at = null,
                     linkedIninformation = request.linkedIninformation
@@ -348,6 +377,7 @@ namespace PitchGenApi.Controllers
 
                 _context.contacts.Add(contact);
                 await _context.SaveChangesAsync();
+
                 await transaction.CommitAsync();
 
                 return Ok(new
