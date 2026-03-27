@@ -10,6 +10,7 @@ using PitchGenApi.Model.DTOs;
 using PitchGenApi.Model;
 using System.Text;
 using Stripe;
+using System.Reflection;
 
 
 namespace PitchGenApi.Controllers
@@ -114,10 +115,10 @@ namespace PitchGenApi.Controllers
         }
 
 
-        [HttpPut("custom-field-rename/{id}")]
-        public async Task<IActionResult> UpdateCustomField(int id, [FromBody] CreateCustomFieldDto dto)
+        [HttpPost("custom-field-rename")]
+        public async Task<IActionResult> UpdateCustomField([FromBody] UpdateCustomFieldDto dto)
         {
-            var field = await _context.crm_custom_fields.FindAsync(id);
+            var field = await _context.crm_custom_fields.FindAsync(dto.Id);
 
             if (field == null)
                 return NotFound("Field not found");
@@ -135,7 +136,7 @@ namespace PitchGenApi.Controllers
                 {
                     // Check if removed options are used in contacts
                     var usedOptions = await _context.contact_custom_field_values
-                        .Where(v => v.field_id == id && removedOptions.Contains(v.value))
+                        .Where(v => v.field_id == dto.Id && removedOptions.Contains(v.value))
                         .Select(v => v.value)
                         .Distinct()
                         .ToListAsync();
@@ -639,6 +640,8 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("contacts/List-by-CleinteId")]
+
+        [HttpGet("contacts/List-by-ClientId")]
         public async Task<IActionResult> GetContactsByClientAndDataFileIdList([FromQuery] int clientId, [FromQuery] int dataFileId)
         {
             try
@@ -2542,5 +2545,443 @@ namespace PitchGenApi.Controllers
             }
         }
 
+
+        //-------------------Views contect ---------------------------------------//
+        //-------------------Views contect ---------------------------------------//
+        [HttpPost("view-contacts")]
+        public async Task<IActionResult> GetViewContacts([FromBody] ViewContactsRequest dto)
+        {
+            var view = await _context.crm_views
+                .FirstOrDefaultAsync(v => v.id == dto.ViewId && v.client_id == dto.ClientId);
+
+            if (view == null)
+                return NotFound("View not found");
+
+            // =============================
+            // 1️⃣ DATAFILES
+            // =============================
+            List<int> dataFileIds;
+
+            if (view.use_all_datafiles)
+            {
+                var all = await _context.data_files
+                    .Where(df => df.client_id == dto.ClientId)
+                    .Select(df => df.id)
+                    .ToListAsync();
+
+                var excluded = await _context.crm_view_excluded_datafiles
+                    .Where(x => x.view_id == view.id)
+                    .Select(x => x.datafile_id)
+                    .ToListAsync();
+
+                dataFileIds = all.Except(excluded).ToList();
+            }
+            else
+            {
+                dataFileIds = await _context.crm_view_datafiles
+                    .Where(x => x.view_id == view.id)
+                    .Select(x => x.datafile_id)
+                    .ToListAsync();
+            }
+
+            // =============================
+            // 2️⃣ BASE QUERY (SQL LEVEL)
+            // =============================
+            var query = _context.contacts
+                .Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value));
+
+            // =============================
+            // 3️⃣ SEGMENT FILTER
+            // =============================
+            var segmentIds = await _context.crm_view_segments
+                .Where(x => x.view_id == view.id)
+                .Select(x => x.segment_id)
+                .ToListAsync();
+
+            if (segmentIds.Any())
+            {
+                var segmentContactIds = _context.segmentContacts
+                    .Where(x => segmentIds.Contains(x.SegmentId))
+                    .Select(x => x.ContactId);
+
+                query = query.Where(c => segmentContactIds.Contains(c.id));
+            }
+
+            // =============================
+            // 4️⃣ SEARCH (SQL LEVEL)
+            // =============================
+            if (!string.IsNullOrWhiteSpace(dto.Search))
+            {
+                var s = dto.Search.ToLower();
+
+                query = query.Where(c =>
+                    (c.full_name ?? "").ToLower().Contains(s) ||
+                    (c.email ?? "").ToLower().Contains(s) ||
+                    (c.company_name ?? "").ToLower().Contains(s) ||
+                    (c.job_title ?? "").ToLower().Contains(s)
+                );
+            }
+
+
+            // =============================
+            // 5️⃣ LOAD CONTACTS (FULL DATA FOR UI)
+            // =============================
+            var contacts = await query
+                .OrderBy(c => c.id)
+                .Select(c => new
+                {
+                    c.id,
+                    c.full_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+
+                    c.email_subject,     // ✅ IMPORTANT
+                    c.email_body,        // ✅ IMPORTANT
+
+                    c.created_at,        // ✅ REQUIRED
+                    c.updated_at,
+                    c.email_sent_at,
+
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+
+                    c.linkedIninformation // ✅ NOTES / LINKEDIN INFO
+                })
+                .ToListAsync();
+
+            var contactIds = contacts.Select(c => c.id).ToList();
+
+            // =============================
+            // 6️⃣ LOAD NOTES (BATCH)
+            // =============================
+            var notesSet = new HashSet<int>(
+                await _context.Notes
+                    .Where(n => n.ClientId == dto.ClientId)
+                    .Select(n => n.ContactId)
+                    .Distinct()
+                    .ToListAsync()
+            );
+
+            // =============================
+            // 7️⃣ LOAD CUSTOM FIELDS (BATCH)
+            // =============================
+            var customValues = await (
+                from v in _context.contact_custom_field_values
+                join f in _context.crm_custom_fields on v.field_id equals f.id
+                where contactIds.Contains(v.contact_id)
+                select new { v.contact_id, f.field_name, v.value }
+            ).ToListAsync();
+
+            var customByContact = customValues
+                .GroupBy(x => x.contact_id)
+                .ToDictionary(
+                    g => g.Key,
+                    g => g.ToDictionary(x => x.field_name, x => (object?)x.value)
+                );
+
+            // =============================
+            // 8️⃣ FINAL RESULT SHAPE
+            // =============================
+            var result = contacts.Select(c => new
+            {
+                c.id,
+                c.full_name,
+                c.email,
+                c.website,
+                c.company_name,
+                c.job_title,
+                c.linkedin_url,
+                c.country_or_address,
+
+                c.email_subject,
+                c.email_body,
+
+                c.created_at,
+                c.updated_at,
+                c.email_sent_at,
+
+                c.CompanyTelephone,
+                c.CompanyEmployeeCount,
+                c.CompanyIndustry,
+                c.CompanyLinkedInURL,
+
+                linkedIninformation = c.linkedIninformation,
+
+                hasNotes = notesSet.Contains(c.id),
+                hasLinkedInInfo = !string.IsNullOrWhiteSpace(c.linkedIninformation),
+
+                customFields = customByContact.ContainsKey(c.id)
+                    ? customByContact[c.id]
+                    : new Dictionary<string, object>()
+            }).ToList();
+
+            // =============================
+            // 9️⃣ APPLY COMPLEX FILTERS
+            // =============================
+            var filtered = ApplyFilters(result, view.filters_json);
+
+            return Ok(new
+            {
+                total = filtered.Count,
+                contacts = filtered
+            });
+        }
+
+        private static List<T> ApplyFilters<T>(List<T> data, string? filtersJson)
+        {
+            if (string.IsNullOrWhiteSpace(filtersJson))
+                return data;
+
+            FiltersPayload? payload;
+
+            try
+            {
+                payload = System.Text.Json.JsonSerializer.Deserialize<FiltersPayload>(
+                    filtersJson,
+                    new System.Text.Json.JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    });
+            }
+            catch
+            {
+                return data;
+            }
+
+            var groups = payload?.Groups;
+            if (groups == null || groups.Count == 0)
+            {
+                if (payload?.Conditions != null && payload.Conditions.Count > 0)
+                {
+                    groups = new List<FilterGroupDto>
+            {
+                new FilterGroupDto
+                {
+                    Conditions = payload.Conditions,
+                    JoinWithPrevious = "AND"
+                }
+            };
+                }
+                else
+                {
+                    return data;
+                }
+            }
+
+            return data.Where(row =>
+            {
+                bool overallResult = true;
+
+                for (int g = 0; g < groups.Count; g++)
+                {
+                    var group = groups[g];
+                    var conditions = group.Conditions ?? new List<FilterConditionDto>();
+
+                    bool groupResult = true;
+
+                    for (int i = 0; i < conditions.Count; i++)
+                    {
+                        var cond = conditions[i];
+                        if (string.IsNullOrWhiteSpace(cond.Field) || string.IsNullOrWhiteSpace(cond.Operator))
+                            continue;
+
+                        bool eval = EvaluateCondition(row, cond);
+
+                        if (i == 0)
+                        {
+                            groupResult = eval;
+                        }
+                        else
+                        {
+                            var join = (cond.JoinWithPrevious ?? "AND").ToUpperInvariant();
+                            groupResult = join == "OR" ? (groupResult || eval) : (groupResult && eval);
+                        }
+                    }
+
+                    if (g == 0)
+                    {
+                        overallResult = groupResult;
+                    }
+                    else
+                    {
+                        var join = (group.JoinWithPrevious ?? "AND").ToUpperInvariant();
+                        overallResult = join == "OR" ? (overallResult || groupResult) : (overallResult && groupResult);
+                    }
+                }
+
+                return overallResult;
+            }).ToList();
+        }
+
+        private static bool EvaluateCondition(object row, FilterConditionDto cond)
+        {
+            var rawValue = GetFieldValue(row, cond.Field ?? "");
+            var target = cond.Value ?? "";
+
+            switch (cond.Operator)
+            {
+                case "contains":
+                    return rawValue.Contains(target, StringComparison.OrdinalIgnoreCase);
+
+                case "equals":
+                    return rawValue.Equals(target, StringComparison.OrdinalIgnoreCase);
+
+                case "notEquals":
+                    return !rawValue.Equals(target, StringComparison.OrdinalIgnoreCase);
+
+                case "startsWith":
+                    return rawValue.StartsWith(target, StringComparison.OrdinalIgnoreCase);
+
+                case "endsWith":
+                    return rawValue.EndsWith(target, StringComparison.OrdinalIgnoreCase);
+
+                case "gt":
+                    {
+                        var a = ToNumberSafe(rawValue);
+                        var b = ToNumberSafe(target);
+                        return a.HasValue && b.HasValue && a > b;
+                    }
+                case "lt":
+                    {
+                        var a = ToNumberSafe(rawValue);
+                        var b = ToNumberSafe(target);
+                        return a.HasValue && b.HasValue && a < b;
+                    }
+                case "gte":
+                    {
+                        var a = ToNumberSafe(rawValue);
+                        var b = ToNumberSafe(target);
+                        return a.HasValue && b.HasValue && a >= b;
+                    }
+                case "lte":
+                    {
+                        var a = ToNumberSafe(rawValue);
+                        var b = ToNumberSafe(target);
+                        return a.HasValue && b.HasValue && a <= b;
+                    }
+                case "before":
+                    {
+                        var a = ToDateSafe(rawValue);
+                        var b = ToDateSafe(target);
+                        return a.HasValue && b.HasValue && a < b;
+                    }
+                case "after":
+                    {
+                        var a = ToDateSafe(rawValue);
+                        var b = ToDateSafe(target);
+                        return a.HasValue && b.HasValue && a > b;
+                    }
+
+                default:
+                    return true;
+            }
+        }
+
+        private static string GetFieldValue(object row, string field)
+        {
+            var prop = row.GetType().GetProperty(field,
+                BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+
+            if (prop != null)
+            {
+                var val = prop.GetValue(row);
+                return val?.ToString() ?? "";
+            }
+
+            if (field.StartsWith("custom_", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var customProp =
+                        row.GetType().GetProperty("custom_fields", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance) ??
+                        row.GetType().GetProperty("customFields", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance) ??
+                        row.GetType().GetProperty("custom_fields_json", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance) ??
+                        row.GetType().GetProperty("customFieldsJson", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance) ??
+                        row.GetType().GetProperty("CustomFields", BindingFlags.IgnoreCase | BindingFlags.Public | BindingFlags.Instance);
+
+                    var rawObj = customProp?.GetValue(row);
+
+                    if (rawObj is IDictionary<string, object> dictObj)
+                    {
+                        var key = field.Replace("custom_", "", StringComparison.OrdinalIgnoreCase);
+                        if (dictObj.TryGetValue(key, out var v))
+                            return v?.ToString() ?? "";
+
+                        var target = NormalizeKey(key);
+                        foreach (var kv in dictObj)
+                        {
+                            if (NormalizeKey(kv.Key) == target)
+                                return kv.Value?.ToString() ?? "";
+                        }
+                    }
+
+                    if (rawObj is IDictionary<string, string> dictStr)
+                    {
+                        var key = field.Replace("custom_", "", StringComparison.OrdinalIgnoreCase);
+                        if (dictStr.TryGetValue(key, out var v))
+                            return v ?? "";
+
+                        var target = NormalizeKey(key);
+                        foreach (var kv in dictStr)
+                        {
+                            if (NormalizeKey(kv.Key) == target)
+                                return kv.Value ?? "";
+                        }
+                    }
+
+                    var raw = rawObj?.ToString();
+                    if (!string.IsNullOrWhiteSpace(raw))
+                    {
+                        var dict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(raw);
+                        var key = field.Replace("custom_", "", StringComparison.OrdinalIgnoreCase);
+
+                        if (dict != null)
+                        {
+                            if (dict.TryGetValue(key, out var v))
+                                return v?.ToString() ?? "";
+
+                            var target = NormalizeKey(key);
+                            foreach (var kv in dict)
+                            {
+                                if (NormalizeKey(kv.Key) == target)
+                                    return kv.Value?.ToString() ?? "";
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return "";
+        }
+
+     
+   
+        private static string NormalizeKey(string value) =>
+            new string(value.ToLower().Where(char.IsLetterOrDigit).ToArray());
+
+        private static double? ToNumberSafe(string s)
+        {
+            if (double.TryParse(s, out var n))
+                return n;
+            return null;
+        }
+
+        private static DateTime? ToDateSafe(string s)
+        {
+            if (DateTime.TryParse(s, out var d))
+                return d;
+            return null;
+        }
+
+
+
     }
+
 }
