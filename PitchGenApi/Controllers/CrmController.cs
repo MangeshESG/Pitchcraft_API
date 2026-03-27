@@ -2980,7 +2980,49 @@ namespace PitchGenApi.Controllers
             return null;
         }
 
+        [HttpPost("upload-datafile")]
+        public async Task<IActionResult> UploadDataFile([FromBody] DataFileDto request)
+        {
+            try
+            {
+                if (request.clientId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "clientId is required"
+                    });
+                }
 
+                var dataFile = new DataFile
+                {
+                    client_id = request.clientId,
+                    name = request.name,
+                    data_file_name = request.dataFileName,
+                    description = request.description,
+                    created_at = DateTime.UtcNow
+                };
+
+                _context.data_files.Add(dataFile);
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "DataFile created successfully",
+                    dataFileId = dataFile.id
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "DataFile creation failed",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
 
     }
 
