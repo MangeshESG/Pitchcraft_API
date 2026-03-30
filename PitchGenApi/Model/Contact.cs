@@ -31,6 +31,9 @@ namespace PitchGenApi.Models
         //public string? CompanyEventLink { get; set; }
         public string? linkedIninformation { get; set; }
 
+        public string? first_name { get; set; }
+        public string? last_name { get; set; }
+
         public DateTime? email_sent_at { get; set; } // Nullable to allow for unset values
 
         public DataFile? data_file { get; set; } // Navigation

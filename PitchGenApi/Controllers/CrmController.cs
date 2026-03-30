@@ -201,26 +201,55 @@ namespace PitchGenApi.Controllers
                 await _context.SaveChangesAsync();
 
                 // Create Contacts
-                var contacts = request.contacts.Select(c => new Contact
-                {
-                    DataFileId = dataFile.id,
-                    full_name = c.fullName,
-                    email = c.email,
-                    website = c.website,
-                    company_name = c.companyName,
-                    job_title = c.jobTitle,
-                    linkedin_url = c.linkedInUrl,
-                    country_or_address = c.countryOrAddress,
-                    email_subject = c.emailSubject,
-                    email_body = c.emailBody,
-                    CompanyTelephone = c.CompanyTelephone,
-                    CompanyEmployeeCount = c.CompanyEmployeeCount,
-                    CompanyIndustry = c.CompanyIndustry,
-                    CompanyLinkedInURL = c.CompanyLinkedInURL,
-                    linkedIninformation = c.linkedIninformation,
-                    created_at = DateTime.UtcNow,
-                    updated_at = null
-                }).ToList();
+                var contacts = request.contacts
+                    .Select(c =>
+                    {
+                        var firstName = c.firstName?.Trim();
+                        var lastName = c.lastName?.Trim();
+
+                        // Auto split
+                        if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(c.fullName))
+                        {
+                            var parts = c.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                            firstName = parts.FirstOrDefault();
+                            lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+                        }
+
+                        var fullName = !string.IsNullOrWhiteSpace(c.fullName)
+                            ? c.fullName.Trim()
+                            : $"{firstName} {lastName}".Trim();
+
+                        if (string.IsNullOrWhiteSpace(fullName))
+                        {
+                            fullName = !string.IsNullOrWhiteSpace(c.email) ? c.email : "Unknown";
+                        }
+
+                        return new Contact
+                        {
+                            DataFileId = dataFile.id,
+                            first_name = firstName,
+                            last_name = lastName,
+                            full_name = fullName,
+                            email = c.email?.Trim(),
+                            website = c.website,
+                            company_name = c.companyName,
+                            job_title = c.jobTitle,
+                            linkedin_url = c.linkedInUrl,
+                            country_or_address = c.countryOrAddress,
+                            email_subject = c.emailSubject,
+                            email_body = c.emailBody,
+                            CompanyTelephone = c.CompanyTelephone,
+                            CompanyEmployeeCount = c.CompanyEmployeeCount,
+                            CompanyIndustry = c.CompanyIndustry,
+                            CompanyLinkedInURL = c.CompanyLinkedInURL,
+                            linkedIninformation = c.linkedIninformation,
+                            created_at = DateTime.UtcNow,
+                            updated_at = null
+                        };
+                    })
+                    .Where(c => c != null)
+                    .ToList();
+
 
                 _context.contacts.AddRange(contacts);
                 await _context.SaveChangesAsync();
@@ -312,7 +341,7 @@ namespace PitchGenApi.Controllers
             {
                 DataFile dataFile = null;
 
-                // 🔹 CASE 1: DataFileId = 0 → Manual DataFile handle karo
+                // 🔹 CASE 1: DataFileId = 0 → create/find manual DataFile
                 if (DataFileId <= 0)
                 {
                     dataFile = await _context.data_files
@@ -320,7 +349,6 @@ namespace PitchGenApi.Controllers
                             df.client_id == request.clientId &&
                             df.name == "All manually added contacts");
 
-                    // Agar nahi mila → create new
                     if (dataFile == null)
                     {
                         dataFile = new DataFile
@@ -335,11 +363,10 @@ namespace PitchGenApi.Controllers
                         await _context.SaveChangesAsync();
                     }
 
-                    DataFileId = dataFile.id; // 👈 important
+                    DataFileId = dataFile.id;
                 }
                 else
                 {
-                    // 🔹 CASE 2: Existing DataFile check
                     dataFile = await _context.data_files
                         .FirstOrDefaultAsync(df => df.id == DataFileId);
 
@@ -353,12 +380,37 @@ namespace PitchGenApi.Controllers
                     }
                 }
 
+                // ✅ NAME HANDLING (IMPORTANT)
+                var firstName = request.firstName?.Trim();
+                var lastName = request.lastName?.Trim();
+
+                // Auto split if only fullName is provided
+                if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(request.fullName))
+                {
+                    var parts = request.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    firstName = parts.FirstOrDefault();
+                    lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+                }
+
+                // Build full name
+                var fullName = !string.IsNullOrWhiteSpace(request.fullName)
+                    ? request.fullName.Trim()
+                    : $"{firstName} {lastName}".Trim();
+
+                // Final fallback
+                if (string.IsNullOrWhiteSpace(fullName))
+                {
+                    fullName = !string.IsNullOrWhiteSpace(request.email) ? request.email : "Unknown";
+                }
+
                 // 🔹 Create Contact
                 var contact = new Contact
                 {
                     DataFileId = DataFileId,
-                    full_name = request.fullName,
-                    email = request.email,
+                    first_name = firstName,
+                    last_name = lastName,
+                    full_name = fullName,
+                    email = request.email?.Trim(),
                     website = request.website,
                     company_name = request.companyName,
                     job_title = request.jobTitle,
@@ -370,9 +422,9 @@ namespace PitchGenApi.Controllers
                     CompanyEmployeeCount = request.CompanyEmployeeCount,
                     CompanyIndustry = request.CompanyIndustry,
                     CompanyLinkedInURL = request.CompanyLinkedInURL,
+                    linkedIninformation = request.linkedIninformation,
                     created_at = DateTime.UtcNow,
-                    updated_at = null,
-                    linkedIninformation = request.linkedIninformation
+                    updated_at = null
                 };
 
                 _context.contacts.Add(contact);
@@ -400,7 +452,6 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
-
         [HttpPost]
         [Route("update-contact")]
         public async Task<IActionResult> UpdateContact([FromQuery] int id, [FromBody] ContactDto model)
@@ -415,9 +466,35 @@ namespace PitchGenApi.Controllers
                     return NotFound(new { message = "Contact not found" });
                 }
 
-                // Update base fields
-                contact.full_name = model.fullName;
-                contact.email = model.email;
+                // ✅ NAME HANDLING (IMPORTANT)
+                var firstName = model.firstName?.Trim();
+                var lastName = model.lastName?.Trim();
+
+                // Auto split if only fullName is provided
+                if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(model.fullName))
+                {
+                    var parts = model.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    firstName = parts.FirstOrDefault();
+                    lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+                }
+
+                // Build full name
+                var fullName = !string.IsNullOrWhiteSpace(model.fullName)
+                    ? model.fullName.Trim()
+                    : $"{firstName} {lastName}".Trim();
+
+                // Final fallback
+                if (string.IsNullOrWhiteSpace(fullName))
+                {
+                    fullName = !string.IsNullOrWhiteSpace(model.email) ? model.email : "Unknown";
+                }
+
+                // 🔹 Update base fields
+                contact.first_name = firstName;
+                contact.last_name = lastName;
+                contact.full_name = fullName;
+
+                contact.email = model.email?.Trim();
                 contact.job_title = model.jobTitle;
                 contact.website = model.website;
                 contact.linkedin_url = model.linkedInUrl;
@@ -439,12 +516,10 @@ namespace PitchGenApi.Controllers
 
                 if (model.customFields != null && model.customFields.Any())
                 {
-                    // Load all custom field definitions for this client
                     var fieldDefs = await _context.crm_custom_fields
                         .Where(f => f.client_id == model.clientId)
                         .ToDictionaryAsync(f => f.field_name, f => f);
 
-                    // Load existing values for this contact
                     var existingValues = await _context.contact_custom_field_values
                         .Where(v => v.contact_id == id)
                         .ToListAsync();
@@ -461,12 +536,10 @@ namespace PitchGenApi.Controllers
 
                         if (existing != null)
                         {
-                            // UPDATE existing value
                             existing.value = value;
                         }
                         else
                         {
-                            // CREATE new value
                             _context.contact_custom_field_values.Add(
                                 new ContactCustomFieldValue
                                 {
@@ -643,6 +716,8 @@ namespace PitchGenApi.Controllers
                 {
                     c.id,
                     c.full_name,
+                    c.first_name,
+                    c.last_name,
                     c.email,
                     c.website,
                     c.company_name,
@@ -709,6 +784,8 @@ namespace PitchGenApi.Controllers
                     {
                         c.id,
                         c.full_name,
+                        c.first_name,
+                        c.last_name,
                         c.email,
                         c.website,
                         c.company_name,
@@ -758,6 +835,8 @@ namespace PitchGenApi.Controllers
                     {
                         c.id,
                         c.full_name,
+                        c.first_name,
+                        c.last_name,
                         c.email,
                         c.website,
                         c.company_name,
@@ -932,6 +1011,8 @@ namespace PitchGenApi.Controllers
 
                     // Contact details
                     Name = contact.full_name,
+                    FirstName = contact.first_name,
+                    LastName = contact.last_name,
                     Email = contact.email,
                     address = contact.country_or_address,
                     Website = contact.website,
@@ -1397,6 +1478,8 @@ namespace PitchGenApi.Controllers
                 {
                     c.id,
                     c.full_name,
+                    c.first_name,
+                    c.last_name,
                     c.email,
                     c.website,
                     c.company_name,
@@ -1483,6 +1566,8 @@ namespace PitchGenApi.Controllers
                     {
                         c.id,
                         c.full_name,
+                        c.first_name,
+                        c.last_name,
                         c.email,
                         c.website,
                         c.company_name,
@@ -1841,6 +1926,8 @@ namespace PitchGenApi.Controllers
                         // 🔹 Contact Info
                         ContactId = c.id,
                         FullName = c.full_name,
+                        FirstName = c.first_name,
+                        LastName = c.last_name,
                         Email = c.email,
                         CreatedAt = c.created_at,
                         DataFileId = c.DataFileId,
@@ -2005,6 +2092,8 @@ namespace PitchGenApi.Controllers
                         c.id,
                         DataFileId = c.DataFileId.Value,
                         c.full_name,
+                        c.first_name,
+                        c.last_name,
                         c.email,
                         c.website,
                         c.company_name,
@@ -2028,6 +2117,8 @@ namespace PitchGenApi.Controllers
                     c.id,
                     c.DataFileId,
                     c.full_name,
+                    c.first_name,
+                    c.last_name,
                     c.email,
                     c.website,
                     c.company_name,
@@ -2122,7 +2213,7 @@ namespace PitchGenApi.Controllers
 
             try
             {
-                // 1️⃣ Existing contact fetch
+                // 1️⃣ Fetch existing contact
                 var existingContact = await _context.contacts
                     .FirstOrDefaultAsync(c => c.id == contactId);
 
@@ -2133,11 +2224,17 @@ namespace PitchGenApi.Controllers
                         message = "Contact not found"
                     });
 
-                // 2️⃣ Clone contact (new object)
+                // 2️⃣ Clone contact (INCLUDING first_name + last_name ✅)
                 var clonedContact = new Contact
                 {
                     DataFileId = existingContact.DataFileId,
+
+                    // ✅ NAME FIELDS (IMPORTANT)
+                    first_name = existingContact.first_name,
+                    last_name = existingContact.last_name,
                     full_name = existingContact.full_name,
+
+                    // Other fields
                     email = existingContact.email,
                     website = existingContact.website,
                     company_name = existingContact.company_name,
@@ -2231,6 +2328,8 @@ namespace PitchGenApi.Controllers
                 {
                     contact.id,
                     contact.full_name,
+                    contact.first_name,
+                    contact.last_name,
                     contact.email,
                     contact.website,
                     contact.company_name,
@@ -2662,6 +2761,8 @@ namespace PitchGenApi.Controllers
                 {
                     c.id,
                     c.full_name,
+                    c.first_name,
+                    c.last_name,
                     c.email,
                     c.website,
                     c.company_name,
@@ -2722,6 +2823,8 @@ namespace PitchGenApi.Controllers
             {
                 c.id,
                 c.full_name,
+                c.first_name,
+                c.last_name,
                 c.email,
                 c.website,
                 c.company_name,
