@@ -2,6 +2,7 @@
 using System;
 using System.ComponentModel.DataAnnotations.Schema;
 using PitchGenApi.Model;
+using System.ComponentModel;
 
 namespace PitchGenApi.Models
 {
@@ -20,6 +21,8 @@ namespace PitchGenApi.Models
         public string? linkedin_url { get; set; }
         public string? country_or_address { get; set; }
         public string? email_subject { get; set; }
+
+        [DisplayName("Email Body")]
         public string? email_body { get; set; }
 
         public DateTime created_at { get; set; }

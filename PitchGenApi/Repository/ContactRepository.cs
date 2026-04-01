@@ -6,6 +6,7 @@ using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
 using Serilog;
 using System.Text;
+using static ContactRepository;
 
 public class ContactRepository
 {
@@ -372,6 +373,119 @@ public class ContactRepository
             EmailLogs = emailLogs
         };
     }
+
+    public async Task<ContactColumnResponseDto> GetContactColumnsWithCustomFields(int clientId)
+    {
+        // ❌ Fields jo bulk update ke liye allowed nahi hain
+        var restrictedFields = new List<string>
+        {
+            "id",
+            "data_file_id",
+            "email",
+            "full_name",
+            "linkedin_url",
+            "created_at",
+            "updated_at",
+            "email_sent_at",
+            "data_file",
+            "DataFileId"
+        };
+
+        // ✅ Sirf valid fields hi lo
+        var contactColumns = typeof(Contact)
+            .GetProperties()
+            .Select(p => p.Name)
+            .Where(name => !restrictedFields.Contains(name))
+            .ToList();
+
+        // ✅ FULL custom fields data
+        var customFields = await _context.crm_custom_fields
+            .Where(x => x.client_id == clientId)
+            .Select(x => new CustomFieldFullDto
+            {
+                Id = x.id,
+                client_id = x.client_id,
+                field_name = x.field_name,
+                field_key = x.field_key,
+                field_type = x.field_type,
+                options_json = x.options_json
+            })
+            .ToListAsync();
+
+        return new ContactColumnResponseDto
+        {
+            ContactColumns = contactColumns,
+            CustomFields = customFields
+        };
+    }
+
+    public async Task<bool> BulkUpdateFieldAsync(BulkUpdateFieldDto dto)
+    {
+        using var transaction = await _context.Database.BeginTransactionAsync();
+
+        try
+        {
+            if (!dto.IsCustom)
+            {
+                // ✅ NORMAL FIELD UPDATE
+                var contacts = await _context.contacts
+                    .Where(x => dto.ContactIds.Contains(x.id))
+                    .ToListAsync();
+
+                foreach (var contact in contacts)
+                {
+                    var prop = typeof(Contact).GetProperty(dto.FieldName);
+
+                    if (prop != null && prop.CanWrite)
+                    {
+                        prop.SetValue(contact, Convert.ChangeType(dto.Value, prop.PropertyType));
+                    }
+                }
+            }
+            else
+            {
+                // ✅ CUSTOM FIELD UPDATE / CREATE
+                var existingValues = await _context.contact_custom_field_values
+                    .Where(x => dto.ContactIds.Contains(x.contact_id) && x.field_id == dto.FieldId)
+                    .ToListAsync();
+
+                var existingContactIds = existingValues.Select(x => x.contact_id).ToList();
+
+                // 🔁 UPDATE existing
+                foreach (var item in existingValues)
+                {
+                    item.value = dto.Value;
+                    item.created_at = DateTime.UtcNow;
+                }
+
+                // ➕ CREATE missing
+                var missingContactIds = dto.ContactIds.Except(existingContactIds);
+
+                foreach (var contactId in missingContactIds)
+                {
+                    _context.contact_custom_field_values.Add(new ContactCustomFieldValue
+                    {
+                        contact_id = contactId,
+                        field_id = dto.FieldId.Value,
+                        value = dto.Value,
+                        created_at = DateTime.UtcNow
+                    });
+                }
+            }
+
+            await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            return true;
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
+        }
+    }
+
+    //-------------------------------------------------------------------------------------private---------------------------------------------------------------------------------------------------------------
     private string? GetSourceName(EmailLog log)
     {
         if (log.DataFileId != null)
