@@ -2854,6 +2854,75 @@ namespace PitchGenApi.Controllers
             });
         }
 
+        [HttpGet("get-contact-columns")]
+        public async Task<IActionResult> GetContactColumns(int clientId)
+        {
+            var result = await _contactRepository.GetContactColumnsWithCustomFields(clientId);
+
+            return Ok(new
+            {
+                success = true,
+                data = result
+            });
+        }
+
+        [HttpPost("upload-datafile")]
+        public async Task<IActionResult> UploadDataFile([FromBody] DataFileDto request)
+        {
+            try
+            {
+                if (request.clientId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "clientId is required"
+                    });
+                }
+
+                var dataFile = new DataFile
+                {
+                    client_id = request.clientId,
+                    name = request.name,
+                    data_file_name = request.dataFileName,
+                    description = request.description,
+                    created_at = DateTime.UtcNow
+                };
+
+                _context.data_files.Add(dataFile);
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "DataFile created successfully",
+                    dataFileId = dataFile.id
+                });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "DataFile creation failed",
+                    error = ex.InnerException?.Message ?? ex.Message
+                });
+            }
+        }
+
+        [HttpPost("bulk-update-field")]
+        public async Task<IActionResult> BulkUpdateField([FromBody] BulkUpdateFieldDto dto)
+        {
+            var result = await _contactRepository.BulkUpdateFieldAsync(dto);
+
+            return Ok(new
+            {
+                success = result,
+                message = "Field updated successfully"
+            });
+        }
+        //-------------------------------------------------------------------------------------private---------------------------------------------------------------------------------------------------------------
+
         private static List<T> ApplyFilters<T>(List<T> data, string? filtersJson)
         {
             if (string.IsNullOrWhiteSpace(filtersJson))
@@ -3100,51 +3169,7 @@ namespace PitchGenApi.Controllers
                 return d;
             return null;
         }
-
-        [HttpPost("upload-datafile")]
-        public async Task<IActionResult> UploadDataFile([FromBody] DataFileDto request)
-        {
-            try
-            {
-                if (request.clientId <= 0)
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "clientId is required"
-                    });
-                }
-
-                var dataFile = new DataFile
-                {
-                    client_id = request.clientId,
-                    name = request.name,
-                    data_file_name = request.dataFileName,
-                    description = request.description,
-                    created_at = DateTime.UtcNow
-                };
-
-                _context.data_files.Add(dataFile);
-                await _context.SaveChangesAsync();
-
-                return Ok(new
-                {
-                    success = true,
-                    message = "DataFile created successfully",
-                    dataFileId = dataFile.id
-                });
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new
-                {
-                    success = false,
-                    message = "DataFile creation failed",
-                    error = ex.InnerException?.Message ?? ex.Message
-                });
-            }
-        }
-
+       
     }
 
 }
