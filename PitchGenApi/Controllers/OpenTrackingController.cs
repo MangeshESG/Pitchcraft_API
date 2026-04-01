@@ -707,31 +707,30 @@ public class OpenTrackingController : ControllerBase
 
     [HttpGet("missing-log-contacts")]
     public async Task<IActionResult> GetMissingLogContacts(
-    [FromQuery] DateTime startDate,
-    [FromQuery] DateTime endDate,
-    [FromQuery] int dataFileId)
+        [FromQuery] DateTime startDate,
+        [FromQuery] DateTime endDate,
+        [FromQuery] int dataFileId,
+        [FromQuery] int? campaignId = null   // ✅ ADD THIS
+    )
     {
         if (dataFileId <= 0)
             return BadRequest("dataFileId is required");
 
-        // Force end date to full day 
         endDate = endDate.Date.AddDays(1).AddTicks(-1);
 
-        // Get all contacts of data file
         var contacts = await _context.contacts
             .Where(c => c.DataFileId == dataFileId)
             .ToListAsync();
 
-        // Get logs of this data file within date range
         var loggedContactIds = await _context.EmailLogs
             .Where(l => l.DataFileId == dataFileId
-                    && l.SentAt >= startDate
-                    && l.SentAt <= endDate)
+                     && l.SentAt >= startDate
+                     && l.SentAt <= endDate
+                     && (!campaignId.HasValue || l.CampaignId == campaignId.Value)) // ✅ ADD THIS
             .Select(l => l.ContactId)
             .Distinct()
             .ToListAsync();
 
-        // Filter missing contacts
         var missingContacts = contacts
             .Where(c => !loggedContactIds.Contains(c.id))
             .Select(c => new
@@ -753,7 +752,6 @@ public class OpenTrackingController : ControllerBase
             missingContacts = missingContacts
         });
     }
-
     [HttpPost("delete-tracking-contact")]
     public async Task<IActionResult> DeleteContact([FromQuery] int contactId)
     {

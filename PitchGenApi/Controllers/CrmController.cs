@@ -977,26 +977,24 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("getlogs")]
-        public async Task<IActionResult> GetLogs([FromQuery] int clientId, [FromQuery] int dataFileId)
+        public async Task<IActionResult> GetLogs(
+            [FromQuery] int clientId,
+            [FromQuery] int? campaignId = null
+        )
         {
-            // Step 1: Validate clientId + dataFileId match
-            bool isValid = await _context.data_files
-                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+            if (!campaignId.HasValue)
+                return BadRequest("campaignId is required");
 
-            if (!isValid)
-                return BadRequest("Invalid clientId or dataFileId.");
-
-            // Step 2: Fetch EmailLogs with Contact details (anonymous projection)
             var logs = await (
                 from log in _context.EmailLogs
                 join contact in _context.contacts
                 on log.ContactId equals contact.id into contactGroup
-                from contact in contactGroup.DefaultIfEmpty() // left join (some ContactId might be null)
-                where log.ClientId == clientId && log.DataFileId == dataFileId
+                from contact in contactGroup.DefaultIfEmpty()
+                where log.ClientId == clientId
+                   && log.CampaignId == campaignId.Value   // ✅ ONLY FILTER
                 orderby log.SentAt descending
                 select new
                 {
-                    // Email log details
                     log.Id,
                     log.ContactId,
                     log.ClientId,
@@ -1008,8 +1006,8 @@ namespace PitchGenApi.Controllers
                     log.ErrorMessage,
                     log.ToEmail,
                     log.process_name,
+                    log.CampaignId,
 
-                    // Contact details
                     Name = contact.full_name,
                     FirstName = contact.first_name,
                     LastName = contact.last_name,
@@ -1020,32 +1018,26 @@ namespace PitchGenApi.Controllers
                     JobTitle = contact.job_title,
                     LinkedIn = contact.linkedin_url
                 }
-            )
-            .Take(1000)
-            .ToListAsync();
+            ).ToListAsync();
 
             return Ok(logs);
         }
-
         [HttpGet("gettrackinglogs")]
-        public async Task<IActionResult> GettrackingLogs(int clientId, int dataFileId)
+        public async Task<IActionResult> GettrackingLogs(
+            [FromQuery] int clientId,
+            [FromQuery] int? campaignId = null
+        )
         {
-            bool isValid = await _context.data_files
-                .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
-
-            if (!isValid)
-            {
-                return BadRequest("Invalid clientId or dataFileId.");
-            }
+            if (!campaignId.HasValue)
+                return BadRequest("campaignId is required");
 
             var logs = await (
                 from t in _context.EmailTrackingLogs
                 join e in _context.EmailLogs
-                    on new { t.TrackingId, t.ClientId, t.DataFileId }
-                    equals new { e.TrackingId, e.ClientId, e.DataFileId }
-                    into emailGroup
-                from e in emailGroup.DefaultIfEmpty()   // 👈 left join
-                where t.ClientId == clientId && t.DataFileId == dataFileId
+                    on t.TrackingId equals e.TrackingId into emailGroup
+                from e in emailGroup.DefaultIfEmpty()
+                where t.ClientId == clientId
+                   && t.CampaignId == campaignId.Value   // ✅ ONLY FILTER
                 orderby t.Timestamp descending
                 select new
                 {
@@ -1055,7 +1047,6 @@ namespace PitchGenApi.Controllers
                     t.Timestamp,
                     t.ClientId,
                     t.TargetUrl,
-                    t.ZohoViewName,
                     t.Full_Name,
                     t.Location,
                     t.Company,
@@ -1063,124 +1054,121 @@ namespace PitchGenApi.Controllers
                     t.linkedin_URL,
                     t.website,
                     t.TrackingId,
-                    t.UserAgent,
                     t.IPAddress,
                     t.IsBot,
-                    t.Browser,
                     t.DataFileId,
                     t.ContactId,
                     t.SegmentId,
                     t.CampaignId,
-                    t.BlueprintId,
-                    SentAt = e != null ? e.SentAt : null   // 👈 Second table se field
+                    SentAt = e != null ? e.SentAt : null
                 }
-            )
-            .Take(1000)
-            .ToListAsync();
+            ).ToListAsync();
 
             return Ok(logs);
         }
-        [HttpGet("getlogs-by-segment")]
-        public async Task<IActionResult> GetLogsBySegment([FromQuery] int clientId, [FromQuery] int segmentId)
-        {
-            bool isValid = await _context.segments
-                .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
+        //[HttpGet("getlogs-by-segment")]
+        //public async Task<IActionResult> GetLogsBySegment([FromQuery] int clientId, [FromQuery] int? segmentId= null, [FromQuery] int? campaignId = null)
+        //{
+        //    bool isValid = await _context.segments
+        //        .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
 
-            if (!isValid)
-                return BadRequest("Invalid clientId or segmentId.");
+        //    if (!isValid)
+        //        return BadRequest("Invalid clientId or segmentId.");
 
-            var logs = await (
-                from log in _context.EmailLogs
-                join contact in _context.contacts
-                    on log.ContactId equals contact.id into contactGroup
-                from contact in contactGroup.DefaultIfEmpty()
-                where log.ClientId == clientId
-                      && log.SegmentId == segmentId   // 👈 Direct filter
-                orderby log.SentAt descending
-                select new
-                {
-                    log.Id,
-                    log.ContactId,
-                    log.ClientId,
-                    log.DataFileId,
-                    log.TrackingId,
-                    log.SegmentId,
-                    log.Subject,
-                    log.Body,
-                    log.SentAt,
-                    log.IsSuccess,
-                    log.ErrorMessage,
-                    log.ToEmail,
-                    log.process_name,
+        //    var logs = await (
+        //        from log in _context.EmailLogs
+        //        join contact in _context.contacts
+        //            on log.ContactId equals contact.id into contactGroup
+        //        from contact in contactGroup.DefaultIfEmpty()
+        //        where log.ClientId == clientId
+        //              && log.SegmentId == segmentId   // 👈 Direct filter
+        //              && (!campaignId.HasValue || log.CampaignId == campaignId.Value)
+        //        orderby log.SentAt descending
+        //        select new
+        //        {
+        //            log.Id,
+        //            log.ContactId,
+        //            log.ClientId,
+        //            log.DataFileId,
+        //            log.TrackingId,
+        //            log.SegmentId,
+        //            log.Subject,
+        //            log.Body,
+        //            log.SentAt,
+        //            log.IsSuccess,
+        //            log.ErrorMessage,
+        //            log.ToEmail,
+        //            log.process_name,
+        //            log.CampaignId,
 
-                    Name = contact.full_name,
-                    Email = contact.email,
-                    Address = contact.country_or_address,
-                    Website = contact.website,
-                    Company = contact.company_name,
-                    JobTitle = contact.job_title,
-                    LinkedIn = contact.linkedin_url
-                }
-            )
-            .Take(1000)
-            .ToListAsync();
+        //            Name = contact.full_name,
+        //            Email = contact.email,
+        //            Address = contact.country_or_address,
+        //            Website = contact.website,
+        //            Company = contact.company_name,
+        //            JobTitle = contact.job_title,
+        //            LinkedIn = contact.linkedin_url
+        //        }
+        //    )
+        //    .Take(1000)
+        //    .ToListAsync();
 
-            return Ok(logs);
-        }
+        //    return Ok(logs);
+        //}
 
-        [HttpGet("gettrackinglogs-by-segment")]
-        public async Task<IActionResult> GetTrackingLogsBySegment([FromQuery] int clientId, [FromQuery] int segmentId)
-        {
-            // Step 1: Validate segmentId belongs to clientId
-            bool isValid = await _context.segments
-                .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
+        //[HttpGet("gettrackinglogs-by-segment")]
+        //public async Task<IActionResult> GetTrackingLogsBySegment([FromQuery] int clientId, [FromQuery] int? segmentId= null, [FromQuery] int? campaignId = null)
+        //{
+        //    // Step 1: Validate segmentId belongs to clientId
+        //    bool isValid = await _context.segments
+        //        .AnyAsync(s => s.Id == segmentId && s.ClientId == clientId);
 
-            if (!isValid)
-                return BadRequest("Invalid clientId or segmentId.");
+        //    if (!isValid)
+        //        return BadRequest("Invalid clientId or segmentId.");
 
-            // Step 2: Use a join approach
-            var logs = await (
-                from t in _context.EmailTrackingLogs
-                join e in _context.EmailLogs
-                    on new { t.TrackingId, t.ClientId, t.SegmentId }
-                    equals new { e.TrackingId, e.ClientId, e.SegmentId }
-                    into emailGroup
-                from e in emailGroup.DefaultIfEmpty()   // 👈 left join
-                where t.ClientId == clientId && t.SegmentId == segmentId
-                orderby t.Timestamp descending
-                select new
-                {
-                    t.Id,
-                    t.Email,
-                    t.EventType,
-                    t.Timestamp,
-                    t.ClientId,
-                    t.TargetUrl,
-                    t.ZohoViewName,
-                    t.Full_Name,
-                    t.Location,
-                    t.Company,
-                    t.JobTitle,
-                    t.linkedin_URL,
-                    t.website,
-                    t.TrackingId,
-                    t.UserAgent,
-                    t.IPAddress,
-                    t.IsBot,
-                    t.Browser,
-                    t.DataFileId,
-                    t.ContactId,
-                    t.SegmentId,
-                    t.CampaignId,
-                    t.BlueprintId,
-                    SentAt = e != null ? e.SentAt : null   // 👈 Second table se field
-                }
-            )
-            .Take(1000)
-            .ToListAsync();
+        //    // Step 2: Use a join approach
+        //    var logs = await (
+        //        from t in _context.EmailTrackingLogs
+        //        join e in _context.EmailLogs
+        //            on new { t.TrackingId, t.ClientId, t.SegmentId }
+        //            equals new { e.TrackingId, e.ClientId, e.SegmentId }
+        //            into emailGroup
+        //        from e in emailGroup.DefaultIfEmpty()   // 👈 left join
+        //        where t.ClientId == clientId && t.SegmentId == segmentId && (!campaignId.HasValue || t.CampaignId == campaignId.Value)
+        //        orderby t.Timestamp descending
+        //        select new
+        //        {
+        //            t.Id,
+        //            t.Email,
+        //            t.EventType,
+        //            t.Timestamp,
+        //            t.ClientId,
+        //            t.TargetUrl,
+        //            t.ZohoViewName,
+        //            t.Full_Name,
+        //            t.Location,
+        //            t.Company,
+        //            t.JobTitle,
+        //            t.linkedin_URL,
+        //            t.website,
+        //            t.TrackingId,
+        //            t.UserAgent,
+        //            t.IPAddress,
+        //            t.IsBot,
+        //            t.Browser,
+        //            t.DataFileId,
+        //            t.ContactId,
+        //            t.SegmentId,
+        //            t.CampaignId,
+        //            t.BlueprintId,
+        //            SentAt = e != null ? e.SentAt : null   // 👈 Second table se field
+        //        }
+        //    )
+        //    .Take(1000)
+        //    .ToListAsync();
 
-            return Ok(logs);
-        }
+        //    return Ok(logs);
+        //}
 
         [HttpPost("Creat-Segments")]
         public async Task<IActionResult> CreateSegment([FromQuery] int ClientId, [FromBody] CreateSegmentDto dto)
