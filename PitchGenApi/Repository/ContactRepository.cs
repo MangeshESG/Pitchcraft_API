@@ -388,7 +388,8 @@ public class ContactRepository
             "updated_at",
             "email_sent_at",
             "data_file",
-            "DataFileId"
+            "DataFileId",
+            "linkedIninformation"
         };
 
         // ✅ Sirf valid fields hi lo
