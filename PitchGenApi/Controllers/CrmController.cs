@@ -452,116 +452,7 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
-        [HttpPost]
-        [Route("update-contact")]
-        public async Task<IActionResult> UpdateContact([FromQuery] int id, [FromBody] ContactDto model)
-        {
-            try
-            {
-                var contact = await _context.contacts
-                    .FirstOrDefaultAsync(x => x.id == id);
-
-                if (contact == null)
-                {
-                    return NotFound(new { message = "Contact not found" });
-                }
-
-                // ✅ NAME HANDLING (IMPORTANT)
-                var firstName = model.firstName?.Trim();
-                var lastName = model.lastName?.Trim();
-
-                // Auto split if only fullName is provided
-                if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(model.fullName))
-                {
-                    var parts = model.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    firstName = parts.FirstOrDefault();
-                    lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
-                }
-
-                // Build full name
-                var fullName = !string.IsNullOrWhiteSpace(model.fullName)
-                    ? model.fullName.Trim()
-                    : $"{firstName} {lastName}".Trim();
-
-                // Final fallback
-                if (string.IsNullOrWhiteSpace(fullName))
-                {
-                    fullName = !string.IsNullOrWhiteSpace(model.email) ? model.email : "Unknown";
-                }
-
-                // 🔹 Update base fields
-                contact.first_name = firstName;
-                contact.last_name = lastName;
-                contact.full_name = fullName;
-
-                contact.email = model.email?.Trim();
-                contact.job_title = model.jobTitle;
-                contact.website = model.website;
-                contact.linkedin_url = model.linkedInUrl;
-                contact.company_name = model.companyName;
-                contact.country_or_address = model.countryOrAddress;
-                contact.email_subject = model.emailSubject;
-                contact.email_body = model.emailBody;
-                contact.CompanyTelephone = model.CompanyTelephone;
-                contact.CompanyLinkedInURL = model.CompanyLinkedInURL;
-                contact.CompanyIndustry = model.CompanyIndustry;
-                contact.CompanyEmployeeCount = model.CompanyEmployeeCount;
-                contact.updated_at = DateTime.UtcNow;
-
-                await _context.SaveChangesAsync();
-
-                // ===============================
-                // CUSTOM FIELD SAVE / UPDATE
-                // ===============================
-
-                if (model.customFields != null && model.customFields.Any())
-                {
-                    var fieldDefs = await _context.crm_custom_fields
-                        .Where(f => f.client_id == model.clientId)
-                        .ToDictionaryAsync(f => f.field_name, f => f);
-
-                    var existingValues = await _context.contact_custom_field_values
-                        .Where(v => v.contact_id == id)
-                        .ToListAsync();
-
-                    foreach (var field in model.customFields)
-                    {
-                        if (!fieldDefs.TryGetValue(field.Key, out var fieldDef))
-                            continue;
-
-                        var value = field.Value?.ToString();
-
-                        var existing = existingValues
-                            .FirstOrDefault(v => v.field_id == fieldDef.id);
-
-                        if (existing != null)
-                        {
-                            existing.value = value;
-                        }
-                        else
-                        {
-                            _context.contact_custom_field_values.Add(
-                                new ContactCustomFieldValue
-                                {
-                                    contact_id = id,
-                                    client_id = model.clientId,
-                                    field_id = fieldDef.id,
-                                    value = value,
-                                    created_at = DateTime.UtcNow
-                                });
-                        }
-                    }
-
-                    await _context.SaveChangesAsync();
-                }
-
-                return Ok(new { message = "Contact updated successfully" });
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new { error = ex.Message });
-            }
-        }
+        
 
         [HttpPost]
         [Route("Update-linkedIninformation")]
@@ -2920,6 +2811,117 @@ namespace PitchGenApi.Controllers
                 success = result,
                 message = "Field updated successfully"
             });
+        }
+
+        [HttpPost]
+        [Route("update-contact")]
+        public async Task<IActionResult> UpdateContact([FromQuery] int id, [FromBody] ContactDto model)
+        {
+            try
+            {
+                var contact = await _context.contacts
+                    .FirstOrDefaultAsync(x => x.id == id);
+
+                if (contact == null)
+                {
+                    return NotFound(new { message = "Contact not found" });
+                }
+
+                // ✅ NAME HANDLING (IMPORTANT)
+                var firstName = model.firstName?.Trim();
+                var lastName = model.lastName?.Trim();
+
+                // Auto split if only fullName is provided
+                if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(model.fullName))
+                {
+                    var parts = model.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    firstName = parts.FirstOrDefault();
+                    lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+                }
+
+                // Build full name
+                var fullName = !string.IsNullOrWhiteSpace(model.fullName)
+                    ? model.fullName.Trim()
+                    : $"{firstName} {lastName}".Trim();
+
+                // Final fallback
+                if (string.IsNullOrWhiteSpace(fullName))
+                {
+                    fullName = !string.IsNullOrWhiteSpace(model.email) ? model.email : "Unknown";
+                }
+
+                // 🔹 Update base fields
+                contact.first_name = firstName;
+                contact.last_name = lastName;
+                contact.full_name = fullName;
+
+                contact.email = model.email?.Trim();
+                contact.job_title = model.jobTitle;
+                contact.website = model.website;
+                contact.linkedin_url = model.linkedInUrl;
+                contact.company_name = model.companyName;
+                contact.country_or_address = model.countryOrAddress;
+                //contact.email_subject = model.emailSubject;
+                //contact.email_body = model.emailBody;
+                contact.CompanyTelephone = model.CompanyTelephone;
+                contact.CompanyLinkedInURL = model.CompanyLinkedInURL;
+                contact.CompanyIndustry = model.CompanyIndustry;
+                contact.CompanyEmployeeCount = model.CompanyEmployeeCount;
+                contact.updated_at = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
+                // ===============================
+                // CUSTOM FIELD SAVE / UPDATE
+                // ===============================
+
+                if (model.customFields != null && model.customFields.Any())
+                {
+                    var fieldDefs = await _context.crm_custom_fields
+                        .Where(f => f.client_id == model.clientId)
+                        .ToDictionaryAsync(f => f.field_name, f => f);
+
+                    var existingValues = await _context.contact_custom_field_values
+                        .Where(v => v.contact_id == id)
+                        .ToListAsync();
+
+                    foreach (var field in model.customFields)
+                    {
+                        if (!fieldDefs.TryGetValue(field.Key, out var fieldDef))
+                            continue;
+
+                        var value = field.Value?.ToString();
+
+                        var existing = existingValues
+                            .FirstOrDefault(v => v.field_id == fieldDef.id);
+
+                        if (existing != null)
+                        {
+                            existing.value = value;
+                        }
+                        else
+                        {
+                            _context.contact_custom_field_values.Add(
+                                new ContactCustomFieldValue
+                                {
+                                    contact_id = id,
+                                    client_id = model.clientId,
+                                    field_id = fieldDef.id,
+                                    value = value,
+                                    created_at = DateTime.UtcNow
+                                });
+                        }
+                    }
+
+                    await _context.SaveChangesAsync();
+                }
+
+                return Ok(new { message = "Contact updated successfully" });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
         }
         //-------------------------------------------------------------------------------------private---------------------------------------------------------------------------------------------------------------
 
