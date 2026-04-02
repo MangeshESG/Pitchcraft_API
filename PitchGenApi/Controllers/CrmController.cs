@@ -501,8 +501,8 @@ namespace PitchGenApi.Controllers
                 contact.linkedin_url = model.linkedInUrl;
                 contact.company_name = model.companyName;
                 contact.country_or_address = model.countryOrAddress;
-                contact.email_subject = model.emailSubject;
-                contact.email_body = model.emailBody;
+                //contact.email_subject = model.emailSubject;
+                //contact.email_body = model.emailBody;
                 contact.CompanyTelephone = model.CompanyTelephone;
                 contact.CompanyLinkedInURL = model.CompanyLinkedInURL;
                 contact.CompanyIndustry = model.CompanyIndustry;
@@ -563,7 +563,6 @@ namespace PitchGenApi.Controllers
                 return BadRequest(new { error = ex.Message });
             }
         }
-
         [HttpPost]
         [Route("Update-linkedIninformation")]
         public async Task<IActionResult> UpdateNotes([FromQuery] int contactid, [FromBody] string linkedIninformation)
