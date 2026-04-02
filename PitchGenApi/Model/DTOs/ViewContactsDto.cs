@@ -22,11 +22,18 @@
         public List<FilterConditionDto>? Conditions { get; set; }
     }
 
+    public class FilterConditionContextDto
+    {
+        public int? CampaignId { get; set; }
+        public string? CampaignName { get; set; }
+    }
+
     public class FilterConditionDto
     {
         public string? Field { get; set; }
         public string? Operator { get; set; }
         public string? Value { get; set; }
         public string? JoinWithPrevious { get; set; }
+        public FilterConditionContextDto? Context { get; set; }
     }
 }
