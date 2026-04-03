@@ -24,7 +24,7 @@
 
     public class FilterConditionContextDto
     {
-        public int? CampaignId { get; set; }
+        public string? CampaignId { get; set; }
         public string? CampaignName { get; set; }
     }
 
