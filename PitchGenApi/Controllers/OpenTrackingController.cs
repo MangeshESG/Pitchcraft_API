@@ -194,6 +194,11 @@ public class OpenTrackingController : ControllerBase
         var emaillog = await _context.EmailLogs.FirstOrDefaultAsync(x => x.TrackingId == trackingId);
 
         var contact = await _context.contacts.FindAsync(emaillog.ContactId);
+        if (emaillog.SentAt.HasValue)
+        {
+            var seconds = (DateTime.UtcNow - emaillog.SentAt.Value).TotalSeconds;
+            if (seconds < 30) isBot = true;
+        }
 
         if (!alreadyExists)
         {
@@ -528,7 +533,7 @@ public class OpenTrackingController : ControllerBase
         if (sentEmail.SentAt.HasValue)
         {
             var seconds = (DateTime.UtcNow - sentEmail.SentAt.Value).TotalSeconds;
-            if (seconds < 5) isBot = true;
+            if (seconds < 40) isBot = true;
         }
 
         // -------- Prevent duplicate click --------
