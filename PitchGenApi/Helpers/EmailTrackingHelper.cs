@@ -2,6 +2,7 @@
 using PitchGenApi.Model;
 using PitchGenApi.Models;
 using System.Net;
+using System.Text.RegularExpressions;
 
 public static class EmailTrackingHelper
 {
@@ -51,6 +52,40 @@ public static class EmailTrackingHelper
         }
 
         return doc.DocumentNode.OuterHtml;
+    }
+    public static string InjectinboxTracking(string body, string trackingId)
+    {
+        if (string.IsNullOrEmpty(body)) return body;
+
+        var trackingTag = $"<div style='display:none'>TRACKING_ID:{trackingId}</div>";
+
+        // HTML body hai toh append kar
+        if (body.Contains("</body>"))
+        {
+            return body.Replace("</body>", trackingTag + "</body>");
+        }
+
+        return body + trackingTag;
+    }
+
+    // ✅ Extract tracking from email body
+    public static Guid? ExtractinboxTrackingId(string body)
+    {
+        if (string.IsNullOrEmpty(body))
+            return null;
+
+        var match = Regex.Match(body, @"TRACKING_ID:([a-zA-Z0-9\-]+)");
+
+        if (!match.Success)
+            return null;
+
+        var value = match.Groups[1].Value;
+
+        // ✅ SAFE parse
+        if (Guid.TryParse(value, out var guid))
+            return guid;
+
+        return null;
     }
 
     public static string GetBrowserName(string userAgent)

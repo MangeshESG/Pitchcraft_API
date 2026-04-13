@@ -60,6 +60,8 @@ namespace PitchGenApi.Database
         public DbSet<CrmViewSegment> crm_view_segments { get; set; }
 
         public DbSet<CrmViewExcludedDatafile> crm_view_excluded_datafiles { get; set; }
+        public DbSet<Inboxcredentials> Inboxcredentials { get; set; }
+        public DbSet<EmailReplies> EmailReplies { get; set; }
 
 
 

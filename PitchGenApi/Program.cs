@@ -171,14 +171,16 @@ builder.Services.AddScoped<IStripeRepository, StripeRepository>();
 builder.Services.AddScoped<IResetPassworde, ResetPassword>();
 builder.Services.AddScoped<INoteRepository, NoteRepository>();
 builder.Services.AddScoped<IAttachmentRepository, AttachmentRepository>();
+builder.Services.AddScoped<IInboxRepository, InboxRepository>();
+builder.Services.AddScoped<IInboxEmailSyncService, InboxEmailSyncService>();
+builder.Services.AddScoped<IInboxEmailService, InboxEmailService>();
 
 builder.Services.AddSingleton<JwtService>();
 
 // ===============================
 // ✅ Background Jobs
 // ===============================
-builder.Services.AddHostedService<EmailSchedulerService>();
-builder.Services.AddHostedService<MonthlyCreditResetService>();
+builder.Services.AddHostedService<BackgroundWorkerService>();
 
 builder.Services.AddControllers();
 
