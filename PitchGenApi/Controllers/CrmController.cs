@@ -2654,7 +2654,11 @@ namespace PitchGenApi.Controllers
 
                 var query = _context.contacts
                     .AsNoTracking()
-                    .Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value));
+                    .Where(c =>
+                        c.DataFileId.HasValue &&
+                        dataFileIds.Contains(c.DataFileId.Value) &&
+                        !_context.UnsubscribedContacts
+                            .Any(uc => uc.ClientId == dto.ClientId && uc.Email == c.email));
 
                 var segmentIds = await _context.crm_view_segments
                     .AsNoTracking()
@@ -2670,6 +2674,16 @@ namespace PitchGenApi.Controllers
                         .Select(x => x.ContactId);
 
                     query = query.Where(c => segmentContactIds.Contains(c.id));
+                }
+
+                if (dto.NotKrafted)
+                {
+                    query = query.Where(c => c.updated_at == null);
+                }
+
+                if (dto.KraftedNotSent)
+                {
+                    query = query.Where(c => c.updated_at != null && c.email_sent_at == null);
                 }
 
                 if (!string.IsNullOrWhiteSpace(dto.Search))
@@ -2688,6 +2702,7 @@ namespace PitchGenApi.Controllers
                     .Select(c => new
                     {
                         c.id,
+                        c.DataFileId,
                         c.full_name,
                         c.first_name,
                         c.last_name,
@@ -2766,19 +2781,73 @@ namespace PitchGenApi.Controllers
                         customByContact[row.contact_id] = fields;
                     }
 
-                    // Overwrite duplicate keys instead of throwing exception
                     fields[fieldName] = row.value;
                 }
 
-                var result = contacts.Select(c =>
+                var emailThreadByContactId = new Dictionary<int, string>();
+
+                if (dto.IsFollowUp)
+                {
+                    var logs = await _context.EmailLogs
+                        .AsNoTracking()
+                        .Where(x =>
+                            x.ClientId == dto.ClientId &&
+                            x.ContactId.HasValue &&
+                            contactIds.Contains(x.ContactId.Value) &&
+                            x.IsSuccess == true)
+                        .OrderByDescending(x => x.SentAt)
+                        .ToListAsync();
+
+                    emailThreadByContactId = logs
+                        .GroupBy(x => x.ContactId!.Value)
+                        .ToDictionary(
+                            g => g.Key,
+                            g =>
+                            {
+                                var sb = new StringBuilder();
+
+                                foreach (var log in g)
+                                {
+                                    sb.AppendLine("<hr style='border:0; border-top:0.5px solid #999; width:100%;' />");
+                                    sb.AppendLine($"<b>From:</b> {log.EmailSenderName} &lt;{log.SenderEmailId}&gt;<br/>");
+                                    sb.AppendLine($"<b>Sent:</b> {log.SentAt:dddd, MMMM d, yyyy h:mm tt}<br/>");
+                                    sb.AppendLine($"<b>To:</b> {log.EmailRecipientName} &lt;{log.ToEmail}&gt;<br/>");
+                                    sb.AppendLine($"<b>Subject:</b> {log.Subject}<br/><br/>");
+                                    sb.AppendLine($"{log.Body}<br/><br/>");
+                                }
+
+                                return sb.ToString();
+                            });
+                }
+
+                var result = new List<object>();
+
+                foreach (var c in contacts)
                 {
                     var customFields = customByContact.TryGetValue(c.id, out var found)
                         ? found
                         : new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
 
-                    return new
+                    string finalEmailBody = c.email_body;
+
+                    if (dto.IsFollowUp)
+                    {
+                        if (c.updated_at < c.email_sent_at)
+                        {
+                            finalEmailBody = "You have not krafted any email after sending the last email. Please kraft to continue.";
+                        }
+
+                        emailThreadByContactId.TryGetValue(c.id, out var oldThread);
+
+                        finalEmailBody = $@"{finalEmailBody}
+
+                    {oldThread}";
+                    }
+
+                    result.Add(new
                     {
                         c.id,
+                        c.DataFileId,
                         c.full_name,
                         c.first_name,
                         c.last_name,
@@ -2789,7 +2858,7 @@ namespace PitchGenApi.Controllers
                         c.linkedin_url,
                         c.country_or_address,
                         c.email_subject,
-                        c.email_body,
+                        email_body = finalEmailBody,
                         c.created_at,
                         c.updated_at,
                         c.email_sent_at,
@@ -2801,8 +2870,8 @@ namespace PitchGenApi.Controllers
                         hasNotes = notesSet.Contains(c.id),
                         hasLinkedInInfo = !string.IsNullOrWhiteSpace(c.linkedIninformation),
                         customFields = customFields
-                    };
-                }).ToList();
+                    });
+                }
 
                 var trackingContext = await TrackingFilterHelper.BuildTrackingFilterContextAsync(
                     _context,
