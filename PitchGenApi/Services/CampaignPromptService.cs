@@ -79,58 +79,80 @@ namespace PitchGenApi.Services
             // ------------------------------------------------------
             // 🟢 1. Create session if not exists
             // ------------------------------------------------------
-            if (!_sessions.ContainsKey(userId))
+            CampaignSession session;
+
+            // ======================================================
+            // ✅ 1. TRY LOAD FROM MEMORY
+            // ======================================================
+            if (!_sessions.TryGetValue(userId, out session))
             {
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                // Load latest created campaign for this user
-                var campaign = await db.CampaignTemplates
-                    .Where(c => c.ClientId == userId)
-                    .OrderByDescending(c => c.CreatedAt)
-                    .Select(c => new
-                    {
-                        c.Id,
-                        TemplateDefinition = db.CampaignTemplateDefinitions
-                            .Where(t => t.Id == c.TemplateDefinitionId)
-                            .Select(t => new
-                            {
-                                t.AIInstructions,
-                                t.AIInstructionsForEdit,
-                                t.PlaceholderList,
-                                t.PlaceholderListExtensive,
-                                t.MasterBlueprintUnpopulated
-                            })
-                            .FirstOrDefault()
-                    })
+                // ======================================================
+                // ✅ 2. TRY LOAD FROM DB (LAST 6 HOURS)
+                // ======================================================
+                var convo = await db.CampaignConversations
+                    .Where(x =>
+                        x.ClientId == userId &&
+                        x.StartedAt >= DateTime.UtcNow.AddHours(-6))
+                    .OrderByDescending(x => x.StartedAt)
                     .FirstOrDefaultAsync();
 
-
-                if (campaign == null)
+                if (convo != null && !string.IsNullOrEmpty(convo.ConversationData))
                 {
-                    return new
+                    var messages = JsonConvert.DeserializeObject<List<Dictionary<string, string>>>(convo.ConversationData);
+
+                    session = new CampaignSession
                     {
-                        assistantText = "⚠️ No campaign found. Call /campaign/start first.",
-                        error = true
+                        UserId = userId,
+                        CampaignTemplateId = convo.CampaignTemplateId ?? 0,
+                        Messages = messages ?? new List<Dictionary<string, string>>()
                     };
                 }
-
-                // Build system prompt from DB (IGNORE frontend systemPrompt)
-                string systemPromptToUse = campaign.TemplateDefinition?.AIInstructions ?? "";
-
-                if (string.IsNullOrWhiteSpace(systemPromptToUse))
+                else
                 {
-                    systemPromptToUse = campaign.TemplateDefinition?.PlaceholderListExtensive
-                                        ?? campaign.TemplateDefinition?.PlaceholderList
-                                        ?? "";
-                }
+                    // ======================================================
+                    // ✅ 3. FALLBACK → CREATE NEW SESSION (OLD LOGIC)
+                    // ======================================================
+                    var campaign = await db.CampaignTemplates
+                        .Where(c => c.ClientId == userId)
+                        .OrderByDescending(c => c.CreatedAt)
+                        .Select(c => new
+                        {
+                            c.Id,
+                            TemplateDefinition = db.CampaignTemplateDefinitions
+                                .Where(t => t.Id == c.TemplateDefinitionId)
+                                .Select(t => new
+                                {
+                                    t.AIInstructions,
+                                    t.PlaceholderList,
+                                    t.PlaceholderListExtensive
+                                })
+                                .FirstOrDefault()
+                        })
+                        .FirstOrDefaultAsync();
 
-                // Initialize session
-                _sessions[userId] = new CampaignSession
-                {
-                    UserId = userId,
-                    CampaignTemplateId = campaign.Id,
-                    Messages = new List<Dictionary<string, string>>
+                    if (campaign == null)
+                    {
+                        return new
+                        {
+                            assistantText = "⚠️ No campaign found. Call /campaign/start first.",
+                            error = true
+                        };
+                    }
+
+                    string systemPromptToUse =
+                        campaign.TemplateDefinition?.AIInstructions
+                        ?? campaign.TemplateDefinition?.PlaceholderListExtensive
+                        ?? campaign.TemplateDefinition?.PlaceholderList
+                        ?? "";
+
+                    session = new CampaignSession
+                    {
+                        UserId = userId,
+                        CampaignTemplateId = campaign.Id,
+                        Messages = new List<Dictionary<string, string>>
             {
                 new()
                 {
@@ -138,13 +160,27 @@ namespace PitchGenApi.Services
                     { "content", systemPromptToUse }
                 }
             }
-                };
-            }
+                    };
 
+                    // 👉 SAVE INITIAL CONVERSATION
+                    var newConvo = new CampaignConversation
+                    {
+                        ClientId = userId,
+                        CampaignTemplateId = campaign.Id,
+                        StartedAt = DateTime.UtcNow,
+                        ConversationData = JsonConvert.SerializeObject(session.Messages)
+                    };
+
+                    db.CampaignConversations.Add(newConvo);
+                    await db.SaveChangesAsync();
+                }
+
+                _sessions[userId] = session;
+            }
             // ------------------------------------------------------
             // 🟢 2. Attach campaign ID if missing (rare case)
             // ------------------------------------------------------
-            var session = _sessions[userId];
+            session = _sessions[userId];
 
             if (session.CampaignTemplateId == 0)
             {
@@ -392,10 +428,15 @@ namespace PitchGenApi.Services
                 }
 
                 _sessions[userId].Messages.Add(new Dictionary<string, string>
-        {
-            { "role", "assistant" },
-            { "content", aiResponse }
-        });
+                {
+                    { "role", "assistant" },
+                    { "content", aiResponse }
+                });
+
+                // ======================================================
+                // ✅ SAVE TO DB (IMPORTANT)
+                // ======================================================
+                await SaveConversationToDb(userId);
 
 
                 // ============================================================
@@ -710,71 +751,27 @@ namespace PitchGenApi.Services
             if (!_sessions.ContainsKey(userId)) return;
 
             var session = _sessions[userId];
-            if (session.CampaignTemplateId == 0) return;
 
             using var scope = _scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-            // Load existing conversation row
             var existing = await db.CampaignConversations
-                .FirstOrDefaultAsync(x => x.CampaignTemplateId == session.CampaignTemplateId);
+                .Where(x =>
+                    x.ClientId == userId &&
+                    x.CampaignTemplateId == session.CampaignTemplateId &&
+                    x.StartedAt >= DateTime.UtcNow.AddHours(-6))
+                .OrderByDescending(x => x.StartedAt)
+                .FirstOrDefaultAsync();
 
-            // Convert NEW messages coming from in-memory session
-            var newMessages = session.Messages.Select(m => new
+            if (existing != null)
             {
-                Role = m.ContainsKey("role") ? m["role"] : "assistant",
-                Content = m.ContainsKey("content") ? m["content"] : string.Empty,
-                Timestamp = DateTime.UtcNow
-            }).ToList();
-
-            // If no conversation exists, create a new conversation row
-            if (existing == null)
-            {
-                var json = JsonConvert.SerializeObject(newMessages);
-
-                existing = new CampaignConversation
-                {
-                    ClientId = session.UserId,
-                    CampaignTemplateId = session.CampaignTemplateId,
-                    ConversationData = json,
-                    Model = "gpt-5",
-                    StartedAt = DateTime.UtcNow,
-                    Mode = "new",
-                    EditNumber = 0,
-                    IsComplete = false
-                };
-
-                db.CampaignConversations.Add(existing);
-            }
-            else
-            {
-                // APPEND MODE — MERGE OLD + NEW
-                List<object> oldMessages = new();
-
-                if (!string.IsNullOrWhiteSpace(existing.ConversationData))
-                {
-                    try
-                    {
-                        oldMessages = JsonConvert.DeserializeObject<List<object>>(existing.ConversationData)
-                                      ?? new List<object>();
-                    }
-                    catch
-                    {
-                        oldMessages = new List<object>();
-                    }
-                }
-
-                // Combine old + new
-                var combined = oldMessages.Concat(newMessages).ToList();
-
-                // Save back
-                existing.ConversationData = JsonConvert.SerializeObject(combined);
+                // ✅ OVERWRITE (NOT APPEND)
+                existing.ConversationData = JsonConvert.SerializeObject(session.Messages);
                 existing.CompletedAt = DateTime.UtcNow;
+
+                await db.SaveChangesAsync();
             }
-
-            await db.SaveChangesAsync();
         }
-
 
         public async Task<object> StartEditModeAsync(StartEditConversationRequest req)
         {
@@ -864,7 +861,13 @@ namespace PitchGenApi.Services
                     { "role", "user" },
                     { "content", req.Message }
                 });
-
+            // Keep last 20 messages only
+            if (session.Messages.Count > 20)
+            {
+                session.Messages = session.Messages
+                    .Skip(session.Messages.Count - 20)
+                    .ToList();
+            }
             // Send to GPT
             return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5.1", req.UserId, req.ImageUrl);
         }
@@ -920,6 +923,67 @@ namespace PitchGenApi.Services
             await db.SaveChangesAsync();
 
             return clonedTemplate;
+        }
+        public async Task<object?> GetChatHistoryAsync(string userId, int? campaignTemplateId = null)
+        {
+            if (string.IsNullOrWhiteSpace(userId))
+                return null;
+
+            if (_sessions.TryGetValue(userId, out var session) &&
+                (!campaignTemplateId.HasValue || session.CampaignTemplateId == campaignTemplateId.Value))
+            {
+                return new
+                {
+                    userId,
+                    campaignTemplateId = session.CampaignTemplateId,
+                    messages = session.Messages,
+                    messageCount = session.Messages.Count,
+                    sessionActive = true,
+                    restoredFromDb = false
+                };
+            }
+
+            var cutoff = DateTime.UtcNow.AddHours(-6);
+
+            var query = _context.CampaignConversations
+                .Where(x =>
+                    x.ClientId == userId &&
+                    x.StartedAt >= cutoff &&
+                    !string.IsNullOrEmpty(x.ConversationData));
+
+            if (campaignTemplateId.HasValue)
+            {
+                query = query.Where(x => x.CampaignTemplateId == campaignTemplateId.Value);
+            }
+
+            var convo = await query
+                .OrderByDescending(x => x.StartedAt)
+                .FirstOrDefaultAsync();
+
+            if (convo == null)
+                return null;
+
+            var messages =
+                JsonConvert.DeserializeObject<List<Dictionary<string, string>>>(
+                    convo.ConversationData ?? "[]"
+                ) ?? new List<Dictionary<string, string>>();
+
+            _sessions[userId] = new CampaignSession
+            {
+                UserId = userId,
+                CampaignTemplateId = convo.CampaignTemplateId ?? 0,
+                Messages = messages
+            };
+
+            return new
+            {
+                userId,
+                campaignTemplateId = convo.CampaignTemplateId,
+                messages,
+                messageCount = messages.Count,
+                sessionActive = false,
+                restoredFromDb = true
+            };
         }
 
     }

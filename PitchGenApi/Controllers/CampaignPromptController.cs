@@ -504,14 +504,20 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("history/{userId}")]
-        public IActionResult GetChatHistory(string userId)
+        public async Task<IActionResult> GetChatHistory(
+            string userId,
+            [FromQuery] int? campaignTemplateId = null)
         {
-            var history = _campaignService.GetChatHistory(userId);
+            var history = await _campaignService.GetChatHistoryAsync(userId, campaignTemplateId);
+
             if (history == null)
                 return NotFound(new { Message = "No chat history found for this user" });
 
             return Ok(new { History = history });
         }
+
+
+
 
         [HttpPost("history/{userId}/clear")]
         public IActionResult ClearChatHistory(string userId)
