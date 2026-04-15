@@ -211,10 +211,10 @@ namespace PitchGenApi.Services
             // 🟢 4. Append user message
             // ------------------------------------------------------
             session.Messages.Add(new Dictionary<string, string>
-    {
-        { "role", "user" },
-        { "content", message }
-    });
+            {
+                { "role", "user" },
+                { "content", message }
+            });
 
             // ------------------------------------------------------
             // 🟢 5. Call GPT
@@ -384,7 +384,7 @@ namespace PitchGenApi.Services
                     .FirstOrDefaultAsync(x => x.ModelName == model);
 
                 if (rate == null)
-                    rate = await _context.ModelRates.FirstAsync(x => x.ModelName == "gpt-5");
+                    rate = await _context.ModelRates.FirstAsync(x => x.ModelName == "gpt-5.1");
 
                 decimal inputPrice = rate.InputPrice;     // per 1M
                 decimal outputPrice = rate.OutputPrice;   // per 1M
