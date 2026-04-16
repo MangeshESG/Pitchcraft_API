@@ -137,17 +137,15 @@ public class EmailSendingHelper
                 </p>";
 
 
-            if (DataFileId == null)
-            {
-                var list = await _context.segments
-                    .FirstOrDefaultAsync(s => s.Id == Blueprint.SegmentId && s.ClientId == clientId);
+               //var list = await _context.segments
+               //     .FirstOrDefaultAsync(s => s.Id == Blueprint.SegmentId && s.ClientId == clientId);
 
                 
 
 
                 if (isFollowUp)
                 {
-                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, list.DataFileId, EmailDetails.id, Blueprint.SegmentId);
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, DataFileId, EmailDetails.id, Blueprint.SegmentId);
 
                     finalEmailBody =
                      $@"{EmailDetails.email_body}
@@ -156,7 +154,7 @@ public class EmailSendingHelper
                     {emailFooter}";
 
                 }
-            }
+            
 
 
             if (!active)
