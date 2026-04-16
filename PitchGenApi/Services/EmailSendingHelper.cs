@@ -10,6 +10,8 @@ using PitchGenApi.Interfaces;
 using Org.BouncyCastle.Crypto;
 using PitchGenApi.Model.DTOs;
 using static PitchGenApi.Model.ChatGptResponse;
+using MimeKit;
+using MimeKit.Utils;
 
 public class EmailSendingHelper
 {
@@ -114,6 +116,8 @@ public class EmailSendingHelper
             //}
             string trackingId = Guid.NewGuid().ToString();
 
+            string messageId = MimeUtils.GenerateMessageId();
+
             using var smtpClient = new SmtpClient(smtpServer)
             {
                 Port = smtpPort,
@@ -122,7 +126,7 @@ public class EmailSendingHelper
             };
 
             string finalEmailBody = EmailDetails.email_body;
-
+            
             string emailFooter = @"<br/><br/>
                 <hr style='border:none;border-top:1px solid #e5e7eb;'/>
                 <p style='font-size:12px;color:#6b7280;text-align:center;'>
@@ -159,16 +163,18 @@ public class EmailSendingHelper
             {
                 finalEmailBody += emailFooter;
             }
+            // 🔥 STEP 1: Hidden tracking inject (reply ke liye)
+            finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
 
             // Send main email
             if (!string.IsNullOrWhiteSpace(EmailDetails.email))
             {
                 if (user.IsTracking)
                 {
-                    string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
-                    bodyWithTracking += EmailTrackingHelper.GetPixelTag(trackingId);
-                    finalEmailBody = bodyWithTracking;
+                    finalEmailBody = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
+                    finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
                 }
+
                 using var toMessage = new MailMessage
                 {
                     From = new MailAddress(fromEmailToUse,senderName),
@@ -176,6 +182,7 @@ public class EmailSendingHelper
                     Body = finalEmailBody,   //Body = finalEmailBody- for non traking     Body = bodyWithTracking- for traking
                     IsBodyHtml = true
                 };
+                toMessage.Headers.Add("Message-ID", messageId);
 
                 toMessage.To.Add(EmailDetails.email);
                 await smtpClient.SendMailAsync(toMessage);
@@ -198,6 +205,7 @@ public class EmailSendingHelper
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
                     TrackingId = Guid.Parse(trackingId),
+                    MessageId = messageId,
                     process_name = "Single"
                 });
             }

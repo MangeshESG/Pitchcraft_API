@@ -25,7 +25,9 @@
     public DateTime? SentAt { get; set; }
 
     public int ClientId { get; set; }
-    public Guid TrackingId { get; set; }
+    public Guid? TrackingId { get; set; }
+    public string? MessageId { get; set; }
+
     public string? process_name { get; set; }
 
 }
