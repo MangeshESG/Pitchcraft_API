@@ -1,4 +1,4 @@
-﻿using MailKit.Net.Imap;
+using MailKit.Net.Imap;
 using MailKit.Search;
 using MailKit;
 using PitchGenApi.Database;
@@ -10,168 +10,201 @@ using System.Text.RegularExpressions;
 public class InboxEmailSyncService : IInboxEmailSyncService
 {
     private readonly AppDbContext _context;
+    private readonly ILogger<InboxEmailSyncService> _logger;
 
-    public InboxEmailSyncService(AppDbContext context)
+    public InboxEmailSyncService(AppDbContext context, ILogger<InboxEmailSyncService> logger)
     {
         _context = context;
+        _logger = logger;
     }
 
     public async Task SyncEmailsAsync(Inboxcredentials setting)
     {
-        Console.WriteLine($"\n🚀 Starting sync for: {setting.Username}");
+        _logger.LogInformation("Starting inbox sync for {Username}", setting.Username);
 
-        using var client = new ImapClient();
-
-        await client.ConnectAsync(setting.Host, setting.Port, true);
-        Console.WriteLine("🔌 Connected to IMAP");
-
-        await client.AuthenticateAsync(setting.Username, setting.Password);
-        Console.WriteLine("🔐 Authenticated");
-
-        var inbox = client.Inbox;
-        await inbox.OpenAsync(FolderAccess.ReadOnly);
-        Console.WriteLine("📂 Inbox opened");
-
-        var uids = await inbox.SearchAsync(SearchQuery.All);
-
-        Console.WriteLine($"📊 Total UIDs: {uids.Count}");
-        Console.WriteLine($"📌 LastUid: {setting.LastUid}");
-
-        var newUids = uids
-            .Where(uid => uid.Id > setting.LastUid)
-            .OrderBy(uid => uid.Id)
-            .ToList();
-
-        Console.WriteLine($"📩 New Emails: {newUids.Count}");
-
-        long maxUid = setting.LastUid;
-
-        foreach (var uid in newUids)
+        try
         {
-            Console.WriteLine($"\n📨 Processing UID: {uid.Id}");
+            using var client = new ImapClient();
 
-            var msg = await inbox.GetMessageAsync(uid);
+            // Step: Connect
+            await client.ConnectAsync(setting.Host, setting.Port, true);
+            _logger.LogInformation("Connected to IMAP server {Host}:{Port} for {Username}", setting.Host, setting.Port, setting.Username);
 
-            Console.WriteLine($"📧 Subject: {msg.Subject}");
+            // Step: Authenticate
+            await client.AuthenticateAsync(setting.Username, setting.Password);
+            _logger.LogInformation("Authenticated successfully for {Username}", setting.Username);
 
-            var rawBody = msg.TextBody ?? msg.HtmlBody ?? "";
+            // Step: Open inbox
+            var inbox = client.Inbox;
+            await inbox.OpenAsync(FolderAccess.ReadOnly);
+            _logger.LogInformation("Inbox opened for {Username}", setting.Username);
 
-            // 🔥 STEP 1: Extract TrackingId
-            var trackingId = EmailTrackingHelper.ExtractinboxTrackingId(rawBody);
-            Console.WriteLine($"🎯 TrackingId: {trackingId}");
+            // Step: Search all UIDs
+            var uids = await inbox.SearchAsync(SearchQuery.All);
+            _logger.LogInformation("Total UIDs in mailbox: {TotalUids}, LastUid: {LastUid} for {Username}", uids.Count, setting.LastUid, setting.Username);
 
-            // 🔥 STEP 2: CLEAN BODY (remove tracking id + quoted text)
-            var body = Regex.Replace(rawBody, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
-            //body = Regex.Replace(body, @"(?m)^>.*$", "");
-            body = Regex.Replace(body, @"(?m)^>\s?", "");// remove quoted lines
-            body = body.Trim();
+            // Step: Filter new UIDs
+            var newUids = uids
+                .Where(uid => uid.Id > setting.LastUid)
+                .OrderBy(uid => uid.Id)
+                .ToList();
 
-            var rawInReplyTo = msg.Headers["In-Reply-To"];
-            var rawReferences = msg.Headers["References"];
+            _logger.LogInformation("New emails to process: {NewCount} for {Username}", newUids.Count, setting.Username);
 
-            EmailLog? sent = null;
+            long maxUid = setting.LastUid;
 
-            // 🔥 STEP 0: TrackingId match
-            if (trackingId != null)
+            foreach (var uid in newUids)
             {
-                sent = await _context.EmailLogs
-                    .FirstOrDefaultAsync(x => x.TrackingId == trackingId);
-
-                if (sent != null)
-                    Console.WriteLine("🔥 Matched via TrackingId");
-            }
-
-            // STEP 1: InReplyTo
-            if (sent == null && !string.IsNullOrEmpty(rawInReplyTo))
-            {
-                sent = await _context.EmailLogs
-                    .FirstOrDefaultAsync(x => x.MessageId == rawInReplyTo);
-
-                if (sent != null)
-                    Console.WriteLine("✅ Matched via InReplyTo");
-            }
-
-            // STEP 2: References
-            if (sent == null && !string.IsNullOrEmpty(rawReferences))
-            {
-                var refs = rawReferences.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-                foreach (var refId in refs)
+                try
                 {
-                    sent = await _context.EmailLogs
-                        .FirstOrDefaultAsync(x => x.MessageId == refId);
+                    _logger.LogInformation("Processing UID {Uid} for {Username}", uid.Id, setting.Username);
 
-                    if (sent != null)
+                    // Step: Fetch message
+                    var msg = await inbox.GetMessageAsync(uid);
+                    _logger.LogInformation("Fetched message UID {Uid} | Subject: {Subject} | From: {From}", uid.Id, msg.Subject, msg.From);
+
+                    var rawBody = msg.TextBody ?? msg.HtmlBody ?? "";
+
+                    // Step: Extract TrackingId
+                    var trackingId = EmailTrackingHelper.ExtractinboxTrackingId(rawBody);
+                    _logger.LogInformation("UID {Uid} | TrackingId extracted: {TrackingId}", uid.Id);
+
+                    // Step: Clean body
+                    var body = Regex.Replace(rawBody, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
+                    body = Regex.Replace(body, @"(?m)^>\s?", "");
+                    body = body.Trim();
+                    _logger.LogInformation("UID {Uid} | Body cleaned, length: {BodyLength}", uid.Id, body.Length);
+
+                    var rawInReplyTo = msg.Headers["In-Reply-To"];
+                    var rawReferences = msg.Headers["References"];
+
+                    EmailLog? sent = null;
+
+                    // Step: Match via TrackingId
+                    if (trackingId != null)
                     {
-                        Console.WriteLine("✅ Matched via References");
-                        break;
+                        sent = await _context.EmailLogs
+                            .FirstOrDefaultAsync(x => x.TrackingId == trackingId);
+
+                        if (sent != null)
+                            _logger.LogInformation("UID {Uid} | Matched via TrackingId: {TrackingId}", uid.Id, trackingId);
+                        else
+                            _logger.LogInformation("UID {Uid} | No match via TrackingId: {TrackingId}", uid.Id, trackingId);
                     }
+
+                    // Step: Match via InReplyTo
+                    if (sent == null && !string.IsNullOrEmpty(rawInReplyTo))
+                    {
+                        sent = await _context.EmailLogs
+                            .FirstOrDefaultAsync(x => x.MessageId == rawInReplyTo);
+
+                        if (sent != null)
+                            _logger.LogInformation("UID {Uid} | Matched via InReplyTo: {InReplyTo}", uid.Id, rawInReplyTo);
+                        else
+                            _logger.LogInformation("UID {Uid} | No match via InReplyTo: {InReplyTo}", uid.Id, rawInReplyTo);
+                    }
+
+                    // Step: Match via References
+                    if (sent == null && !string.IsNullOrEmpty(rawReferences))
+                    {
+                        var refs = rawReferences.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        _logger.LogInformation("UID {Uid} | Checking {RefCount} reference(s)", uid.Id, refs.Length);
+
+                        foreach (var refId in refs)
+                        {
+                            sent = await _context.EmailLogs
+                                .FirstOrDefaultAsync(x => x.MessageId == refId);
+
+                            if (sent != null)
+                            {
+                                _logger.LogInformation("UID {Uid} | Matched via References: {RefId}", uid.Id, refId);
+                                break;
+                            }
+                        }
+
+                        if (sent == null)
+                            _logger.LogInformation("UID {Uid} | No match via References", uid.Id);
+                    }
+
+                    // Step: Fallback match via sender email
+                    if (sent == null)
+                    {
+                        var fromEmail = msg.From.Mailboxes.FirstOrDefault()?.Address?.ToLower();
+                        _logger.LogInformation("UID {Uid} | Trying fallback match via sender email: {FromEmail}", uid.Id, fromEmail);
+
+                        sent = await _context.EmailLogs
+                            .Where(x => x.ToEmail.ToLower() == fromEmail)
+                            .OrderByDescending(x => x.SentAt)
+                            .FirstOrDefaultAsync();
+
+                        if (sent != null)
+                            _logger.LogInformation("UID {Uid} | Matched via fallback email: {FromEmail}", uid.Id, fromEmail);
+                        else
+                            _logger.LogWarning("UID {Uid} | No match found via any method for sender {FromEmail} — skipping", uid.Id, fromEmail);
+                    }
+
+                    if (sent == null)
+                    {
+                        _logger.LogWarning("UID {Uid} | Skipped: no matching EmailLog found for {Username}", uid.Id, setting.Username);
+                        continue;
+                    }
+
+                    // Step: Duplicate check
+                    bool exists = await _context.EmailReplies
+                        .AnyAsync(x => x.MessageId == msg.MessageId);
+
+                    if (exists)
+                    {
+                        _logger.LogInformation("UID {Uid} | Skipped: reply already exists in DB (MessageId: {MessageId})", uid.Id, msg.MessageId);
+                        continue;
+                    }
+
+                    // Step: Save reply
+                    _context.EmailReplies.Add(new EmailReplies
+                    {
+                        ClientId = sent.ClientId,
+                        ContactId = sent.ContactId,
+                        CampaignId = sent.CampaignId,
+                        MessageId = msg.MessageId,
+                        InReplyTo = rawInReplyTo,
+                        FromEmail = msg.From.ToString(),
+                        Subject = msg.Subject,
+                        Body = body,
+                        TrackingId = trackingId,
+                        Date = msg.Date.UtcDateTime
+                    });
+
+                    _logger.LogInformation("UID {Uid} | Reply queued for save | ClientId: {ClientId} | ContactId: {ContactId}", uid.Id, sent.ClientId, sent.ContactId);
+
+                    if (uid.Id > maxUid)
+                        maxUid = uid.Id;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed processing UID {Uid} for {Username}", uid.Id, setting.Username);
                 }
             }
 
-            // STEP 3: fallback email
-            if (sent == null)
+            // Step: Update LastUid
+            if (maxUid > setting.LastUid)
             {
-                var fromEmail = msg.From.Mailboxes.FirstOrDefault()?.Address?.ToLower();
-
-                sent = await _context.EmailLogs
-                    .Where(x => x.ToEmail.ToLower() == fromEmail)
-                    .OrderByDescending(x => x.SentAt)
-                    .FirstOrDefaultAsync();
-
-                if (sent != null)
-                    Console.WriteLine("✅ Matched via fallback email");
+                setting.LastUid = maxUid;
+                _context.Inboxcredentials.Update(setting);
+                _logger.LogInformation("LastUid updated to {MaxUid} for {Username}", maxUid, setting.Username);
             }
 
-            if (sent == null)
-            {
-                Console.WriteLine("❌ No match → Skipped");
-                continue;
-            }
+            // Step: Save to DB
+            await _context.SaveChangesAsync();
+            _logger.LogInformation("All changes saved to DB for {Username}", setting.Username);
 
-            // ✅ duplicate check
-            bool exists = await _context.EmailReplies
-                .AnyAsync(x => x.MessageId == msg.MessageId);
-
-            if (exists)
-            {
-                Console.WriteLine("⚠️ Already exists → Skipped");
-                continue;
-            }
-
-            // 🔥 SAVE (WITHOUT TRACKING ID)
-            _context.EmailReplies.Add(new EmailReplies
-            {
-                ClientId = sent.ClientId,
-                ContactId = sent.ContactId,
-                CampaignId = sent.CampaignId,
-                MessageId = msg.MessageId,
-                InReplyTo = rawInReplyTo,
-                FromEmail = msg.From.ToString(),
-                Subject = msg.Subject,
-                Body = body,
-                TrackingId = trackingId, // ❌ not saving actual tracking id
-                Date = msg.Date.UtcDateTime
-            });
-
-            Console.WriteLine("💾 Saved");
-
-            if (uid.Id > maxUid)
-                maxUid = uid.Id;
+            // Step: Disconnect
+            await client.DisconnectAsync(true);
+            _logger.LogInformation("Disconnected from IMAP for {Username}", setting.Username);
         }
-
-        // 🔥 Update LastUid
-        if (maxUid > setting.LastUid)
+        catch (Exception ex)
         {
-            setting.LastUid = maxUid;
-            _context.Inboxcredentials.Update(setting);
-            Console.WriteLine($"📌 LastUid Updated → {maxUid}");
+            _logger.LogError(ex, "Fatal error during inbox sync for {Username}", setting.Username);
+            throw;
         }
-
-        await _context.SaveChangesAsync();
-        Console.WriteLine("✅ DB Saved");
-
-        await client.DisconnectAsync(true);
-        Console.WriteLine($"🔌 Disconnected: {setting.Username}");
     }
 }

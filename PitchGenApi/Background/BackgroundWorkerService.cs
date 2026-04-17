@@ -6,10 +6,12 @@ using PitchGenApi.Services;
 public class BackgroundWorkerService : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<BackgroundWorkerService> _logger;
 
-    public BackgroundWorkerService(IServiceProvider serviceProvider)
+    public BackgroundWorkerService(IServiceProvider serviceProvider, ILogger<BackgroundWorkerService> logger)
     {
         _serviceProvider = serviceProvider;
+        _logger = logger;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
@@ -23,13 +25,13 @@ public class BackgroundWorkerService : BackgroundService
 
     private async Task RunEmailScheduler(CancellationToken stoppingToken)
     {
-        Console.WriteLine("✅ EmailScheduler started...");
+        _logger.LogInformation("EmailScheduler started");
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                Console.WriteLine("🔄 Checking for pending steps...");
+                _logger.LogInformation("EmailScheduler: Checking for pending steps");
 
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -38,7 +40,7 @@ public class BackgroundWorkerService : BackgroundService
                     .Where(s => !s.IsSent)
                     .ToListAsync(stoppingToken);
 
-                Console.WriteLine($"🟡 Found {dueSteps.Count} pending step(s).");
+                _logger.LogInformation("EmailScheduler: Found {Count} pending step(s)", dueSteps.Count);
 
                 var groupedSteps = dueSteps.GroupBy(s => s.ScheduledDate + s.ScheduledTime);
 
@@ -48,14 +50,18 @@ public class BackgroundWorkerService : BackgroundService
                     {
                         try
                         {
+                            _logger.LogInformation("EmailScheduler: Processing step ID {StepId}", step.Id);
+
                             var contactRepo = scope.ServiceProvider.GetRequiredService<ContactRepository>();
                             var domainRepo = scope.ServiceProvider.GetRequiredService<IDomainVerificationRepository>();
                             var helper = new ScheduledEmailSendingHelper(scope.ServiceProvider, contactRepo, domainRepo);
                             await helper.ProcessStepAsync(step, stoppingToken);
+
+                            _logger.LogInformation("EmailScheduler: Step ID {StepId} processed successfully", step.Id);
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"❌ Error in step ID {step.Id}: {ex.Message}");
+                            _logger.LogError(ex, "EmailScheduler: Failed on step ID {StepId}", step.Id);
                         }
                     });
 
@@ -64,47 +70,60 @@ public class BackgroundWorkerService : BackgroundService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"🔥 Fatal error in email scheduler: {ex.Message}");
+                _logger.LogError(ex, "EmailScheduler: Fatal error in scheduler loop");
             }
 
+            _logger.LogInformation("EmailScheduler: Sleeping 20 seconds");
             await Task.Delay(TimeSpan.FromSeconds(20), stoppingToken);
         }
+
+        _logger.LogInformation("EmailScheduler: Stopped");
     }
 
     private async Task RunMonthlyCreditReset(CancellationToken stoppingToken)
     {
-        Console.WriteLine("✅ MonthlyCreditReset started...");
+        _logger.LogInformation("MonthlyCreditReset: Started");
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                _logger.LogInformation("MonthlyCreditReset: Running job");
+
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 var job = new MonthlyCreditResetJob(context);
                 await job.Execute();
+
+                _logger.LogInformation("MonthlyCreditReset: Job completed successfully");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Error in MonthlyCreditReset: {ex.Message}");
+                _logger.LogError(ex, "MonthlyCreditReset: Job failed");
             }
 
+            _logger.LogInformation("MonthlyCreditReset: Sleeping 1 minute");
             await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
         }
+
+        _logger.LogInformation("MonthlyCreditReset: Stopped");
     }
 
     private async Task RunInboxEmailSync(CancellationToken stoppingToken)
     {
-        Console.WriteLine("✅ InboxEmailSync started...");
+        _logger.LogInformation("InboxEmailSync: Started");
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
+                _logger.LogInformation("InboxEmailSync: Loading inbox credentials");
+
                 using var scope = _serviceProvider.CreateScope();
                 var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
                 var users = await context.Inboxcredentials.ToListAsync(stoppingToken);
+                _logger.LogInformation("InboxEmailSync: Found {UserCount} inbox account(s) to sync", users.Count);
 
                 var batches = users.Chunk(5);
 
@@ -114,17 +133,19 @@ public class BackgroundWorkerService : BackgroundService
                     {
                         try
                         {
-                            // 🔥 NEW SCOPE PER TASK
-                            using var innerScope = _serviceProvider.CreateScope();
+                            _logger.LogInformation("InboxEmailSync: Starting sync for {Username}", user.Username);
 
+                            using var innerScope = _serviceProvider.CreateScope();
                             var syncService = innerScope.ServiceProvider
                                 .GetRequiredService<IInboxEmailSyncService>();
 
                             await syncService.SyncEmailsAsync(user);
+
+                            _logger.LogInformation("InboxEmailSync: Completed sync for {Username}", user.Username);
                         }
                         catch (Exception ex)
                         {
-                            Console.WriteLine($"❌ InboxSync failed for {user.Username}: {ex.Message}");
+                            _logger.LogError(ex, "InboxEmailSync: Sync failed for {Username}", user.Username);
                         }
                     });
 
@@ -133,12 +154,13 @@ public class BackgroundWorkerService : BackgroundService
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ Error in InboxEmailSync: {ex.Message}");
+                _logger.LogError(ex, "InboxEmailSync: Outer loop error");
             }
 
-            Console.WriteLine("🔁 InboxEmailSync sleeping 5 min...");
+            _logger.LogInformation("InboxEmailSync: Sleeping 5 minutes");
             await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
         }
+
+        _logger.LogInformation("InboxEmailSync: Stopped");
     }
 }
-
