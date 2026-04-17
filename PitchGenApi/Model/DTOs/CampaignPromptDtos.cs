@@ -5,8 +5,10 @@
         public string UserId { get; set; }
         public string Message { get; set; }
         public string SystemPrompt { get; set; } 
-        public string Model { get; set; } 
+        public string Model { get; set; }
         public string? ImageUrl { get; set; }   // PNG / JPG / JPEG only
+        public int? CampaignTemplateId { get; set; }
+
     }
 
     public class StartEditConversationRequest

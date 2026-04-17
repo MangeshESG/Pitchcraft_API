@@ -497,7 +497,8 @@ namespace PitchGenApi.Controllers
                 request.Message ?? "",
                 request.SystemPrompt ?? "",
                 model,
-                request.ImageUrl    // ⭐ NEW
+                request.ImageUrl ,   
+                request.CampaignTemplateId
             );
 
             return Ok(new { Response = result });
