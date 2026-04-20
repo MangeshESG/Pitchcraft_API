@@ -755,9 +755,18 @@ namespace PitchGenApi.Controllers
         [HttpPost("edit/chat")]
         public async Task<IActionResult> EditChat([FromBody] EditChatRequest req)
         {
-            var result = await _campaignService.ContinueEditModeAsync(req);
-            return Ok(new { response = result });
+            try
+            {
+                var result = await _campaignService.ContinueEditModeAsync(req);
+                return Ok(new { response = result });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
+
+
 
         private const string ExampleOutputKey = "example_output";
 
