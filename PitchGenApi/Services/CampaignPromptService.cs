@@ -387,7 +387,14 @@ namespace PitchGenApi.Services
                 var httpResponse = await _httpClient.PostAsync(endpoint, httpContent);
                 var raw = await httpResponse.Content.ReadAsStringAsync();
 
-                int clientId = int.Parse(userId);
+                if (int.TryParse(userId, out int clientId))
+                {
+                    await _contactRepository.CreditDeduction(clientId);
+                }
+                else
+                {
+                    Console.WriteLine($"Invalid userId for credit deduction: {userId}");
+                }
                 await _contactRepository.CreditDeduction(clientId);
 
                 if (!httpResponse.IsSuccessStatusCode)
@@ -593,24 +600,48 @@ namespace PitchGenApi.Services
 
             var block = blockMatch.Groups[1].Value;
 
-            // Matches:
-            // {placeholder} = any text INCLUDING newline until next {xxx} OR END
-            var regex = new Regex(@"\{([^}]+)\}\s*=\s*((?s).*?)(?=\n\{[^}]+\}\s*=|$)", RegexOptions.Singleline);
+            var lines = block.Split('\n');
 
-            foreach (Match m in regex.Matches(block))
+            string currentKey = null;
+            StringBuilder currentValue = new StringBuilder();
+
+            foreach (var rawLine in lines)
             {
-                var key = m.Groups[1].Value.Trim();
-                var val = m.Groups[2].Value.Trim();
+                var line = rawLine.Trim();
 
-                val = val.Replace("\\n", "\n"); // convert escaped \n to real newlines
+                // Match: {key} = value
+                var match = Regex.Match(line, @"^\{([^}]+)\}\s*=\s*(.*)");
 
-                dict[key] = val;
+                if (match.Success)
+                {
+                    // Save previous
+                    if (currentKey != null)
+                    {
+                        dict[currentKey] = currentValue.ToString().Trim();
+                    }
 
+                    currentKey = match.Groups[1].Value.Trim();
+                    currentValue.Clear();
+                    currentValue.Append(match.Groups[2].Value.Trim());
+                }
+                else
+                {
+                    // Multiline value
+                    if (currentKey != null)
+                    {
+                        currentValue.Append("\n" + line);
+                    }
+                }
+            }
+
+            // Save last
+            if (currentKey != null)
+            {
+                dict[currentKey] = currentValue.ToString().Trim();
             }
 
             return dict;
         }
-
         // Save to DB using injected IServiceScopeFactory
         private async Task SavePlaceholderValuesToDb(string userId, Dictionary<string, string> newValues)
         {
