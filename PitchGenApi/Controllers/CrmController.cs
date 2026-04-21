@@ -2215,7 +2215,12 @@ namespace PitchGenApi.Controllers
                         field.field_name,
                         value.value
                     }
-                ).ToDictionaryAsync(x => x.field_name, x => x.value);
+                )
+                .GroupBy(x => x.field_name)
+                .ToDictionaryAsync(
+                    g => g.Key,
+                    g => g.First().value
+                );
 
                 // Return SAFE object (no circular reference)
                 var result = new
