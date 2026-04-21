@@ -174,6 +174,7 @@ builder.Services.AddScoped<IAttachmentRepository, AttachmentRepository>();
 builder.Services.AddScoped<IInboxRepository, InboxRepository>();
 builder.Services.AddScoped<IInboxEmailSyncService, InboxEmailSyncService>();
 builder.Services.AddScoped<IInboxEmailService, InboxEmailService>();
+builder.Services.AddScoped<IOAuthRepository, OAuthRepository>();
 
 builder.Services.AddSingleton<JwtService>();
 

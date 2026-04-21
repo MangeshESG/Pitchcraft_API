@@ -13,7 +13,7 @@ namespace PitchGenApi.Interfaces
         Task DeleteAsync(int id);
         Task<bool> ValidateAsync(InboxcredentialsDTO dto);
         Task<Inboxcredentials?> GetByUserNameAsync(int userId, string username, string protocol);
-        Task<List<EmailReplies>> GetRepliesByInboxIdAsync(int inboxId);
+        Task<List<EmailReplies>> GetRepliesByInboxIdAsync(int inboxId, string Provider);
         Task<List<InboxDropdownDto>> GetInboxPickListByClientIdAsync(int clientId);
 
 

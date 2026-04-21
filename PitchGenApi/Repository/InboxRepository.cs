@@ -96,62 +96,131 @@ public class InboxRepository : IInboxRepository
         await _context.SaveChangesAsync();
     }
 
-    public async Task<List<EmailReplies>> GetRepliesByInboxIdAsync(int inboxId)
+    public async Task<List<EmailReplies>> GetRepliesByInboxIdAsync(int inboxId, string Provider)
     {
-        // 🔹 Step 1: Get SMTP (Outbox) Id
-        var inbox = await _context.Inboxcredentials
-            .Where(x => x.Id == inboxId)
-            .Select(x => x.Outboxid)
-            .FirstOrDefaultAsync();
-        
-        var outbox = await _context.SmtpCredentials
-            .Where(x => x.Id == inbox)
-            .Select(x => x.FromEmail)
-            .FirstOrDefaultAsync();
+        try
+        {
+            int? outboxId = 0;
 
-        // 🔹 Step 2: Get sent emails for this SMTP
-        var sentEmails = await _context.EmailLogs
-            .Where(x => x.SenderEmailId == outbox)
-            .Select(x => new { x.MessageId, x.TrackingId, x.ToEmail })
-            .ToListAsync();
+            // =========================
+            // 🔥 IMAP FLOW
+            // =========================
+            if (Provider.ToUpper() == "IMAP")
+            {
+                outboxId = await _context.Inboxcredentials
+                    .Where(x => x.Id == inboxId)
+                    .Select(x => x.Outboxid)
+                    .FirstOrDefaultAsync();
 
-        var messageIds = sentEmails.Select(x => x.MessageId).ToList();
-        var trackingIds = sentEmails.Select(x => x.TrackingId).ToList();
-        var toEmails = sentEmails.Select(x => x.ToEmail.ToLower()).ToList();
+                if (outboxId == 0)
+                    return new List<EmailReplies>();
+            }
 
-        // 🔥 FINAL QUERY (ALL FALLBACKS)
-        var replies = await _context.EmailReplies
-            .Where(er =>
-            // ✅ 1. TrackingId (BEST)
-            (er.TrackingId != null && trackingIds.Contains(er.TrackingId))
-                // ✅ 2. InReplyTo
-                || (er.InReplyTo != null && messageIds.Contains(er.InReplyTo))
+            // =========================
+            // 🔥 GMAIL FLOW
+            // =========================
+            else if (Provider.ToUpper() == "GMAIL")
+            {
+                // 🔥 Gmail me InboxId = OutboxId (same id use kar rahe ho)
+                outboxId = inboxId;
+            }
 
-                // ✅ 3. References
-                || (er.InReplyTo == null && er.TrackingId == null
-                    && messageIds.Any(mid => er.InReplyTo != null && er.InReplyTo.Contains(mid)))
+            if (outboxId == 0)
+                return new List<EmailReplies>();
 
-                // ✅ 4. FromEmail fallback
-                || (er.FromEmail != null && toEmails.Contains(er.FromEmail.ToLower()))
-            )
-            .OrderByDescending(er => er.Date)
-            .Distinct()
-            .ToListAsync();
+            // =========================
+            // 🔥 STEP 2: SENT EMAILS (OutboxId based)
+            // =========================
+            var sentEmails = await _context.EmailLogs
+                .Where(x => x.outboxid == outboxId)   // ✅ MAIN FIX
+                .Select(x => new
+                {
+                    x.MessageId,
+                    x.TrackingId,
+                    ToEmail = x.ToEmail ?? ""
+                })
+                .ToListAsync();
 
-        return replies;
+            var messageIds = sentEmails
+                .Where(x => !string.IsNullOrEmpty(x.MessageId))
+                .Select(x => x.MessageId)
+                .ToList();
+
+            var trackingIds = sentEmails
+                .Where(x => x.TrackingId != null)
+                .Select(x => x.TrackingId)
+                .ToList();
+
+            var toEmails = sentEmails
+                .Where(x => !string.IsNullOrEmpty(x.ToEmail))
+                .Select(x => x.ToEmail.ToLower())
+                .ToList();
+
+            // =========================
+            // 🔥 FINAL QUERY (Replies only)
+            // =========================
+            var replies = await _context.EmailReplies
+                .Where(er =>
+                    (er.TrackingId != null && trackingIds.Contains(er.TrackingId))
+                    || (er.InReplyTo != null && messageIds.Contains(er.InReplyTo))
+                    //|| (er.FromEmail != null && toEmails.Contains(er.FromEmail.ToLower()))
+                )
+                .OrderByDescending(er => er.Date)
+                .ToListAsync();
+
+            return replies;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error: {ex.Message}");
+
+            if (ex.InnerException != null)
+                Console.WriteLine($"🔍 Inner: {ex.InnerException.Message}");
+
+            return new List<EmailReplies>();
+        }
     }
     public async Task<List<InboxDropdownDto>> GetInboxPickListByClientIdAsync(int clientId)
     {
-        var data = await _context.Inboxcredentials
-            .Where(x => x.ClientId == clientId)
-            .Select(x => new InboxDropdownDto
-            {
-                InboxId = x.Id,
-                EmailAddress = x.EmailAddress
-            })
-            .OrderBy(x => x.EmailAddress)
-            .ToListAsync();
+        try
+        {
+            // 🔥 IMAP
+            var inboxData = await _context.Inboxcredentials
+                .Where(x => x.ClientId == clientId)
+                .Select(x => new InboxDropdownDto
+                {
+                    InboxId = x.Id,
+                    EmailAddress = x.EmailAddress ?? "",
+                    Provider = "IMAP"
+                })
+                .ToListAsync();
 
-        return data;
+            // 🔥 OAuth (ALL providers)
+            var oauthData = await _context.EmailOAuthTokens
+                .Where(x => x.ClientId == clientId)
+                .Select(x => new InboxDropdownDto
+                {
+                    InboxId = x.Id,
+                    EmailAddress = x.Email ?? "",
+                    Provider = x.Provider ?? "Unknown"
+                })
+                .ToListAsync();
+
+            // 🔥 Merge + Remove duplicates
+            var result = inboxData
+                .Concat(oauthData)
+                .Where(x => !string.IsNullOrEmpty(x.EmailAddress))
+                .GroupBy(x => x.EmailAddress.ToLower())
+                .Select(g => g.First())
+                .OrderBy(x => x.EmailAddress)
+                .ToList();
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error in GetInboxPickListByClientIdAsync: {ex.Message}");
+            return new List<InboxDropdownDto>();
+        }
     }
 }

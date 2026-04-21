@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Services;
+using Stripe.Terminal;
 
 public class BackgroundWorkerService : BackgroundService
 {
@@ -17,7 +18,8 @@ public class BackgroundWorkerService : BackgroundService
         return Task.WhenAll(
             RunEmailScheduler(stoppingToken),
             RunMonthlyCreditReset(stoppingToken),
-            RunInboxEmailSync(stoppingToken)
+            RunInboxEmailSync(stoppingToken),
+            RunGmailInboxSync(stoppingToken)
         );
     }
 
@@ -138,6 +140,67 @@ public class BackgroundWorkerService : BackgroundService
 
             Console.WriteLine("🔁 InboxEmailSync sleeping 5 min...");
             await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+        }
+    }
+
+    private async Task RunGmailInboxSync(CancellationToken stoppingToken)
+    {
+        Console.WriteLine("✅ Gmail Inbox Sync started...");
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                var tokens = await context.EmailOAuthTokens
+                    .Where(x => x.Provider == "Gmail")
+                    .ToListAsync(stoppingToken);
+
+                Console.WriteLine($"📧 Total Gmail Accounts: {tokens.Count}");
+
+                // 🔥 PARALLEL LIMIT = 10
+                int maxParallel = 10;
+
+                using var semaphore = new SemaphoreSlim(maxParallel);
+
+                var tasks = tokens.Select(async token =>
+                {
+                    await semaphore.WaitAsync(stoppingToken);
+
+                    try
+                    {
+                        Console.WriteLine($"🚀 Sync Start: {token.Email}");
+
+                        using var innerScope = _serviceProvider.CreateScope();
+
+                        var gmailService = innerScope.ServiceProvider
+                            .GetRequiredService<IInboxEmailSyncService>();
+
+                        await gmailService.SyncGmailInboxAsync(token);
+
+                        Console.WriteLine($"✅ Done: {token.Email}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"❌ Failed: {token.Email} → {ex.Message}");
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                });
+
+                await Task.WhenAll(tasks);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"🔥 Fatal Error: {ex.Message}");
+            }
+
+            Console.WriteLine("🔁 Gmail Sync sleeping 2 min...");
+            await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
         }
     }
 }

@@ -97,9 +97,9 @@ public class InboxController : ControllerBase
     }
 
     [HttpGet("inbox")]
-    public async Task<IActionResult> GetRepliesByInbox([FromQuery]int inboxId)
+    public async Task<IActionResult> GetRepliesByInbox([FromQuery]int inboxId, [FromQuery] string Provider)
     {
-        var data = await _repo.GetRepliesByInboxIdAsync(inboxId);
+        var data = await _repo.GetRepliesByInboxIdAsync(inboxId, Provider);
 
         return Ok(new
         {
@@ -110,14 +110,14 @@ public class InboxController : ControllerBase
     }
 
     [HttpGet("Inbox_dropdown")]
-    public async Task<IActionResult> GetInboxPickList([FromQuery]int clientId)
+    public async Task<IActionResult> GetInboxPickList([FromQuery] int clientId)
     {
         var data = await _repo.GetInboxPickListByClientIdAsync(clientId);
 
         return Ok(new
         {
             success = true,
-            count = data.Count,
+            count = data?.Count ?? 0,
             data = data
         });
     }

@@ -22,9 +22,11 @@
     public int? SegmentId { get; set; }
     public int? CampaignId { get; set; }
     public int? BlueprintId { get; set; }
+    public string? Provider { get; set; }
     public DateTime? SentAt { get; set; }
 
     public int ClientId { get; set; }
+    public int? outboxid { get; set; }
     public Guid? TrackingId { get; set; }
     public string? MessageId { get; set; }
 

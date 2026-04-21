@@ -277,32 +277,73 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
+                ServicePointManager.ServerCertificateValidationCallback =
+                    (sender, certificate, chain, sslPolicyErrors) => true;
 
                 var nowUtc = DateTime.UtcNow;
 
-                var success = await _emailHelper.SendEmailUsingSmtp( dto.clientId, dto.contactid, dto.campaignid, dto.isFollowUp, dto.BccEmail, dto.SmtpId );
+                // ✅ Correct type use
+                EmailSendResult success = new EmailSendResult
+                {
+                    Success = false,
+                    Message = "Invalid Type"
+                };
 
+                // ✅ Switch case
+                switch (dto.Type?.ToUpper())
+                {
+                    case "SMTP":
+                        success = await _emailHelper.SendEmailUsingSmtp(
+                            dto.clientId,
+                            dto.contactid,
+                            dto.campaignid,
+                            dto.isFollowUp,
+                            dto.BccEmail,
+                            dto.Outboxid
+                        );
+                        break;
+
+                    case "GMAIL":
+                        success = await _emailHelper.SendEmailUsingGmailApi(
+                            dto.clientId,
+                            dto.contactid,
+                            dto.campaignid,
+                            dto.isFollowUp,
+                            dto.BccEmail,
+                            dto.Outboxid
+                        );
+                        break;
+
+                    default:
+                        return BadRequest(new
+                        {
+                            message = "Invalid email type. Use SMTP or GMAIL."
+                        });
+                }
+
+                // ❌ Fail case
                 if (!success.Success)
                 {
-                    return StatusCode(500,success.Message);
+                    return StatusCode(500, new
+                    {
+                        message = success.Message
+                    });
                 }
-                // 2) Sirf success ke baad update (ContactId -> DataFileId+Email -> Email fallback)
-                Contact contact = null;
 
+                // ✅ Success ke baad contact update
                 if (dto.contactid > 0)
                 {
-                    contact = await _context.contacts
+                    var contact = await _context.contacts
                         .FirstOrDefaultAsync(c => c.id == dto.contactid);
-                }
-                
-                if (contact != null)
-                {
-                    contact.email_sent_at = nowUtc;
 
-                    await _context.SaveChangesAsync();
+                    if (contact != null)
+                    {
+                        contact.email_sent_at = nowUtc;
+                        await _context.SaveChangesAsync();
+                    }
                 }
 
+                // ✅ Final response
                 return Ok(new
                 {
                     message = success.Message,
@@ -311,7 +352,11 @@ namespace PitchGenApi.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Unexpected error: {ex.Message}");
+                return StatusCode(500, new
+                {
+                    message = "Unexpected error",
+                    error = ex.Message
+                });
             }
         }
 
@@ -474,34 +519,52 @@ namespace PitchGenApi.Controllers
         }
 
 
-        [HttpGet("get-SMTPUser")]
-        public async Task<IActionResult> GetUsernameConfigDropdown([FromQuery] string ClientId)
+        [HttpGet("get-Outboxs")]
+        public async Task<IActionResult> GetUsernameConfigDropdown([FromQuery] string clientId)
         {
             try
             {
-                var usernameList = await _context.SmtpCredentials
-                    .Where(s => s.ClientId == ClientId)
+                int.TryParse(clientId, out int clientIdInt);
+
+                // 🔥 SMTP DATA
+                var smtpList = await _context.SmtpCredentials
+                    .Where(s => s.ClientId == clientId)
                     .Select(s => new
                     {
-                        Id = s.Id,
-                        Username = s.Username ?? "N/A"
+                        s.Id,
+                        Email = s.Username,
+                        Type = "SMTP"
                     })
                     .ToListAsync();
 
-                if (usernameList == null || !usernameList.Any())
+                // 🔥 OAUTH DATA
+                var oauthList = await _context.EmailOAuthTokens
+                    .Where(o => o.ClientId == clientIdInt)
+                    .Select(o => new
+                    {
+                        o.Id,
+                        o.Email,
+                        Type = o.Provider // Gmail / Outlook / Zoho
+                    })
+                    .ToListAsync();
+
+                // 🔥 MERGE BOTH
+                var combinedList = smtpList.Concat(oauthList).ToList();
+
+                if (!combinedList.Any())
                 {
                     return NotFound(new
                     {
                         success = false,
-                        message = "No SMTP users found for this client. Please ensure SMTP credentials are configured."
+                        message = "No email configurations found for this client."
                     });
                 }
 
                 return Ok(new
                 {
                     success = true,
-                    message = "SMTP user(s) fetched successfully.",
-                    data = usernameList
+                    message = "Email configurations fetched successfully.",
+                    data = combinedList
                 });
             }
             catch (Exception ex)
