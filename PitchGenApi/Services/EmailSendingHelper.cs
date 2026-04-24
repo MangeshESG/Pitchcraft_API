@@ -13,6 +13,7 @@ using static PitchGenApi.Model.ChatGptResponse;
 using MimeKit;
 using MimeKit.Utils;
 using System.Net.Http.Headers;
+using Newtonsoft.Json;
 
 public class EmailSendingHelper
 {
@@ -295,7 +296,6 @@ public class EmailSendingHelper
 
         var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
 
-        // 🔥 Token
         var tokenData = await GetValidGmailTokenAsync(OutBoxId);
         if (tokenData == null)
         {
@@ -309,20 +309,17 @@ public class EmailSendingHelper
         try
         {
             string trackingId = Guid.NewGuid().ToString();
-            string messageId = MimeUtils.GenerateMessageId();
+            string customMessageId = MimeUtils.GenerateMessageId(); // header only
 
             string finalEmailBody = EmailDetails.email_body;
 
-            // ✅ FIXED FOOTER (HTML SAFE)
-            string emailFooter = @"
-        <br/><br/>
+            string emailFooter = @"<br/><br/>
         <hr style='border:none;border-top:1px solid #e5e7eb;'/>
         <p style='font-size:12px;color:#6b7280;text-align:center;'>
-            This message was sent from 
-            <a href='https://app.pitchkraft.ai/' target='_blank'>Pitchkraft.ai</a>
+        This message was sent from 
+        <a href='https://app.pitchkraft.ai/' target='_blank'>Pitchkraft.ai</a>
         </p>";
 
-            // 🔁 Follow-up
             if (isFollowUp)
             {
                 string oldThread = await _repository.BuildEmailThreadAsync(
@@ -341,7 +338,7 @@ public class EmailSendingHelper
             }
 
             // =========================
-            // 🔥 MIME MESSAGE (FIXED)
+            // MIME
             // =========================
             var mimeMessage = new MimeMessage();
 
@@ -349,22 +346,13 @@ public class EmailSendingHelper
             mimeMessage.To.Add(new MailboxAddress("", EmailDetails.email));
             mimeMessage.Subject = EmailDetails.email_subject;
 
-            mimeMessage.Headers.Add("Message-ID", messageId);
-            mimeMessage.Headers.Add("X-Tracking-Id", trackingId); // 🔥 IMPORTANT
+            mimeMessage.Headers.Add("Message-ID", customMessageId);
+            mimeMessage.Headers.Add("X-Tracking-Id", trackingId);
 
-            var bodyBuilder = new BodyBuilder
-            {
-                HtmlBody = finalEmailBody
-            };
-
+            var bodyBuilder = new BodyBuilder { HtmlBody = finalEmailBody };
             mimeMessage.Body = bodyBuilder.ToMessageBody();
-
-            // 🔥 FIX: FORCE UTF-8
             mimeMessage.Body.ContentType.Charset = "utf-8";
 
-            // =========================
-            // 🔥 ENCODE (FIXED)
-            // =========================
             using var ms = new MemoryStream();
             await mimeMessage.WriteToAsync(ms);
 
@@ -382,6 +370,178 @@ public class EmailSendingHelper
             var response = await client.PostAsJsonAsync(
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
                 payload);
+
+            var resultJson = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+                throw new Exception(resultJson);
+
+            // 🔥 IMPORTANT: Gmail response parse
+            var gmailResponse = JsonConvert.DeserializeObject<dynamic>(resultJson);
+
+            string gmailMessageId = gmailResponse.id;
+            string threadId = gmailResponse.threadId;
+
+            // =========================
+            // SAVE LOG (FIXED)
+            // =========================
+            _context.EmailLogs.Add(new EmailLog
+            {
+                ClientId = clientId,
+                outboxid = tokenData.Id,
+                ContactId = contactId,
+                CampaignId = CampaignId,
+                BlueprintId = Blueprint?.TemplateId,
+                ToEmail = EmailDetails.email,
+                Subject = EmailDetails.email_subject,
+                Body = EmailDetails.email_body,
+                EmailRecipientName = EmailDetails.full_name,
+                EmailSenderName = tokenData.SenderName,
+                SenderEmailId = tokenData.Email,
+                DataFileId = DataFileId,
+                Provider = "Gmail",
+                SegmentId = Blueprint?.SegmentId,
+                IsSuccess = true,
+                SentAt = DateTime.UtcNow,
+                TrackingId = Guid.Parse(trackingId),
+
+                // 🔥 FIXED PART
+                MessageId = gmailMessageId,   // Gmail ka actual id
+                ThreadId = threadId,          // 🔥 MUST SAVE
+
+                process_name = "Single"
+            });
+
+            await _context.SaveChangesAsync();
+
+            return new EmailSendResult
+            {
+                Success = true,
+                Message = $"Email sent via Gmail API to {EmailDetails.email}"
+            };
+        }
+        catch (Exception ex)
+        {
+            _context.EmailLogs.Add(new EmailLog
+            {
+                ClientId = clientId,
+                ContactId = contactId,
+                CampaignId = CampaignId,
+                ToEmail = EmailDetails?.email,
+                Subject = EmailDetails?.email_subject,
+                Body = EmailDetails?.email_body,
+                IsSuccess = false,
+                ErrorMessage = ex.Message,
+                SentAt = DateTime.UtcNow
+            });
+
+            await _context.SaveChangesAsync();
+
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = ex.Message
+            };
+        }
+    }
+
+    public async Task<EmailSendResult> SendEmailUsingOutlookApi(
+    int clientId, int contactId, int? CampaignId, bool isFollowUp,
+    string BccEmail = "", int OutBoxId = 0)
+    {
+        var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
+        var Blueprint = await _context.Campaigns.FirstOrDefaultAsync(x => x.Id == CampaignId);
+
+        int DataFileId = 0;
+        if (!string.IsNullOrWhiteSpace(Blueprint?.ZohoViewId))
+            int.TryParse(Blueprint.ZohoViewId, out DataFileId);
+
+        if (string.IsNullOrWhiteSpace(EmailDetails?.email_subject) ||
+            string.IsNullOrWhiteSpace(EmailDetails?.email_body))
+        {
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = "Email body or subject is incorrect."
+            };
+        }
+
+        var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
+
+        // 🔥 Get Outlook Token
+        var tokenData = await GetValidOutlookTokenAsync(OutBoxId);
+        if (tokenData == null)
+        {
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = "Outlook not connected."
+            };
+        }
+
+        try
+        {
+            string trackingId = Guid.NewGuid().ToString();
+            string messageId = Guid.NewGuid().ToString(); // Outlook uses its own id
+
+            string finalEmailBody = EmailDetails.email_body;
+
+            // 🔁 Follow-up
+            if (isFollowUp)
+            {
+                string oldThread = await _repository.BuildEmailThreadAsync(
+                    clientId, DataFileId, EmailDetails.id, Blueprint?.SegmentId);
+
+                finalEmailBody = $"{EmailDetails.email_body}{oldThread}";
+            }
+
+            // 🔥 Tracking
+            finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
+
+            if (user.IsTracking)
+            {
+                finalEmailBody = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
+                finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
+            }
+
+            // =========================
+            // 🔥 GRAPH API PAYLOAD
+            // =========================
+            var mail = new
+            {
+                message = new
+                {
+                    subject = EmailDetails.email_subject,
+                    body = new
+                    {
+                        contentType = "HTML",
+                        content = finalEmailBody
+                    },
+                    toRecipients = new[]
+                    {
+                    new
+                    {
+                        emailAddress = new
+                        {
+                            address = EmailDetails.email
+                        }
+                    }
+                },
+                    internetMessageHeaders = new[]
+                    {
+                    new { name = "X-Tracking-Id", value = trackingId }
+                }
+                },
+                saveToSentItems = true
+            };
+
+            var client = new HttpClient();
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
+
+            var response = await client.PostAsJsonAsync(
+                "https://graph.microsoft.com/v1.0/me/sendMail",
+                mail);
 
             var result = await response.Content.ReadAsStringAsync();
 
@@ -405,7 +565,7 @@ public class EmailSendingHelper
                 EmailSenderName = tokenData.SenderName,
                 SenderEmailId = tokenData.Email,
                 DataFileId = DataFileId,
-                Provider = "Gmail",
+                Provider = "Outlook",
                 SegmentId = Blueprint?.SegmentId,
                 IsSuccess = true,
                 SentAt = DateTime.UtcNow,
@@ -419,7 +579,7 @@ public class EmailSendingHelper
             return new EmailSendResult
             {
                 Success = true,
-                Message = $"Email sent via Gmail API to {EmailDetails.email}"
+                Message = $"Email sent via Outlook API to {EmailDetails.email}"
             };
         }
         catch (Exception ex)
@@ -489,5 +649,58 @@ public class EmailSendingHelper
         await _context.SaveChangesAsync();
 
         return tokenData;
+    }
+    public async Task<EmailOAuthTokens> GetValidOutlookTokenAsync(int id)
+    {
+        var cfg = _config.GetSection("MicrosoftOAuth");
+
+        var tokenData = await _context.EmailOAuthTokens
+            .FirstOrDefaultAsync(x => x.Id == id);
+
+        if (tokenData == null)
+            return null;
+
+        // ✅ Expiry check (2 min buffer)
+        if (tokenData.ExpiryTime > DateTime.UtcNow.AddMinutes(2))
+            return tokenData;
+
+        try
+        {
+            var client = new HttpClient();
+
+            var requestData = new Dictionary<string, string>
+        {
+            { "client_id", cfg["ClientId"] },
+            { "client_secret", cfg["ClientSecret"] },
+            { "refresh_token", tokenData.RefreshToken },
+            { "grant_type", "refresh_token" },
+            { "scope", "https://graph.microsoft.com/.default" } // 🔥 IMPORTANT
+        };
+
+            var response = await client.PostAsync(
+                $"https://login.microsoftonline.com/{cfg["TenantId"]}/oauth2/v2.0/token",
+                new FormUrlEncodedContent(requestData));
+
+            var json = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+                throw new Exception("Outlook token refresh failed: " + json);
+
+            dynamic obj = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+
+            // ✅ Update DB
+            tokenData.AccessToken = obj.access_token;
+            tokenData.RefreshToken = obj.refresh_token ?? tokenData.RefreshToken; // 🔥 sometimes new milta hai
+            tokenData.ExpiryTime = DateTime.UtcNow.AddSeconds((int)obj.expires_in);
+
+            await _context.SaveChangesAsync();
+
+            return tokenData;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Outlook Token Refresh Error: {ex.Message}");
+            return null;
+        }
     }
 }

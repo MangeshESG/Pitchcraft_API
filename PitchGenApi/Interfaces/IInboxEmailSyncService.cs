@@ -6,5 +6,6 @@ namespace PitchGenApi.Interfaces
     {
         Task SyncEmailsAsync(Inboxcredentials setting);
         Task SyncGmailInboxAsync(EmailOAuthTokens tokenData);
+        Task SyncOutlookInboxAsync(EmailOAuthTokens tokenData);
     }
 }

@@ -10,6 +10,7 @@
         public int Outboxid { get; set; }
         public int SegmentId { get; set; }
         public string Type { get; set; }
+        public Guid trackingid { get; set; }
     }
 
 }

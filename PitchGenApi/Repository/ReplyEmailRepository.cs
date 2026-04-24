@@ -1,0 +1,499 @@
+﻿using Microsoft.EntityFrameworkCore;
+using MimeKit.Utils;
+using PitchGenApi.Model.DTOs;
+using System.Net.Mail;
+using System.Net;
+using PitchGenApi.Database;
+using PitchGenApi.Interfaces;
+using MimeKit;
+using Newtonsoft.Json;
+using System.Net.Http.Headers;
+
+namespace PitchGenApi.Repository
+{
+    
+    public class ReplyEmailRepository : IReplyEmailRepository
+    {
+        private readonly AppDbContext _context;
+        private readonly EmailSendingHelper _emailSending;
+        public ReplyEmailRepository(AppDbContext context, EmailSendingHelper emailSending)
+        {
+            _context = context;
+            _emailSending = emailSending;
+        }
+        public async Task<EmailSendResult> ReplyEmailUsingSmtp( Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
+        {
+            var inbox = await _context.Inboxcredentials
+                .FirstOrDefaultAsync(x => x.Id == outboxId && x.ClientId == clientId);
+
+            var smtpCredential = await _context.SmtpCredentials
+                .FirstOrDefaultAsync(x => x.Id == inbox.Outboxid);
+
+            var user = await _context.ClientDetails
+                .FirstOrDefaultAsync(x => x.Id == clientId);
+
+            // 🔥 STEP 1: get latest message from BOTH tables
+            var lastSent = await _context.EmailLogs
+                .Where(x => x.TrackingId == trackingid)
+                .OrderByDescending(x => x.SentAt)
+                .FirstOrDefaultAsync();
+
+            var lastReply = await _context.EmailReplies
+                .Where(x => x.TrackingId == trackingid)
+                .OrderByDescending(x => x.Date)
+                .FirstOrDefaultAsync();
+
+            // 🔥 choose latest message (VERY IMPORTANT)
+            string lastMessageId = null;
+
+            if (lastReply != null && lastSent != null)
+            {
+                lastMessageId = lastReply.Date > lastSent.SentAt
+                    ? lastReply.MessageId
+                    : lastSent.MessageId;
+            }
+            else if (lastReply != null)
+            {
+                lastMessageId = lastReply.MessageId;
+            }
+            else if (lastSent != null)
+            {
+                lastMessageId = lastSent.MessageId;
+            }
+
+            string newMessageId = MimeUtils.GenerateMessageId();
+
+            try
+            {
+                using var smtpClient = new SmtpClient(smtpCredential.Server)
+                {
+                    Port = smtpCredential.Port,
+                    Credentials = new NetworkCredential(
+                        smtpCredential.Username,
+                        smtpCredential.Password),
+                    EnableSsl = smtpCredential.UseSsl
+                };
+
+                string finalBody = replyBody;
+
+                // 🔥 tracking only if enabled
+                if (user.IsTracking)
+                {
+                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, trackingid.ToString());
+                    finalBody += EmailTrackingHelper.GetPixelTag(trackingid.ToString());
+                }
+
+                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, trackingid.ToString());
+
+                using var mail = new MailMessage
+                {
+                    From = new MailAddress(smtpCredential.FromEmail, smtpCredential.SenderName),
+                    Subject = lastSent?.Subject?.StartsWith("Re:") == true
+                        ? lastSent.Subject
+                        : "Re: " + lastSent?.Subject,
+                    Body = finalBody,
+                    IsBodyHtml = true
+                };
+
+                mail.To.Add(lastSent.ToEmail);
+
+                // 🔥🔥 THREADING FIX (MAIN PART)
+                if (!string.IsNullOrEmpty(lastMessageId))
+                {
+                    mail.Headers.Add("In-Reply-To", lastMessageId);
+
+                    // optional: build full chain
+                    var allMessageIds = await _context.EmailLogs
+                        .Where(x => x.TrackingId == trackingid)
+                        .Select(x => x.MessageId)
+                        .ToListAsync();
+
+                    var replyIds = await _context.EmailReplies
+                        .Where(x => x.TrackingId == trackingid)
+                        .Select(x => x.MessageId)
+                        .ToListAsync();
+
+                    var references = string.Join(" ", allMessageIds.Concat(replyIds).Where(x => !string.IsNullOrEmpty(x)));
+
+                    mail.Headers.Add("References", references);
+                }
+
+                // always new message id
+                mail.Headers.Add("Message-ID", newMessageId);
+
+                await smtpClient.SendMailAsync(mail);
+
+                // 🔥 SAVE LOG
+                _context.EmailLogs.Add(new EmailLog
+                {
+                    ClientId = clientId,
+                    ToEmail = lastSent.ToEmail,
+                    Subject = mail.Subject,
+                    Body = replyBody,
+                    SenderEmailId = smtpCredential.FromEmail,
+                    EmailSenderName = smtpCredential.SenderName,
+                    Provider = "SMTP",
+                    outboxid = smtpCredential.Id,
+                    IsSuccess = true,
+                    SentAt = DateTime.UtcNow,
+                    TrackingId = trackingid,
+                    MessageId = newMessageId,
+                    process_name = "ThreadReply"
+                });
+
+                await _context.SaveChangesAsync();
+
+                return new EmailSendResult
+                {
+                    Success = true,
+                    Message = "Reply sent in SAME conversation ✅"
+                };
+            }
+            catch (Exception ex)
+            {
+                return new EmailSendResult
+                {
+                    Success = false,
+                    Message = ex.Message
+                };
+            }
+        }
+
+        public async Task<EmailSendResult> ReplyEmailUsingGmailApi(Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
+        {
+            var user = await _context.ClientDetails
+                .FirstOrDefaultAsync(x => x.Id == clientId);
+
+            var tokenData = await _emailSending.GetValidGmailTokenAsync(outboxId);
+            if (tokenData == null)
+            {
+                return new EmailSendResult
+                {
+                    Success = false,
+                    Message = "Gmail not connected."
+                };
+            }
+
+            // 🔥 STEP 1: latest sent + reply find
+            var lastSent = await _context.EmailLogs
+                .Where(x => x.TrackingId == trackingid)
+                .OrderByDescending(x => x.SentAt)
+                .FirstOrDefaultAsync();
+
+            var lastReply = await _context.EmailReplies
+                .Where(x => x.TrackingId == trackingid)
+                .OrderByDescending(x => x.Date)
+                .FirstOrDefaultAsync();
+
+            if (lastSent == null)
+            {
+                return new EmailSendResult
+                {
+                    Success = false,
+                    Message = "Original email not found"
+                };
+            }
+
+            // 🔥 STEP 2: correct last messageId
+            string lastMessageId = null;
+
+            if (lastReply != null && lastSent != null)
+            {
+                lastMessageId = lastReply.Date > lastSent.SentAt
+                    ? lastReply.MessageId
+                    : lastSent.MessageId;
+            }
+            else if (lastReply != null)
+            {
+                lastMessageId = lastReply.MessageId;
+            }
+            else
+            {
+                lastMessageId = lastSent.MessageId;
+            }
+
+            // 🔥 STEP 3: threadId (VERY IMPORTANT)
+            string threadId = lastReply?.ThreadId ?? lastSent.ThreadId;
+
+            try
+            {
+                string finalBody = replyBody;
+
+                // ✅ tracking
+                if (user.IsTracking)
+                {
+                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, trackingid.ToString());
+                    finalBody += EmailTrackingHelper.GetPixelTag(trackingid.ToString());
+                }
+
+                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, trackingid.ToString());
+
+                // =========================
+                // MIME BUILD
+                // =========================
+                var mimeMessage = new MimeMessage();
+
+                mimeMessage.From.Add(new MailboxAddress(tokenData.SenderName, tokenData.Email));
+                mimeMessage.To.Add(new MailboxAddress("", lastSent.ToEmail));
+
+                mimeMessage.Subject = lastSent.Subject.StartsWith("Re:")
+                    ? lastSent.Subject
+                    : "Re: " + lastSent.Subject;
+
+                // 🔥 THREAD HEADERS (IMPORTANT)
+                if (!string.IsNullOrEmpty(lastMessageId))
+                {
+                    mimeMessage.Headers.Add("In-Reply-To", lastMessageId);
+                    mimeMessage.Headers.Add("References", lastMessageId);
+                }
+
+                mimeMessage.Headers.Add("X-Tracking-Id", trackingid.ToString());
+
+                var bodyBuilder = new BodyBuilder
+                {
+                    HtmlBody = finalBody
+                };
+
+                mimeMessage.Body = bodyBuilder.ToMessageBody();
+                mimeMessage.Body.ContentType.Charset = "utf-8";
+
+                // =========================
+                // ENCODE
+                // =========================
+                using var ms = new MemoryStream();
+                await mimeMessage.WriteToAsync(ms);
+
+                var rawMessage = Convert.ToBase64String(ms.ToArray())
+                    .Replace('+', '-')
+                    .Replace('/', '_')
+                    .Replace("=", "");
+
+                // =========================
+                // GMAIL API CALL
+                // =========================
+                var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
+
+                var payload = new
+                {
+                    raw = rawMessage,
+                    threadId = threadId // 🔥🔥 THIS MAKES SAME THREAD
+                };
+
+                var response = await client.PostAsJsonAsync(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+                    payload);
+
+                var resultJson = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                    throw new Exception(resultJson);
+
+                // 🔥 parse response
+                var gmailResponse = JsonConvert.DeserializeObject<dynamic>(resultJson);
+
+                string gmailMessageId = gmailResponse.id;
+                string newThreadId = gmailResponse.threadId;
+
+                // =========================
+                // SAVE LOG
+                // =========================
+                _context.EmailLogs.Add(new EmailLog
+                {
+                    ClientId = clientId,
+                    ToEmail = lastSent.ToEmail,
+                    Subject = mimeMessage.Subject,
+                    Body = replyBody,
+                    SenderEmailId = tokenData.Email,
+                    EmailSenderName = tokenData.SenderName,
+                    Provider = "Gmail",
+                    outboxid = tokenData.Id,
+                    IsSuccess = true,
+                    SentAt = DateTime.UtcNow,
+                    TrackingId = trackingid,
+                    MessageId = gmailMessageId,
+                    ThreadId = newThreadId, // 🔥 update thread
+                    process_name = "ThreadReply"
+                });
+
+                await _context.SaveChangesAsync();
+
+                return new EmailSendResult
+                {
+                    Success = true,
+                    Message = "Reply sent in SAME Gmail thread ✅"
+                };
+            }
+            catch (Exception ex)
+            {
+                return new EmailSendResult
+                {
+                    Success = false,
+                    Message = ex.Message
+                };
+            }
+        }
+
+        public async Task<EmailSendResult> ReplyEmailUsingOutlookApi(Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
+        {
+            var user = await _context.ClientDetails
+                .FirstOrDefaultAsync(x => x.Id == clientId);
+
+            var tokenData = await _emailSending.GetValidOutlookTokenAsync(outboxId);
+            if (tokenData == null)
+            {
+                return new EmailSendResult
+                {
+                    Success = false,
+                    Message = "Outlook not connected"
+                };
+            }
+
+            // 🔥 STEP 1: last sent + reply
+            var lastSent = await _context.EmailLogs
+                .Where(x => x.TrackingId == trackingid)
+                .OrderByDescending(x => x.SentAt)
+                .FirstOrDefaultAsync();
+
+            var lastReply = await _context.EmailReplies
+                .Where(x => x.TrackingId == trackingid)
+                .OrderByDescending(x => x.Date)
+                .FirstOrDefaultAsync();
+
+            if (lastSent == null)
+            {
+                return new EmailSendResult
+                {
+                    Success = false,
+                    Message = "Original mail not found"
+                };
+            }
+
+            // 🔥 STEP 2: correct messageId
+            string lastMessageId = null;
+
+            if (lastReply != null && lastSent != null)
+            {
+                lastMessageId = lastReply.Date > lastSent.SentAt
+                    ? lastReply.MessageId
+                    : lastSent.MessageId;
+            }
+            else if (lastReply != null)
+            {
+                lastMessageId = lastReply.MessageId;
+            }
+            else
+            {
+                lastMessageId = lastSent.MessageId;
+            }
+
+            try
+            {
+                string finalBody = replyBody;
+
+                // ✅ tracking
+                if (user.IsTracking)
+                {
+                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, trackingid.ToString());
+                    finalBody += EmailTrackingHelper.GetPixelTag(trackingid.ToString());
+                }
+
+                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, trackingid.ToString());
+
+                // =========================
+                // 🔥 GRAPH API BODY
+                // =========================
+                var messagePayload = new
+                {
+                    message = new
+                    {
+                        subject = lastSent.Subject.StartsWith("Re:")
+                            ? lastSent.Subject
+                            : "Re: " + lastSent.Subject,
+
+                        body = new
+                        {
+                            contentType = "HTML",
+                            content = finalBody
+                        },
+
+                        toRecipients = new[]
+                        {
+                    new
+                    {
+                        emailAddress = new
+                        {
+                            address = lastSent.ToEmail
+                        }
+                    }
+                },
+
+                        // 🔥 THREADING (IMPORTANT)
+                        internetMessageHeaders = new[]
+                        {
+                    new { name = "In-Reply-To", value = lastMessageId },
+                    new { name = "References", value = lastMessageId },
+                    new { name = "X-Tracking-Id", value = trackingid.ToString() }
+                }
+                    }
+                };
+
+                var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
+
+                var response = await client.PostAsJsonAsync(
+                    "https://graph.microsoft.com/v1.0/me/sendMail",
+                    messagePayload);
+
+                var result = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                    throw new Exception(result);
+
+                // ⚠️ Outlook Graph yahan direct messageId return nahi karta
+                // isliye hum apna logical tracking + fallback store karenge
+
+                string newMessageId = MimeUtils.GenerateMessageId();
+
+                // =========================
+                // 🔥 SAVE LOG
+                // =========================
+                _context.EmailLogs.Add(new EmailLog
+                {
+                    ClientId = clientId,
+                    ToEmail = lastSent.ToEmail,
+                    Subject = messagePayload.message.subject,
+                    Body = replyBody,
+                    SenderEmailId = tokenData.Email,
+                    EmailSenderName = tokenData.SenderName,
+                    Provider = "Outlook",
+                    outboxid = tokenData.Id,
+                    IsSuccess = true,
+                    SentAt = DateTime.UtcNow,
+                    TrackingId = trackingid,
+                    MessageId = newMessageId, // fallback
+                    ThreadId = lastSent.ThreadId, // reuse
+                    process_name = "ThreadReply"
+                });
+
+                await _context.SaveChangesAsync();
+
+                return new EmailSendResult
+                {
+                    Success = true,
+                    Message = "Reply sent in SAME Outlook conversation ✅"
+                };
+            }
+            catch (Exception ex)
+            {
+                return new EmailSendResult
+                {
+                    Success = false,
+                    Message = ex.Message
+                };
+            }
+        }
+    }
+}

@@ -99,7 +99,7 @@ public class InboxController : ControllerBase
     [HttpGet("inbox")]
     public async Task<IActionResult> GetRepliesByInbox([FromQuery]int inboxId, [FromQuery] string Provider)
     {
-        var data = await _repo.GetRepliesByInboxIdAsync(inboxId, Provider);
+        var data = await _repo.GetInboxThreads(inboxId, Provider);
 
         return Ok(new
         {
@@ -120,6 +120,17 @@ public class InboxController : ControllerBase
             count = data?.Count ?? 0,
             data = data
         });
+    }
+
+    [HttpPost("mark-read")]
+    public async Task<IActionResult> MarkAsRead([FromQuery]int id)
+    {
+        var result = await _repo.MarkEmailAsReadAsync(id);
+
+        if (!result)
+            return NotFound(new { success = false, message = "Email not found" });
+
+        return Ok(new { success = true, message = "Marked as read" });
     }
     private string EncryptPassword(string plain)
     {

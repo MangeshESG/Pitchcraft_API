@@ -43,13 +43,13 @@ namespace PitchGenApi.Repository
             var client = new HttpClient();
 
             var values = new Dictionary<string, string>
-        {
-            { "code", code },
-            { "client_id", cfg["ClientId"] },
-            { "client_secret", cfg["ClientSecret"] },
-            { "redirect_uri", cfg["RedirectUri"] },
-            { "grant_type", "authorization_code" }
-        };
+            {
+                { "code", code },
+                { "client_id", cfg["ClientId"] },
+                { "client_secret", cfg["ClientSecret"] },
+                { "redirect_uri", cfg["RedirectUri"] },
+                { "grant_type", "authorization_code" }
+            };
 
             var response = await client.PostAsync(
                 "https://oauth2.googleapis.com/token",
@@ -70,7 +70,21 @@ namespace PitchGenApi.Repository
             dynamic user = Newtonsoft.Json.JsonConvert.DeserializeObject(userInfo);
 
             string email = user.email;
-            // 🔥 Save DB
+
+            // =========================
+            // 🔥 CHECK SMTP EXISTS
+            // =========================
+            var smtp = await _context.SmtpCredentials
+                .FirstOrDefaultAsync(x => x.FromEmail == email);
+
+            if (smtp != null)
+            {
+                return "This email is already configured for sending (SMTP). Please configure it as an IMAP inbox instead.";
+            }
+
+            // =========================
+            // 🔥 SAVE / UPDATE TOKEN
+            // =========================
             var existing = await _context.EmailOAuthTokens
                 .FirstOrDefaultAsync(x => x.Email == email);
 
@@ -96,9 +110,99 @@ namespace PitchGenApi.Repository
 
             await _context.SaveChangesAsync();
 
-            return "✅ Gmail Connected";
+            return "✅ Gmail Connected Successfully";
         }
 
-       
+        public Task<string> OutlookGetAuthUrlAsync(int clientId, string senderName)
+        {
+            var cfg = _config.GetSection("MicrosoftOAuth");
+
+            var scope = Uri.EscapeDataString(
+                "openid email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send"
+            );
+
+            var url =
+                $"https://login.microsoftonline.com/{cfg["TenantId"]}/oauth2/v2.0/authorize?" +
+                $"client_id={cfg["ClientId"]}" +
+                $"&response_type=code" +
+                $"&redirect_uri={Uri.EscapeDataString(cfg["RedirectUri"])}" +
+                $"&response_mode=query" +
+                $"&scope={scope}" +
+                $"&state={clientId}|{senderName}";
+
+            return Task.FromResult(url);
+        }
+
+        public async Task<string> OutlookHandleCallbackAsync(string code, int clientId, string SenderName)
+        {
+            
+            var cfg = _config.GetSection("MicrosoftOAuth");
+
+            var client = new HttpClient();
+
+            var values = new Dictionary<string, string>
+            {
+                { "client_id", cfg["ClientId"] },
+                { "client_secret", cfg["ClientSecret"] },
+                { "code", code },
+                { "redirect_uri", cfg["RedirectUri"] },
+                { "grant_type", "authorization_code" }
+            };
+
+            var response = await client.PostAsync(
+        $"https://login.microsoftonline.com/{cfg["TenantId"]}/oauth2/v2.0/token",
+                new FormUrlEncodedContent(values));
+
+            var json = await response.Content.ReadAsStringAsync();
+            dynamic token = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+
+            string accessToken = token.access_token;
+            string refreshToken = token.refresh_token;
+            int expiresIn = token.expires_in;
+
+            // 🔥 GET EMAIL
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", accessToken);
+
+            var userInfo = await client.GetStringAsync("https://graph.microsoft.com/v1.0/me");
+            dynamic user = Newtonsoft.Json.JsonConvert.DeserializeObject(userInfo);
+
+            string email = user.mail ?? user.userPrincipalName;
+
+            // 🔥 SAVE DB
+            var existing = await _context.EmailOAuthTokens
+                .FirstOrDefaultAsync(x => x.Email == email);
+            var smtp = await _context.SmtpCredentials
+               .FirstOrDefaultAsync(x => x.FromEmail == email);
+
+            if (smtp != null)
+            {
+                return "This email is already configured for sending (SMTP). Please configure it as an IMAP inbox instead.";
+            }
+            if (existing == null)
+            {
+                _context.EmailOAuthTokens.Add(new EmailOAuthTokens
+                {
+                    Email = email,
+                    Provider = "Outlook",
+                    ClientId = clientId,
+                    AccessToken = accessToken,
+                    RefreshToken = refreshToken,
+                    SenderName = SenderName,
+                    ExpiryTime = DateTime.UtcNow.AddSeconds(expiresIn),
+                    CreatedAt = DateTime.UtcNow
+                });
+            }
+            else
+            {
+                existing.AccessToken = accessToken;
+                existing.RefreshToken = refreshToken ?? existing.RefreshToken;
+                existing.ExpiryTime = DateTime.UtcNow.AddSeconds(expiresIn);
+            }
+
+            await _context.SaveChangesAsync();
+
+            return "✅ Outlook Connected Successfully";
+        }
     }
 }

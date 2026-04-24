@@ -6,6 +6,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
+using System.Text;
 
 public class InboxRepository : IInboxRepository
 {
@@ -119,7 +120,7 @@ public class InboxRepository : IInboxRepository
             // =========================
             // 🔥 GMAIL FLOW
             // =========================
-            else if (Provider.ToUpper() == "GMAIL")
+            else if (Provider.ToUpper() == "GMAIL" || Provider.ToUpper() == "OUTLOOK")
             {
                 // 🔥 Gmail me InboxId = OutboxId (same id use kar rahe ho)
                 outboxId = inboxId;
@@ -222,5 +223,198 @@ public class InboxRepository : IInboxRepository
             Console.WriteLine($"❌ Error in GetInboxPickListByClientIdAsync: {ex.Message}");
             return new List<InboxDropdownDto>();
         }
+    }
+
+    public async Task<bool> MarkEmailAsReadAsync(int replyId)
+    {
+        var email = await _context.EmailReplies
+            .FirstOrDefaultAsync(x => x.Id == replyId);
+
+        if (email == null)
+            return false;
+
+        email.IsRead = true;
+
+        await _context.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<string> BuildEmailThreadForInbox(int clientId, Guid trackingId)
+    {
+        // 🔥 SENT MAILS
+        var sentMails = await _context.EmailLogs
+            .Where(x => x.ClientId == clientId
+                        && x.TrackingId == trackingId
+                        && x.IsSuccess == true)
+            .Select(x => new
+            {
+                Type = "Sent",
+                x.MessageId,
+                x.Subject,
+                x.Body,
+                x.SentAt,
+                From = x.SenderEmailId,
+                FromName = x.EmailSenderName,
+                To = x.ToEmail,
+                ToName = x.EmailRecipientName
+            })
+            .ToListAsync();
+
+        // 🔥 REPLIES
+        var replies = await _context.EmailReplies
+            .Where(x => x.ClientId == clientId
+                        && x.TrackingId == trackingId)
+            .Select(x => new
+            {
+                Type = "Reply",
+                x.MessageId,
+                x.Subject,
+                Body = x.Body,
+                SentAt = x.Date,
+                From = x.FromEmail,
+                FromName = x.FromEmail,
+                To = "",   // optional
+                ToName = ""
+            })
+            .ToListAsync();
+
+        // 🔥 MERGE
+        var allMails = sentMails.Concat(replies)
+            .OrderBy(x => x.SentAt)
+            .ToList();
+
+        if (!allMails.Any())
+            return "";
+
+        // 🔥 BUILD HTML THREAD
+        StringBuilder sb = new StringBuilder();
+
+        foreach (var mail in allMails)
+        {
+            sb.AppendLine("<hr style='border:0; border-top:0.5px solid #999; width:100%;' />");
+
+            sb.AppendLine($"<b>From:</b> {mail.FromName} &lt;{mail.From}&gt;<br/>");
+            sb.AppendLine($"<b>Sent:</b> {mail.SentAt:dddd, MMMM d, yyyy h:mm tt}<br/>");
+
+            if (!string.IsNullOrEmpty(mail.To))
+                sb.AppendLine($"<b>To:</b> {mail.ToName} &lt;{mail.To}&gt;<br/>");
+
+            sb.AppendLine($"<b>Subject:</b> {mail.Subject}<br/><br/>");
+
+            sb.AppendLine($"{mail.Body}<br/><br/>");
+        }
+
+        return sb.ToString();
+    }
+    public async Task<List<EmailThreadDto>> GetInboxThreads(int inboxId, string Provider)
+    {
+        int? outboxId = 0;
+
+        // =========================
+        // 🔥 OUTBOX RESOLVE
+        // =========================
+        if (Provider.ToUpper() == "IMAP")
+        {
+            outboxId = await _context.Inboxcredentials
+                .Where(x => x.Id == inboxId)
+                .Select(x => x.Outboxid)
+                .FirstOrDefaultAsync();
+        }
+        else if (Provider.ToUpper() == "GMAIL" || Provider.ToUpper() == "OUTLOOK")
+        {
+            outboxId = inboxId;
+        }
+
+        if (outboxId == 0)
+            return new List<EmailThreadDto>();
+
+        // =========================
+        // 🔥 SENT EMAILS
+        // =========================
+        var sentEmails = await _context.EmailLogs
+            .Where(x => x.outboxid == outboxId && x.IsSuccess == true)
+            .ToListAsync();
+
+        var messageIds = sentEmails
+            .Where(x => !string.IsNullOrEmpty(x.MessageId))
+            .Select(x => x.MessageId)
+            .ToList();
+
+        var trackingIds = sentEmails
+            .Where(x => x.TrackingId != null)
+            .Select(x => x.TrackingId)
+            .ToList();
+
+        // =========================
+        // 🔥 REPLIES
+        // =========================
+        var replies = await _context.EmailReplies
+            .Where(er =>
+                (er.TrackingId != null && trackingIds.Contains(er.TrackingId))
+                || (er.InReplyTo != null && messageIds.Contains(er.InReplyTo))
+            )
+            .ToListAsync();
+
+        // =========================
+        // 🔥 THREAD BUILD
+        // =========================
+        var threads = sentEmails
+            .GroupBy(x => x.TrackingId)
+            .Select(g =>
+            {
+                var threadMessages = new List<EmailConvDto>();
+
+                // 🔥 SENT
+                threadMessages.AddRange(g.Select(s => new EmailConvDto
+                {
+                    Type = "Sent",
+                    MessageId = s.MessageId,
+                    Subject = s.Subject,
+                    Body = s.Body,
+                    FromEmail = s.SenderEmailId,
+                    ToEmail = s.ToEmail,
+                    Date = s.SentAt,
+                    IsRead = true
+                }));
+
+                // 🔥 REPLIES
+                threadMessages.AddRange(
+                    replies
+                    .Where(r =>
+                        r.TrackingId == g.Key ||
+                        g.Select(x => x.MessageId).Contains(r.InReplyTo))
+                    .Select(r => new EmailConvDto
+                    {
+                        Type = "Reply",
+                        MessageId = r.MessageId,
+                        Subject = r.Subject,
+                        Body = r.Body,
+                        FromEmail = r.FromEmail,
+                        ToEmail = "",
+                        Date = r.Date,
+                        IsRead = r.IsRead ?? false
+                    })
+                );
+
+                // 🔥 ORDER (IMPORTANT)
+                threadMessages = threadMessages
+                    .OrderBy(x => x.Date)
+                    .ToList();
+
+                return new EmailThreadDto
+                {
+                    TrackingId = g.Key,
+                    Subject = g.FirstOrDefault()?.Subject,
+                    ContactEmail = g.FirstOrDefault()?.ToEmail,
+                    TotalMessages = threadMessages.Count,
+                    LastMessageDate = threadMessages.Max(x => x.Date),
+                    HasUnread = threadMessages.Any(x => x.Type == "Reply" && !x.IsRead),
+                    Messages = threadMessages
+                };
+            })
+            .OrderByDescending(x => x.LastMessageDate)
+            .ToList();
+
+        return threads;
     }
 }

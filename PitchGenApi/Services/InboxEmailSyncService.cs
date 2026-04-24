@@ -369,6 +369,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 var cleanbody = Regex.Replace(body, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
                 cleanbody = Regex.Replace(cleanbody, @"(?m)^>\s?", "");
                 cleanbody = cleanbody.Trim();
+                cleanbody = ExtractOnlyReply(cleanbody);
                 // 🔥 Save reply
                 _context.EmailReplies.Add(new EmailReplies
                 {
@@ -415,6 +416,181 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
         Console.WriteLine($"✅ Sync Done: {processed} replies saved");
     }
+    public async Task SyncOutlookInboxAsync(EmailOAuthTokens tokenData)
+    {
+        Console.WriteLine($"🚀 Outlook Sync Start: {tokenData.Email}");
+
+        // 🔥 Token refresh
+        tokenData = await _emailSending.GetValidOutlookTokenAsync(tokenData.Id);
+
+        if (tokenData == null)
+        {
+            Console.WriteLine("❌ Token invalid");
+            return;
+        }
+
+        var http = new HttpClient();
+        http.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
+
+        // 🔥 Last sync
+        var lastSync = tokenData.LastInboxSyncAt ?? DateTime.UtcNow.AddDays(-1);
+        lastSync = lastSync.AddMinutes(-2);
+
+        string filterTime = lastSync.ToString("yyyy-MM-ddTHH:mm:ssZ");
+
+        string url =
+            $"https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages" +
+            $"?$filter=receivedDateTime ge {filterTime}" +
+            $"&$top=50" +
+            $"&$select=subject,from,body,receivedDateTime,internetMessageHeaders";
+
+        string nextLink = url;
+        int processed = 0;
+        int limit = 100;
+
+        DateTime? latestEmailTime = null;
+
+        while (!string.IsNullOrEmpty(nextLink))
+        {
+            var res = await http.GetAsync(nextLink);
+            var json = await res.Content.ReadAsStringAsync();
+
+            if (!res.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"❌ Outlook API failed: {json}");
+                return;
+            }
+
+            dynamic data = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+
+            if (data.value == null)
+            {
+                Console.WriteLine("📭 No messages");
+                break;
+            }
+
+            foreach (var msg in data.value)
+            {
+                string messageId = msg.id;
+
+                // 🔥 Duplicate check
+                bool exists = await _context.EmailReplies
+                    .AnyAsync(x => x.MessageId == messageId);
+
+                if (exists)
+                    continue;
+
+                string subject = msg.subject;
+                string from = msg.from?.emailAddress?.address;
+
+                // =========================
+                // 🔥 FIXED HEADER PARSE (NO LAMBDA)
+                // =========================
+                string inReplyTo = "";
+
+                if (msg.internetMessageHeaders != null)
+                {
+                    foreach (var h in msg.internetMessageHeaders)
+                    {
+                        if (h.name == "In-Reply-To")
+                        {
+                            inReplyTo = h.value;
+                            break;
+                        }
+                    }
+                }
+
+                string body = msg.body?.content ?? "";
+
+                DateTime emailDate = msg.receivedDateTime != null
+                    ? DateTime.Parse(msg.receivedDateTime.ToString()).ToUniversalTime()
+                    : DateTime.UtcNow;
+
+                // =========================
+                // 🔥 MATCHING LOGIC
+                // =========================
+                EmailLog sentMail = null;
+
+                var trackingId = EmailTrackingHelper.ExtractinboxTrackingId(body);
+
+                if (trackingId != null)
+                {
+                    sentMail = await _context.EmailLogs
+                        .FirstOrDefaultAsync(x => x.TrackingId == trackingId);
+
+                    if (sentMail != null)
+                        Console.WriteLine("🔥 Matched via TrackingId");
+                }
+
+                if (sentMail == null && !string.IsNullOrEmpty(inReplyTo))
+                {
+                    sentMail = await _context.EmailLogs
+                        .FirstOrDefaultAsync(x => x.MessageId == inReplyTo);
+
+                    if (sentMail != null)
+                        Console.WriteLine("✅ Matched via InReplyTo");
+                }
+
+                if (sentMail == null)
+                {
+                    Console.WriteLine("❌ Not our email → Skipped");
+                    continue;
+                }
+
+                // =========================
+                // 🔥 CLEAN BODY (same as Gmail/IMAP)
+                // =========================
+                var cleanbody = Regex.Replace(body, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
+                cleanbody = Regex.Replace(cleanbody, @"(?m)^>\s?", "");
+                cleanbody = cleanbody.Trim();
+
+                // 🔥 SAVE
+                _context.EmailReplies.Add(new EmailReplies
+                {
+                    ClientId = sentMail.ClientId,
+                    ContactId = sentMail.ContactId,
+                    CampaignId = sentMail.CampaignId,
+                    MessageId = messageId,
+                    InReplyTo = inReplyTo,
+                    FromEmail = from,
+                    Subject = subject,
+                    Body = cleanbody,
+                    TrackingId = sentMail.TrackingId,
+                    Date = emailDate
+                });
+
+                // 🔥 latest time
+                if (latestEmailTime == null || emailDate > latestEmailTime)
+                {
+                    latestEmailTime = emailDate;
+                }
+
+                processed++;
+
+                Console.WriteLine($"💾 Saved reply: {subject}");
+
+                if (processed >= limit)
+                    break;
+            }
+
+            if (processed >= limit)
+                break;
+
+            nextLink = data["@odata.nextLink"];
+        }
+
+        // 🔥 Update sync time
+        if (latestEmailTime != null)
+        {
+            tokenData.LastInboxSyncAt = latestEmailTime.Value.AddSeconds(-5);
+        }
+
+        await _context.SaveChangesAsync();
+
+        Console.WriteLine($"✅ Outlook Sync Done: {processed} replies saved");
+    }
+
     private string GetHeader(dynamic headers, string name)
     {
         foreach (var h in headers)
@@ -493,5 +669,33 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         {
             return "";
         }
+    }
+    private string ExtractOnlyReply(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return "";
+
+        // 🔥 Gmail / Outlook / IMAP patterns
+        var patterns = new[]
+        {
+        @"\nFrom:",
+        @"\nOn .*wrote:",
+        @"\n-----Original Message-----",
+        @"\nSent:",
+        @"\n> "
+    };
+
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(body, pattern, RegexOptions.IgnoreCase);
+
+            if (match.Success)
+            {
+                body = body.Substring(0, match.Index);
+                break;
+            }
+        }
+
+        return body.Trim();
     }
 }

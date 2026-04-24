@@ -24,14 +24,16 @@ namespace PitchGenApi.Controllers
         private readonly ContactRepository _contactRepository;
         private readonly EmailSendingHelper _emailHelper;
         private readonly IDomainVerificationRepository _repo;
+        private readonly IReplyEmailRepository _replyRepo;
 
 
-        public SequenceEmailController(AppDbContext context, ContactRepository contactRepository, EmailSendingHelper emailHelper, IDomainVerificationRepository repository)
+        public SequenceEmailController(AppDbContext context, ContactRepository contactRepository, EmailSendingHelper emailHelper, IDomainVerificationRepository repository,IReplyEmailRepository replyRepo)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _contactRepository = contactRepository;
             _emailHelper = emailHelper;
             _repo = repository;
+            _replyRepo = replyRepo;
         }
 
         // Step 1: Create a new email sequence with multiple steps
@@ -303,6 +305,17 @@ namespace PitchGenApi.Controllers
                         );
                         break;
 
+                    case "OUTLOOK":
+                        success = await _emailHelper.SendEmailUsingOutlookApi(
+                            dto.clientId,
+                            dto.contactid,
+                            dto.campaignid,
+                            dto.isFollowUp,
+                            dto.BccEmail,
+                            dto.Outboxid
+                        );
+                        break;
+
                     case "GMAIL":
                         success = await _emailHelper.SendEmailUsingGmailApi(
                             dto.clientId,
@@ -360,7 +373,61 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpPost("reply_email")]
+        public async Task<IActionResult> ReplyEmail([FromBody] ReplyEmailRequest request)
+        {
+            if (request.TrackingId == Guid.Empty)
+                return BadRequest("TrackingId is required");
 
+            if (string.IsNullOrWhiteSpace(request.ReplyBody))
+                return BadRequest("Reply body is required");
+
+            if (string.IsNullOrWhiteSpace(request.Provider))
+                return BadRequest("Provider is required");
+
+            EmailSendResult result;
+
+            switch (request.Provider.ToUpper())
+            {
+                case "IMAP":
+                    result = await _replyRepo.ReplyEmailUsingSmtp(
+                        request.TrackingId,
+                        request.ClientId,
+                        request.ReplyBody,
+                        request.Outboxid,
+                        request.BccEmail
+                    );
+                    break;
+
+                case "GMAIL":
+                    result = await _replyRepo.ReplyEmailUsingGmailApi(
+                        request.TrackingId,
+                        request.ClientId,
+                        request.ReplyBody,
+                        request.Outboxid,
+                        request.BccEmail
+                    );
+                    break;
+
+                case "OUTLOOK":
+                    result = await _replyRepo.ReplyEmailUsingOutlookApi(
+                        request.TrackingId,
+                        request.ClientId,
+                        request.ReplyBody,
+                        request.Outboxid,
+                        request.BccEmail
+                    );
+                    break;
+
+                default:
+                    return BadRequest("Invalid provider. Use SMTP, Gmail, or Outlook.");
+            }
+
+            if (!result.Success)
+                return BadRequest(result);
+
+            return Ok(result);
+        }
 
         //[HttpPost("send-singleEmail")]
         //public async Task<IActionResult> SendSingleEmail([FromQuery] int clientId, [FromQuery] int dataFileId, [FromQuery] int? contactId = null, [FromQuery] int smtpId = 0, [FromQuery] string bccEmail = null)

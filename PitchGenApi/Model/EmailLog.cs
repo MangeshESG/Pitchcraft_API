@@ -23,6 +23,7 @@
     public int? CampaignId { get; set; }
     public int? BlueprintId { get; set; }
     public string? Provider { get; set; }
+    public string? ThreadId { get; set; }
     public DateTime? SentAt { get; set; }
 
     public int ClientId { get; set; }

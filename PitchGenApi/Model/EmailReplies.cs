@@ -13,6 +13,7 @@
         public string? FromEmail { get; set; }
         public string? Subject { get; set; }
         public string? Body { get; set; }
+        public string? ThreadId { get; set; }
         public Guid? TrackingId { get; set; }
 
         public DateTime? Date { get; set; }
