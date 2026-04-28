@@ -71,52 +71,88 @@ namespace PitchGenApi.Services
 
 
         // Single method to handle both start and continue
-        public async Task<object> ProcessChatAsync(string userId, string message, string systemPrompt, string model, string? imageUrl = null)
+        public async Task<object> ProcessChatAsync(
+            string userId,
+            string message,
+            string systemPrompt,
+            string model,
+            string? imageUrl = null,
+            int? campaignTemplateId = null)
         {
             if (string.IsNullOrWhiteSpace(userId))
                 return new { assistantText = "⚠️ UserId is required", error = true };
 
-            // ------------------------------------------------------
-            // 🟢 1. Create session if not exists
-            // ------------------------------------------------------
-            CampaignSession session;
+            if (string.IsNullOrWhiteSpace(message))
+                return new { assistantText = "⚠️ Message is required.", error = true };
+
+            CampaignSession? session = null;
 
             // ======================================================
-            // ✅ 1. TRY LOAD FROM MEMORY
+            // ✅ 1. TRY LOAD FROM MEMORY ONLY IF CAMPAIGN MATCHES
             // ======================================================
-            if (!_sessions.TryGetValue(userId, out session))
+            if (_sessions.TryGetValue(userId, out var memorySession))
+            {
+                if (!campaignTemplateId.HasValue ||
+                    memorySession.CampaignTemplateId == campaignTemplateId.Value)
+                {
+                    session = memorySession;
+                }
+            }
+
+            // ======================================================
+            // ✅ 2. IF MEMORY MISSING OR WRONG CAMPAIGN, LOAD FROM DB
+            // ======================================================
+            if (session == null)
             {
                 using var scope = _scopeFactory.CreateScope();
                 var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                // ======================================================
-                // ✅ 2. TRY LOAD FROM DB (LAST 6 HOURS)
-                // ======================================================
-                var convo = await db.CampaignConversations
+                var cutoff = DateTime.UtcNow.AddHours(-6);
+
+                var convoQuery = db.CampaignConversations
                     .Where(x =>
                         x.ClientId == userId &&
-                        x.StartedAt >= DateTime.UtcNow.AddHours(-6))
+                        x.StartedAt >= cutoff &&
+                        !string.IsNullOrEmpty(x.ConversationData));
+
+                if (campaignTemplateId.HasValue && campaignTemplateId.Value > 0)
+                {
+                    convoQuery = convoQuery.Where(x =>
+                        x.CampaignTemplateId == campaignTemplateId.Value);
+                }
+
+                var convo = await convoQuery
                     .OrderByDescending(x => x.StartedAt)
                     .FirstOrDefaultAsync();
 
-                if (convo != null && !string.IsNullOrEmpty(convo.ConversationData))
+                if (convo != null)
                 {
-                    var messages = JsonConvert.DeserializeObject<List<Dictionary<string, string>>>(convo.ConversationData);
+                    var messages =
+                        JsonConvert.DeserializeObject<List<Dictionary<string, string>>>(
+                            convo.ConversationData ?? "[]"
+                        ) ?? new List<Dictionary<string, string>>();
 
                     session = new CampaignSession
                     {
                         UserId = userId,
-                        CampaignTemplateId = convo.CampaignTemplateId ?? 0,
-                        Messages = messages ?? new List<Dictionary<string, string>>()
+                        CampaignTemplateId = convo.CampaignTemplateId ?? campaignTemplateId ?? 0,
+                        Messages = messages
                     };
                 }
                 else
                 {
                     // ======================================================
-                    // ✅ 3. FALLBACK → CREATE NEW SESSION (OLD LOGIC)
+                    // ✅ 3. FALLBACK: CREATE NEW SESSION FOR REQUEST CAMPAIGN
                     // ======================================================
-                    var campaign = await db.CampaignTemplates
-                        .Where(c => c.ClientId == userId)
+                    var campaignQuery = db.CampaignTemplates
+                        .Where(c => c.ClientId == userId);
+
+                    if (campaignTemplateId.HasValue && campaignTemplateId.Value > 0)
+                    {
+                        campaignQuery = campaignQuery.Where(c => c.Id == campaignTemplateId.Value);
+                    }
+
+                    var campaign = await campaignQuery
                         .OrderByDescending(c => c.CreatedAt)
                         .Select(c => new
                         {
@@ -143,82 +179,94 @@ namespace PitchGenApi.Services
                     }
 
                     string systemPromptToUse =
-                        campaign.TemplateDefinition?.AIInstructions
-                        ?? campaign.TemplateDefinition?.PlaceholderListExtensive
-                        ?? campaign.TemplateDefinition?.PlaceholderList
-                        ?? "";
+                        !string.IsNullOrWhiteSpace(systemPrompt)
+                            ? systemPrompt
+                            : campaign.TemplateDefinition?.AIInstructions
+                              ?? campaign.TemplateDefinition?.PlaceholderListExtensive
+                              ?? campaign.TemplateDefinition?.PlaceholderList
+                              ?? "";
 
                     session = new CampaignSession
                     {
                         UserId = userId,
                         CampaignTemplateId = campaign.Id,
                         Messages = new List<Dictionary<string, string>>
-            {
-                new()
                 {
-                    { "role", "system" },
-                    { "content", systemPromptToUse }
+                    new()
+                    {
+                        { "role", "system" },
+                        { "content", systemPromptToUse }
+                    }
                 }
-            }
                     };
 
-                    // 👉 SAVE INITIAL CONVERSATION
                     var newConvo = new CampaignConversation
                     {
                         ClientId = userId,
                         CampaignTemplateId = campaign.Id,
                         StartedAt = DateTime.UtcNow,
-                        ConversationData = JsonConvert.SerializeObject(session.Messages)
+                        ConversationData = JsonConvert.SerializeObject(session.Messages),
+                        Mode = "new",
+                        EditNumber = 0
                     };
 
                     db.CampaignConversations.Add(newConvo);
                     await db.SaveChangesAsync();
                 }
 
+                // Save restored/created session back to memory.
+                // Note: this still stores one session per user.
                 _sessions[userId] = session;
             }
-            // ------------------------------------------------------
-            // 🟢 2. Attach campaign ID if missing (rare case)
-            // ------------------------------------------------------
-            session = _sessions[userId];
 
+            // ======================================================
+            // ✅ 4. FINAL SAFETY: ATTACH CAMPAIGN ID IF MISSING
+            // ======================================================
             if (session.CampaignTemplateId == 0)
             {
-                using var scope = _scopeFactory.CreateScope();
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-                var lastCampaign = await db.CampaignTemplates
-                    .OrderByDescending(c => c.CreatedAt)
-                    .FirstOrDefaultAsync(c => c.ClientId == userId);
-
-                if (lastCampaign != null)
+                if (campaignTemplateId.HasValue && campaignTemplateId.Value > 0)
                 {
-                    session.CampaignTemplateId = lastCampaign.Id;
+                    session.CampaignTemplateId = campaignTemplateId.Value;
                 }
                 else
                 {
-                    return new { assistantText = "⚠️ No campaign found. Start one first.", error = true };
+                    using var scope = _scopeFactory.CreateScope();
+                    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                    var lastCampaign = await db.CampaignTemplates
+                        .OrderByDescending(c => c.CreatedAt)
+                        .FirstOrDefaultAsync(c => c.ClientId == userId);
+
+                    if (lastCampaign != null)
+                    {
+                        session.CampaignTemplateId = lastCampaign.Id;
+                    }
+                    else
+                    {
+                        return new
+                        {
+                            assistantText = "⚠️ No campaign found. Start one first.",
+                            error = true
+                        };
+                    }
                 }
             }
 
-            // ------------------------------------------------------
-            // 🟢 3. Validate message
-            // ------------------------------------------------------
-            if (string.IsNullOrWhiteSpace(message))
-                return new { assistantText = "⚠️ Message is required.", error = true };
-
-            // ------------------------------------------------------
-            // 🟢 4. Append user message
-            // ------------------------------------------------------
+            // ======================================================
+            // ✅ 5. APPEND USER MESSAGE
+            // ======================================================
             session.Messages.Add(new Dictionary<string, string>
-            {
-                { "role", "user" },
-                { "content", message }
-            });
+    {
+        { "role", "user" },
+        { "content", message }
+    });
 
-            // ------------------------------------------------------
-            // 🟢 5. Call GPT
-            // ------------------------------------------------------
+            // Keep dictionary updated with current session object.
+            _sessions[userId] = session;
+
+            // ======================================================
+            // ✅ 6. CALL GPT
+            // ======================================================
             var response = await SendToGptAsync(session.Messages, model, userId, imageUrl);
 
             return response;
@@ -339,7 +387,14 @@ namespace PitchGenApi.Services
                 var httpResponse = await _httpClient.PostAsync(endpoint, httpContent);
                 var raw = await httpResponse.Content.ReadAsStringAsync();
 
-                int clientId = int.Parse(userId);
+                if (int.TryParse(userId, out int clientId))
+                {
+                    await _contactRepository.CreditDeduction(clientId);
+                }
+                else
+                {
+                    Console.WriteLine($"Invalid userId for credit deduction: {userId}");
+                }
                 await _contactRepository.CreditDeduction(clientId);
 
                 if (!httpResponse.IsSuccessStatusCode)
@@ -545,24 +600,48 @@ namespace PitchGenApi.Services
 
             var block = blockMatch.Groups[1].Value;
 
-            // Matches:
-            // {placeholder} = any text INCLUDING newline until next {xxx} OR END
-            var regex = new Regex(@"\{([^}]+)\}\s*=\s*((?s).*?)(?=\n\{[^}]+\}\s*=|$)", RegexOptions.Singleline);
+            var lines = block.Split('\n');
 
-            foreach (Match m in regex.Matches(block))
+            string currentKey = null;
+            StringBuilder currentValue = new StringBuilder();
+
+            foreach (var rawLine in lines)
             {
-                var key = m.Groups[1].Value.Trim();
-                var val = m.Groups[2].Value.Trim();
+                var line = rawLine.Trim();
 
-                val = val.Replace("\\n", "\n"); // convert escaped \n to real newlines
+                // Match: {key} = value
+                var match = Regex.Match(line, @"^\{([^}]+)\}\s*=\s*(.*)");
 
-                dict[key] = val;
+                if (match.Success)
+                {
+                    // Save previous
+                    if (currentKey != null)
+                    {
+                        dict[currentKey] = currentValue.ToString().Trim();
+                    }
 
+                    currentKey = match.Groups[1].Value.Trim();
+                    currentValue.Clear();
+                    currentValue.Append(match.Groups[2].Value.Trim());
+                }
+                else
+                {
+                    // Multiline value
+                    if (currentKey != null)
+                    {
+                        currentValue.Append("\n" + line);
+                    }
+                }
+            }
+
+            // Save last
+            if (currentKey != null)
+            {
+                dict[currentKey] = currentValue.ToString().Trim();
             }
 
             return dict;
         }
-
         // Save to DB using injected IServiceScopeFactory
         private async Task SavePlaceholderValuesToDb(string userId, Dictionary<string, string> newValues)
         {
@@ -832,15 +911,19 @@ namespace PitchGenApi.Services
 
         public async Task<object> ContinueEditModeAsync(EditChatRequest req)
         {
-            if (!_sessions.ContainsKey(req.UserId))
-                return new { assistantText = "No active edit session. Call /edit/start first.", error = true };
+            if (!_sessions.TryGetValue(req.UserId, out var session) ||
+                session.CampaignTemplateId != req.CampaignTemplateId)
+            {
+                return new
+                {
+                    assistantText = "No active edit session for this campaign. Call /edit/start first.",
+                    error = true
+                };
+            }
 
             if (string.IsNullOrWhiteSpace(req.Message))
                 return new { assistantText = "Message is required", error = true };
 
-            var session = _sessions[req.UserId];
-
-            // If edit flow already completed, do NOT continue the conversation
             var lastMessage = session.Messages.LastOrDefault();
             if (lastMessage != null &&
                 lastMessage.ContainsKey("content") &&
@@ -855,20 +938,21 @@ namespace PitchGenApi.Services
                 };
             }
 
-            // Push user message into session
             session.Messages.Add(new Dictionary<string, string>
-                {
-                    { "role", "user" },
-                    { "content", req.Message }
-                });
-            // Keep last 20 messages only
+    {
+        { "role", "user" },
+        { "content", req.Message }
+    });
+
             if (session.Messages.Count > 20)
             {
                 session.Messages = session.Messages
                     .Skip(session.Messages.Count - 20)
                     .ToList();
+
+                _sessions[req.UserId] = session;
             }
-            // Send to GPT
+
             return await SendToGptAsync(session.Messages, req.Model ?? "gpt-5.1", req.UserId, req.ImageUrl);
         }
 
