@@ -544,6 +544,8 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 var cleanbody = Regex.Replace(body, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
                 cleanbody = Regex.Replace(cleanbody, @"(?m)^>\s?", "");
                 cleanbody = cleanbody.Trim();
+                cleanbody = ExtractOnlyReply(cleanbody);
+
 
                 // 🔥 SAVE
                 _context.EmailReplies.Add(new EmailReplies

@@ -29,6 +29,8 @@
         public string Source { get; set; }
 
         public List<EmailEventDto> Events { get; set; }
+        public List<EmailReplyDto> Replies { get; set; }   // ✅ add
+
     }
 
     public class ContactNoteDto
@@ -47,4 +49,15 @@ public class ContactAttachmentDto
     public string FileName { get; set; }
     public string FileUrl { get; set; }
     public DateTime CreatedDate { get; set; }
+}
+public class EmailReplyDto
+{
+    public int Id { get; set; }
+    public string MessageId { get; set; }
+    public string InReplyTo { get; set; }
+    public string FromEmail { get; set; }
+    public string Subject { get; set; }
+    public string Body { get; set; }
+    public DateTime? Date { get; set; }
+    public bool IsRead { get; set; }
 }

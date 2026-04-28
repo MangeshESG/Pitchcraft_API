@@ -225,10 +225,10 @@ public class InboxRepository : IInboxRepository
         }
     }
 
-    public async Task<bool> MarkEmailAsReadAsync(int replyId)
+    public async Task<bool> MarkEmailAsReadAsync(string replyId)
     {
         var email = await _context.EmailReplies
-            .FirstOrDefaultAsync(x => x.Id == replyId);
+            .FirstOrDefaultAsync(x => x.MessageId == replyId);
 
         if (email == null)
             return false;
@@ -374,7 +374,8 @@ public class InboxRepository : IInboxRepository
                     FromEmail = s.SenderEmailId,
                     ToEmail = s.ToEmail,
                     Date = s.SentAt,
-                    IsRead = true
+                    IsRead = true,
+                    ContactId = s.ContactId
                 }));
 
                 // 🔥 REPLIES
@@ -392,7 +393,8 @@ public class InboxRepository : IInboxRepository
                         FromEmail = r.FromEmail,
                         ToEmail = "",
                         Date = r.Date,
-                        IsRead = r.IsRead ?? false
+                        IsRead = r.IsRead ?? false,
+                        ContactId = r.ContactId
                     })
                 );
 

@@ -15,7 +15,7 @@ namespace PitchGenApi.Interfaces
         Task<Inboxcredentials?> GetByUserNameAsync(int userId, string username, string protocol);
         Task<List<EmailReplies>> GetRepliesByInboxIdAsync(int inboxId, string Provider);
         Task<List<InboxDropdownDto>> GetInboxPickListByClientIdAsync(int clientId);
-        Task<bool> MarkEmailAsReadAsync(int replyId);
+        Task<bool> MarkEmailAsReadAsync(string replyId);
         Task<List<EmailThreadDto>> GetInboxThreads(int inboxId, string Provider);
 
 

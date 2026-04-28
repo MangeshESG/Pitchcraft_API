@@ -204,22 +204,55 @@ public class ContactRepository
         if (contact == null)
             return null;
 
+        // =========================
+        // SENT EMAILS
+        // =========================
         var emailLogs = await _context.EmailLogs
             .AsNoTracking()
             .Where(x => x.ContactId == contactId && x.TrackingId != null)
+            .OrderBy(x => x.SentAt)
             .ToListAsync();
 
         var trackingIds = emailLogs
+            .Where(x => x.TrackingId != null)
             .Select(x => x.TrackingId)
             .Distinct()
             .ToList();
 
+        var messageIds = emailLogs
+            .Where(x => !string.IsNullOrEmpty(x.MessageId))
+            .Select(x => x.MessageId)
+            .Distinct()
+            .ToList();
+
+        // =========================
+        // TRACKING EVENTS
+        // =========================
         var trackingEvents = await _context.EmailTrackingLogs
             .AsNoTracking()
-            .Where(x => trackingIds.Contains(x.TrackingId) &&
-                   (x.EventType == "OPEN" || x.EventType == "CLICK"))
+            .Where(x =>
+                trackingIds.Contains(x.TrackingId) &&
+                (x.EventType == "OPEN" || x.EventType == "CLICK"))
             .ToListAsync();
 
+        // =========================
+        // REPLIES
+        // =========================
+        var replies = await _context.EmailReplies
+            .AsNoTracking()
+            .Where(x =>
+                x.ContactId == contactId &&
+                (
+                    (x.TrackingId != null && trackingIds.Contains(x.TrackingId))
+                    ||
+                    (x.InReplyTo != null && messageIds.Contains(x.InReplyTo))
+                ))
+            .OrderBy(x => x.Date)
+            .ToListAsync();
+
+        // =========================
+        // NOTES
+        // =========================
         var notes = await _context.Notes
             .AsNoTracking()
             .Where(x => x.ContactId == contactId)
@@ -229,10 +262,14 @@ public class ContactRepository
                 Id = x.Id,
                 Note = x.Note,
                 CreatedAt = x.CreatedAt,
-                IsPin = x.IsPin
+                IsPin = x.IsPin,
+                IsUseInGenration = x.IsUseInGenration
             })
             .ToListAsync();
 
+        // =========================
+        // ATTACHMENTS
+        // =========================
         var attachments = await _context.ContactAttachments
             .AsNoTracking()
             .Where(x => x.ContactId == contactId)
@@ -246,11 +283,13 @@ public class ContactRepository
             })
             .ToListAsync();
 
+        // =========================
+        // BUILD EMAIL TIMELINE
+        // =========================
         var emails = emailLogs
-            .OrderBy(x => x.SentAt)
             .Select(log => new SentEmailDto
             {
-                TrackingId = log.TrackingId.ToString(),
+                TrackingId = log.TrackingId?.ToString(),
                 SentAt = log.SentAt,
                 SenderEmailId = log.SenderEmailId,
                 Subject = log.Subject,
@@ -266,10 +305,32 @@ public class ContactRepository
                         EventAt = e.Timestamp,
                         TargetUrl = e.TargetUrl
                     })
+                    .ToList(),
+
+                Replies = replies
+                    .Where(r =>
+                        r.TrackingId == log.TrackingId ||
+                        r.InReplyTo == log.MessageId)
+                    .OrderBy(r => r.Date)
+                    .Select(r => new EmailReplyDto
+                    {
+                        Id = r.Id,
+                        MessageId = r.MessageId,
+                        InReplyTo = r.InReplyTo,
+                        FromEmail = r.FromEmail,
+                        Subject = r.Subject,
+                        Body = r.Body,
+                        Date = r.Date,
+                        IsRead = r.IsRead ?? false
+                    })
                     .ToList()
             })
+            .OrderBy(x => x.SentAt)
             .ToList();
 
+        // =========================
+        // FINAL RETURN
+        // =========================
         return new ContactEmailTimelineDto
         {
             ContactId = contact.id,

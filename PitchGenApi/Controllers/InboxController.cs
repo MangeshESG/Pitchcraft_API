@@ -123,7 +123,7 @@ public class InboxController : ControllerBase
     }
 
     [HttpPost("mark-read")]
-    public async Task<IActionResult> MarkAsRead([FromQuery]int id)
+    public async Task<IActionResult> MarkAsRead([FromQuery]string id)
     {
         var result = await _repo.MarkEmailAsReadAsync(id);
 

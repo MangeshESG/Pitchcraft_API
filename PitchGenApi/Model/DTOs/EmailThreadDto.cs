@@ -8,6 +8,7 @@
         public int TotalMessages { get; set; }
         public DateTime? LastMessageDate { get; set; }
         public bool HasUnread { get; set; }
+        public int? ContactId { get; set; }   // ✅ add
 
         public List<EmailConvDto> Messages { get; set; }
     }
@@ -22,5 +23,7 @@
         public string ToEmail { get; set; }
         public DateTime? Date { get; set; }
         public bool IsRead { get; set; }
+        public int? ContactId { get; set; }   // ✅ add
+
     }
 }
