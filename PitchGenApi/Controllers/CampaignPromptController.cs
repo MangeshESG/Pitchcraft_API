@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using PitchGenApi.Model;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model.DTOs;
+using System.Net;
 
 
 
@@ -25,17 +26,23 @@ namespace PitchGenApi.Controllers
         private readonly AppDbContext _dbContext;
         private readonly IPitchService _pitchService;
         private readonly ContactRepository _contactRepository;
+        private readonly INoteRepository _noteRepository;
+
 
         public CampaignPromptController(
              CampaignPromptService campaignService,
              AppDbContext dbContext,
              IPitchService pitchService,
-             ContactRepository contactRepository)
+             ContactRepository contactRepository,
+            INoteRepository noteRepository)
+
         {
             _campaignService = campaignService;
             _dbContext = dbContext;
             _pitchService = pitchService;
             _contactRepository = contactRepository;
+            _noteRepository = noteRepository;
+
         }
 
 
@@ -497,7 +504,7 @@ namespace PitchGenApi.Controllers
                 request.Message ?? "",
                 request.SystemPrompt ?? "",
                 model,
-                request.ImageUrl ,   
+                request.ImageUrl,
                 request.CampaignTemplateId
             );
 
@@ -1100,8 +1107,8 @@ namespace PitchGenApi.Controllers
             });
         }
 
-        
-        
+
+
         // ============================================
         // 📥 GET PLACEHOLDER DEFINITIONS BY TEMPLATE
         // ============================================
@@ -1241,6 +1248,282 @@ namespace PitchGenApi.Controllers
             {
                 ImageUrl = imageUrl
             });
+        }
+
+        [HttpPost("campaign/generate-single-contact")]
+        public async Task<IActionResult> GenerateSingleContactCampaignEmail(
+        [FromBody] GenerateSingleContactCampaignEmailRequest request)
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { Message = "Request body is required" });
+
+                if (request.BlueprintId <= 0)
+                    return BadRequest(new { Message = "Valid BlueprintId is required" });
+
+                if (request.ContactId <= 0)
+                    return BadRequest(new { Message = "Valid ContactId is required" });
+
+                if (string.IsNullOrWhiteSpace(request.ClientId))
+                    return BadRequest(new { Message = "ClientId is required" });
+
+                if (!int.TryParse(request.ClientId, out var parsedClientId))
+                    return BadRequest(new { Message = "ClientId must be numeric" });
+
+
+                var template = await _dbContext.CampaignTemplates
+                    .Include(t => t.TemplateDefinition)
+                    .FirstOrDefaultAsync(t =>
+                        t.Id == request.BlueprintId &&
+                        t.ClientId == request.ClientId);
+
+                if (template == null)
+                    return NotFound(new { Message = "Campaign template not found" });
+
+                if (template.TemplateDefinition == null)
+                    return StatusCode(500, new { Message = "Template definition is missing" });
+
+                var contact = await _dbContext.contacts
+                    .Include(c => c.data_file)
+                    .FirstOrDefaultAsync(c =>
+                        c.id == request.ContactId &&
+                        c.data_file.client_id == parsedClientId);
+
+                if (contact == null)
+                    return NotFound(new { Message = "Contact not found" });
+
+                if (!request.OverwriteExisting && !string.IsNullOrWhiteSpace(contact.email_body))
+                {
+                    return Ok(new
+                    {
+                        Success = true,
+                        Message = "Email already exists for this contact",
+                        Generated = false,
+                        ContactId = contact.id,
+                        EmailSubject = contact.email_subject,
+                        EmailBody = contact.email_body
+                    });
+                }
+
+                var campaignPlaceholderValues =
+                    string.IsNullOrWhiteSpace(template.PlaceholderValues)
+                        ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
+                          ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                var customFields = await (
+                    from value in _dbContext.contact_custom_field_values
+                    join field in _dbContext.crm_custom_fields
+                        on value.field_id equals field.id
+                    where value.contact_id == request.ContactId
+                    select new
+                    {
+                        field.field_name,
+                        value.value
+                    }
+                ).ToDictionaryAsync(
+                    x => x.field_name,
+                    x => x.value ?? "",
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+                var currentDate = DateTime.UtcNow.ToString("MMMM d, yyyy");
+
+
+                var generationNotes = await GetGenerationNotesAsync(parsedClientId, request.ContactId);
+
+                var runtimeReplacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["full_name"] = contact.full_name ?? $"{contact.first_name} {contact.last_name}".Trim(),
+                    ["first_name"] = contact.first_name ?? "",
+                    ["last_name"] = contact.last_name ?? "",
+                    ["company_name"] = contact.company_name ?? "",
+                    ["company_name_friendly"] = contact.company_name ?? "",
+                    ["job_title"] = contact.job_title ?? "",
+                    ["location"] = contact.country_or_address ?? "",
+                    ["linkedin_url"] = contact.linkedin_url ?? "",
+                    ["website"] = contact.website ?? "",
+                    ["linkedin_info"] = StripHtml(contact.linkedIninformation),
+                    ["date"] = currentDate,
+                    ["notes"] = generationNotes,
+                    ["search_output_summary"] = ""
+                };
+
+
+
+                foreach (var kv in customFields)
+                    runtimeReplacements[kv.Key] = kv.Value ?? "";
+
+                var campaignBlueprint = ApplyPlaceholders(
+                    template.TemplateDefinition.MasterBlueprintUnpopulated ?? "",
+                    campaignPlaceholderValues
+                );
+
+                var finalPrompt = ApplyPlaceholders(
+                    campaignBlueprint,
+                    runtimeReplacements
+                );
+
+                var systemPrompt = ApplyPlaceholders(
+                    template.TemplateDefinition.AIInstructions ?? "",
+                    runtimeReplacements
+                );
+
+                var selectedModel = !string.IsNullOrWhiteSpace(template.SelectedModel)
+                    ? template.SelectedModel
+                    : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
+                        ? template.TemplateDefinition.SelectedModel
+                        : "gpt-5.1");
+
+                var bodyResult = await _pitchService.GeneratePitchAsync(new EnquiryRequest
+                {
+                    Prompt = finalPrompt,
+                    ScrappedData = systemPrompt,
+                    ModelName = selectedModel
+                });
+
+                if (!bodyResult.IsSuccess || string.IsNullOrWhiteSpace(bodyResult.Content))
+                {
+                    return StatusCode(500, new
+                    {
+                        Message = "Failed to generate email body",
+                        Error = bodyResult.Content
+                    });
+                }
+
+                string subjectLine = "";
+                PitchResult? subjectResult = null;
+
+                var aiMode = campaignPlaceholderValues.TryGetValue("email_subject-AI", out var aiModeValue)
+                    ? (aiModeValue ?? "").Trim().ToLower()
+                    : "yes";
+
+                var manualSubjectTemplate = campaignPlaceholderValues.TryGetValue("email_subject-manual", out var manualVal)
+                    ? manualVal ?? ""
+                    : "";
+
+                var subjectReplacements = new Dictionary<string, string>(runtimeReplacements, StringComparer.OrdinalIgnoreCase)
+                {
+                    ["generated_pitch"] = bodyResult.Content
+                };
+
+                if (aiMode == "no" && !string.IsNullOrWhiteSpace(manualSubjectTemplate))
+                {
+                    subjectLine = ApplyPlaceholders(manualSubjectTemplate, subjectReplacements);
+                }
+                else if (!string.IsNullOrWhiteSpace(template.SubjectInstructions))
+                {
+                    var filledSubjectInstruction = ApplyPlaceholders(
+                        template.SubjectInstructions,
+                        subjectReplacements
+                    );
+
+                    subjectResult = await _pitchService.GeneratePitchAsync(new EnquiryRequest
+                    {
+                        Prompt = bodyResult.Content,
+                        ScrappedData = filledSubjectInstruction,
+                        ModelName = selectedModel
+                    });
+
+                    if (subjectResult.IsSuccess)
+                        subjectLine = subjectResult.Content ?? "";
+                }
+
+                contact.email_body = bodyResult.Content;
+                contact.email_subject = subjectLine;
+                contact.updated_at = DateTime.UtcNow;
+
+                await _dbContext.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    Generated = true,
+                    BlueprintId = request.BlueprintId,
+                    ContactId = request.ContactId,
+                    ClientId = request.ClientId,
+                    EmailSubject = subjectLine,
+                    EmailBody = bodyResult.Content,
+                    Usage = new
+                    {
+                        BodyTokens = bodyResult.TotalTokens,
+                        BodyCost = bodyResult.CurrentCost,
+                        SubjectTokens = subjectResult?.TotalTokens ?? 0,
+                        SubjectCost = subjectResult?.CurrentCost ?? 0,
+                        TotalTokens = bodyResult.TotalTokens + (subjectResult?.TotalTokens ?? 0),
+                        TotalCost = bodyResult.CurrentCost + (subjectResult?.CurrentCost ?? 0)
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Error generating single-contact email",
+                    Error = ex.Message
+                });
+            }
+        }
+        private static string StripHtml(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return "";
+
+            return Regex.Replace(input, "<.*?>", "").Trim();
+        }
+
+        private async Task<string> GetGenerationNotesAsync(int clientId, int contactId)
+        {
+            try
+            {
+                var result = await _noteRepository.GetAllNote(clientId, contactId);
+
+                if (result == null)
+                    return "";
+
+                var rawJson = JsonSerializer.Serialize(result);
+                using var doc = JsonDocument.Parse(rawJson);
+
+                var root = doc.RootElement;
+
+                if (!root.TryGetProperty("success", out var successProp) || !successProp.GetBoolean())
+                    return "";
+
+                if (!root.TryGetProperty("data", out var dataProp) || dataProp.ValueKind != JsonValueKind.Array)
+                    return "";
+
+                var usableNotes = new List<string>();
+
+                foreach (var item in dataProp.EnumerateArray())
+                {
+                    var useInGeneration = item.TryGetProperty("isUseInGenration", out var useProp)
+                        && useProp.ValueKind == JsonValueKind.True;
+
+                    if (!useInGeneration)
+                        continue;
+
+                    var note = item.TryGetProperty("note", out var noteProp)
+                        ? noteProp.GetString() ?? ""
+                        : "";
+
+                    if (string.IsNullOrWhiteSpace(note))
+                        continue;
+
+                    var cleaned = WebUtility.HtmlDecode(note);
+                    cleaned = Regex.Replace(cleaned, "<[^>]*>", " ");
+                    cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+
+                    if (!string.IsNullOrWhiteSpace(cleaned))
+                        usableNotes.Add(cleaned);
+                }
+
+                return string.Join("\n", usableNotes);
+            }
+            catch
+            {
+                return "";
+            }
         }
 
     }
