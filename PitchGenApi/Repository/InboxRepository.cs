@@ -63,10 +63,10 @@ public class InboxRepository : IInboxRepository
             {
                 using var client = new ImapClient();
 
-                await client.ConnectAsync(dto.Host, dto.Port, dto.UseSSL ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls);
+                var options = GetSecureOption(dto.Port, dto.UseSSL);
 
+                await client.ConnectAsync(dto.Host, dto.Port, options);
                 await client.AuthenticateAsync(dto.Username, dto.Password);
-
                 await client.DisconnectAsync(true);
 
                 return true;
@@ -75,10 +75,10 @@ public class InboxRepository : IInboxRepository
             {
                 using var client = new Pop3Client();
 
-                await client.ConnectAsync(dto.Host, dto.Port, dto.UseSSL ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls);
+                var options = GetSecureOption(dto.Port, dto.UseSSL);
 
+                await client.ConnectAsync(dto.Host, dto.Port, options);
                 await client.AuthenticateAsync(dto.Username, dto.Password);
-
                 await client.DisconnectAsync(true);
 
                 return true;
@@ -86,8 +86,9 @@ public class InboxRepository : IInboxRepository
 
             return false;
         }
-        catch
+        catch (Exception ex)
         {
+            Console.WriteLine(ex.Message); // 🔥 debug
             return false;
         }
     }
@@ -418,5 +419,20 @@ public class InboxRepository : IInboxRepository
             .ToList();
 
         return threads;
+    }
+    private SecureSocketOptions GetSecureOption(int port, bool useSsl)
+    {
+        if (useSsl)
+            return SecureSocketOptions.SslOnConnect;
+
+        // 🔥 SMART fallback
+        return port switch
+        {
+            993 => SecureSocketOptions.SslOnConnect, // IMAP SSL
+            995 => SecureSocketOptions.SslOnConnect, // POP3 SSL
+            143 => SecureSocketOptions.StartTls,     // IMAP TLS
+            110 => SecureSocketOptions.StartTls,     // POP3 TLS
+            _ => SecureSocketOptions.Auto           // 🔥 safest
+        };
     }
 }

@@ -486,10 +486,10 @@ namespace PitchGenApi.Controllers
 
 
         [HttpPost("configTestMail")]
-        public async Task<IActionResult> configTestMail( [FromQuery] string ClientId, [FromBody] SmtpCredentialDto dto)
+        public async Task<IActionResult> configTestMail([FromQuery] string ClientId, [FromBody] SmtpCredentialDto dto)
         {
             ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
-            
+
             if (string.IsNullOrEmpty(ClientId))
                 return BadRequest("ClientId required");
 
@@ -517,11 +517,34 @@ namespace PitchGenApi.Controllers
                 using var toMessage = new MailMessage
                 {
                     From = new MailAddress(dto.FromEmail, dto.SenderName),
-                    Subject = "SMTP Test",
-                    Body = "Test",
+                    Subject = "SMTP Configuration Test",
+                    Body = $@"
+                <html>
+                <body style='font-family: Arial, sans-serif; color:#333; line-height:1.6;'>
+                    <p>Hello,</p>
+
+                    <p>
+                        This is a test email sent from <b>{dto.SenderName}</b> 
+                        (<a href='mailto:{dto.FromEmail}'>{dto.FromEmail}</a>)
+                        to verify outgoing email functionality.
+                    </p>
+
+                    <p>
+                        If you have received this message, the email setup is working correctly.
+                    </p>
+
+                    <br/>
+
+                    <p>
+                        Best regards,<br/>
+                        <b>{dto.SenderName}</b><br/>
+                        {dto.FromEmail}
+                    </p>
+                </body>
+                </html>",
                     IsBodyHtml = true
                 };
-                toMessage.To.Add("info@mailtester.co.uk");
+                toMessage.To.Add("support@pitchkraft.ai");
 
                 await smtpClient.SendMailAsync(toMessage);
             }
@@ -536,53 +559,60 @@ namespace PitchGenApi.Controllers
 
             int userId = int.Parse(ClientId);
 
-            // 🔥 STEP 2: ATOMIC DB TRANSACTION
-            using var transaction = await _context.Database.BeginTransactionAsync();
+            // 🔥 FIX: execution strategy wrap
+            var strategy = _context.Database.CreateExecutionStrategy();
 
-            try
+            return await strategy.ExecuteAsync(async () =>
             {
-                // Update existing record if IsUpdate = true
-                if (dto.IsUpdate && existingRecord != null)
+                // 🔥 STEP 2: ATOMIC DB TRANSACTION
+                using var transaction = await _context.Database.BeginTransactionAsync();
+
+                try
                 {
-                    existingRecord.Server = dto.Server;
-                    existingRecord.Port = dto.Port;
-                    existingRecord.Username = dto.Username;
-                    existingRecord.Password = dto.Password;
-                    existingRecord.UseSsl = dto.UseSsl;
-                    existingRecord.SenderName = dto.SenderName;
-                    existingRecord.SecurityType = dto.SecurityType;
-                    _context.SmtpCredentials.Update(existingRecord);
+                    // Update existing record if IsUpdate = true
+                    if (dto.IsUpdate && existingRecord != null)
+                    {
+                        existingRecord.Server = dto.Server;
+                        existingRecord.Port = dto.Port;
+                        existingRecord.Username = dto.Username;
+                        existingRecord.Password = dto.Password;
+                        existingRecord.UseSsl = dto.UseSsl;
+                        existingRecord.SenderName = dto.SenderName;
+                        existingRecord.SecurityType = dto.SecurityType;
+
+                        _context.SmtpCredentials.Update(existingRecord);
+                        await _context.SaveChangesAsync();
+                        await transaction.CommitAsync();
+
+                        return (IActionResult)Ok("SMTP credentials updated successfully.");
+                    }
+
+                    // Create new record
+                    var result = await _repo.AddEmailForDomain(
+                        userId,
+                        dto.FromEmail,
+                        dto,
+                        ipAddress,
+                        browserName
+                    );
+
+                    if (!result.Success)
+                    {
+                        await transaction.RollbackAsync();
+                        return (IActionResult)BadRequest(result.Message);
+                    }
+
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
-                    
-                    return Ok("SMTP credentials updated successfully.");
-                }
-                
-                // Create new record
-                var result = await _repo.GenerateToken(
-                    dto.FromEmail,
-                    userId,
-                    dto,
-                    ipAddress,
-                    browserName
-                );
 
-                if (!result.Success)
+                    return (IActionResult)Ok("SMTP verified. OTP sent for domain verification.");
+                }
+                catch (Exception ex)
                 {
                     await transaction.RollbackAsync();
-                    return BadRequest(result.Message);
+                    return (IActionResult)BadRequest(ex.Message);
                 }
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok("SMTP verified. OTP sent for domain verification.");
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-                return BadRequest(ex.Message);
-            }
+            });
         }
 
 

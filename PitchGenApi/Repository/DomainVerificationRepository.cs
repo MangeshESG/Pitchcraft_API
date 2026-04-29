@@ -25,51 +25,59 @@ namespace PitchGenApi.Repositories
         // ================================
         // Generate Token + Add Email
         // ================================
-        public async Task<OperationResult> GenerateToken( string email, int clientId, SmtpCredentialDto dto, string ip, string browsername)
-        {
-            try
-            {
-                string domain = email.Split('@')[1].Trim().ToLower();
+        //public async Task<OperationResult> GenerateToken( string email, int clientId, SmtpCredentialDto dto, string ip, string browsername)
+        //{
+        //    var strategy = _db.Database.CreateExecutionStrategy();
 
-                var domainRecord = await _db.DomainVerification
-                    .FirstOrDefaultAsync(x => x.Domain == domain && x.ClientId == clientId);
+        //    return await strategy.ExecuteAsync(async () =>
+        //    {
+        //        try
+        //        {
+        //            //if (string.IsNullOrWhiteSpace(email) || !email.Contains("@"))
+        //            //    return Fail("Invalid email format");
 
-                if (domainRecord == null)
-                {
-                    domainRecord = new DomainVerification
-                    {
-                        ClientId = clientId,
-                        Domain = domain,
-                        VerificationToken = GenerateTokenValue(),
-                        IsVerified = false,
-                        CreatedAt = DateTime.UtcNow
-                    };
+        //            //string domain = email.Split('@')[1].Trim().ToLower();
 
-                    await _db.DomainVerification.AddAsync(domainRecord);
-                    await _db.SaveChangesAsync(); 
-                }
+        //            //var domainRecord = await _db.DomainVerification
+        //            //    .FirstOrDefaultAsync(x => x.Domain == domain && x.ClientId == clientId);
 
-                else if (!domainRecord.IsVerified)
-                {
-                    domainRecord.VerificationToken = GenerateTokenValue();
-                    await _db.SaveChangesAsync(); 
+        //            //if (domainRecord == null)
+        //            //{
+        //            //    domainRecord = new DomainVerification
+        //            //    {
+        //            //        ClientId = clientId,
+        //            //        Domain = domain,
+        //            //        VerificationToken = GenerateTokenValue(),
+        //            //        IsVerified = false,
+        //            //        CreatedAt = DateTime.UtcNow
+        //            //    };
 
-                }
+        //            //    await _db.DomainVerification.AddAsync(domainRecord);
+        //            //    await _db.SaveChangesAsync();
+        //            //}
+        //            //else if (!domainRecord.IsVerified)
+        //            //{
+        //            //    if (string.IsNullOrEmpty(domainRecord.VerificationToken))
+        //            //    {
+        //            //        domainRecord.VerificationToken = GenerateTokenValue();
+        //            //        await _db.SaveChangesAsync();
+        //            //    }
+        //            //}
 
-                return await AddEmailForDomain(
-                    domainRecord.Id,
-                    clientId,
-                    email,
-                    dto,
-                    ip,
-                    browsername
-                );
-            }
-            catch (Exception ex)
-            {
-                return Fail(ex.Message);
-            }
-        }
+        //            return await AddEmailForDomain(
+        //                clientId,
+        //                email,
+        //                dto,
+        //                ip,
+        //                browsername
+        //            );
+        //        }
+        //        catch (Exception ex)
+        //        {
+        //            return Fail(ex.Message);
+        //        }
+        //    });
+        //}
 
         // ================================
         // Verify Domain via DNS
@@ -113,23 +121,23 @@ namespace PitchGenApi.Repositories
         // ================================
         // Add Email for Domain + OTP
         // ================================
-        public async Task<OperationResult> AddEmailForDomain(int domainId, int clientId, string email, SmtpCredentialDto dto, string ip, string browsername)
+        public async Task<OperationResult> AddEmailForDomain(/*int domainId, */int clientId, string email, SmtpCredentialDto dto, string ip, string browsername)
         {
             try
             {
-                bool emailExists = await _db.DomainEmailVerification.AnyAsync(x =>
-                    x.DomainId == domainId &&
-                    x.Email.ToLower() == email.ToLower());
+                //bool emailExists = await _db.DomainEmailVerification.AnyAsync(x =>
+                //    x.DomainId == domainId &&
+                //    x.Email.ToLower() == email.ToLower());
 
                 var user = await _db.ClientDetails
                     .FirstOrDefaultAsync(x => x.Id == clientId);
                 if (dto.IsUpdate == false)
                 {
-                    if (emailExists)
-                        return Fail("Email already added");
+                    //if (emailExists)
+                    //    return Fail("Email already added");
 
                     string otp = OtpGenerator.GenerateSecureOtp();
-                    dto.DomainId = domainId;
+                    //dto.DomainId = domainId;
                     var smtpdetails = JsonSerializer.Serialize(dto);
 
                     var otpEntity = new EmailOtpVerification
@@ -163,7 +171,7 @@ namespace PitchGenApi.Repositories
                         Password = dto.Password,
                         FromEmail = dto.FromEmail,
                         SenderName = dto.SenderName,
-                        DomainId = domainId,
+                        //DomainId = domainId,
                         UseSsl = dto.UseSsl,
                         SecurityType = dto.SecurityType
                     };

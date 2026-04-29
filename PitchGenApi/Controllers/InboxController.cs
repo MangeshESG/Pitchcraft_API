@@ -36,7 +36,7 @@ public class InboxController : ControllerBase
         var smtp = await _context.SmtpCredentials.FirstOrDefaultAsync(s => s.Username == dto.Username && s.ClientId == dto.ClientId.ToString());
 
         if (smtp == null)
-            return BadRequest("Please add inbox first.");
+            return BadRequest("Please add outbox first.");
 
         var isValid = await _repo.ValidateAsync(dto);
 

@@ -6,7 +6,7 @@ namespace PitchGenApi.Interfaces
 {
     public interface IDomainVerificationRepository
     {
-        Task<OperationResult> GenerateToken(string email, int clientId, SmtpCredentialDto dto, string ip, string browsername);
+        //Task<OperationResult> GenerateToken(string email, int clientId, SmtpCredentialDto dto, string ip, string browsername);
         Task<OperationResult> VerifyDomain(string domain, int clientId);
         //Task<bool> IsSmtpFullyVerifiedAsync(int smtpId);
         //Task<OperationResult> DomainVerifyEmailOTP(string email, string otp, int clientId);
@@ -16,5 +16,6 @@ namespace PitchGenApi.Interfaces
         Task<OperationResult> DeleteDomainAsync(int domainId, string clientId);
         Task<bool> CustomDKIM(string domain, string selector, string expectedDkimValue, int clientId);
         Task<bool> CustomDMARC(string domain, string dmarcPrefix, string expectedDmarcValue, int clientId);
+        Task<OperationResult> AddEmailForDomain(/*int domainId, */int clientId, string email, SmtpCredentialDto dto, string ip, string browsername);
     }
 }
