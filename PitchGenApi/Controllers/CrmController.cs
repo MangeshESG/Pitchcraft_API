@@ -13,6 +13,7 @@ using Stripe;
 using System.Reflection;
 using System.Text.Json;
 using PitchGenApi.Helpers;
+using Serilog;
 
 
 
@@ -1794,6 +1795,7 @@ namespace PitchGenApi.Controllers
         }
 
 
+
         [HttpGet("email-timeline")]
         public async Task<IActionResult> GetEmailTimelineApi(int contactId)
         {
@@ -2981,6 +2983,37 @@ namespace PitchGenApi.Controllers
 
 
 
+        [HttpGet("db-check")]
+        public async Task<IActionResult> DbCheck()
+        {
+            var conn = _context.Database.GetDbConnection();
+
+            return Ok(new
+            {
+                DataSource = conn.DataSource,
+                Database = conn.Database,
+                CanConnect = await _context.Database.CanConnectAsync()
+            });
+        }
+
+        [HttpGet("email-conversation-context")]
+        public async Task<IActionResult> GetEmailConversationContextApi(int clientId, int contactId)
+        {
+            try
+            {
+                var result = await _contactRepository.GetEmailConversationContextAsync(clientId, contactId);
+
+                if (result == null)
+                    return NotFound("Contact not found");
+
+                return Ok(result);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error in email-conversation-context. ClientId={ClientId}, ContactId={ContactId}", clientId, contactId);
+                return StatusCode(500, ex.Message);
+            }
+        }
 
 
 

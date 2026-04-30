@@ -569,5 +569,171 @@ public class ContactRepository
         return null;
     }
 
+
+
+    //-----------------------------------------------------------------------------
+
+    public async Task<ContactEmailConversationContextDto?> GetEmailConversationContextAsync(int clientId, int contactId)
+    {
+        Log.Information("Step 1: Fetch contact. ClientId={ClientId}, ContactId={ContactId}", clientId, contactId);
+
+        var contact = await _context.contacts
+            .AsNoTracking()
+            .Where(x => x.id == contactId)
+            .Select(x => new
+            {
+                x.id,
+                x.full_name,
+                x.email,
+                x.created_at
+            })
+            .FirstOrDefaultAsync();
+
+        if (contact == null)
+        {
+            Log.Information("Contact not found. ContactId={ContactId}", contactId);
+            return null;
+        }
+
+        Log.Information("Step 2: Fetch email logs");
+        var emailLogs = await _context.EmailLogs
+            .AsNoTracking()
+            .Where(x =>
+                x.ClientId == clientId &&
+                x.ContactId == contactId &&
+                x.IsSuccess == true)
+            .OrderBy(x => x.SentAt)
+            .ToListAsync();
+
+        Log.Information("Email logs count: {Count}", emailLogs.Count);
+
+        var trackingIds = emailLogs
+            .Where(x => x.TrackingId != null)
+            .Select(x => x.TrackingId)
+            .Distinct()
+            .ToList();
+
+        var messageIds = emailLogs
+            .Where(x => !string.IsNullOrEmpty(x.MessageId))
+            .Select(x => x.MessageId)
+            .Distinct()
+            .ToList();
+
+        Log.Information("Step 3: Fetch replies");
+        var replies = await _context.EmailReplies
+            .AsNoTracking()
+            .Where(x =>
+                x.ClientId == clientId &&
+                x.ContactId == contactId &&
+                (
+                    (x.TrackingId != null && trackingIds.Contains(x.TrackingId))
+                    ||
+                    (x.InReplyTo != null && messageIds.Contains(x.InReplyTo))
+                ))
+            .OrderBy(x => x.Date)
+            .ToListAsync();
+
+        Log.Information("Replies count: {Count}", replies.Count);
+
+        var emails = emailLogs
+            .Select(log => new ConversationEmailDto
+            {
+                EmailLogId = log.Id,
+                MessageId = log.MessageId,
+                SentAt = log.SentAt,
+                SenderName = log.EmailSenderName,
+                SenderEmailId = log.SenderEmailId,
+                RecipientName = log.EmailRecipientName,
+                ToEmail = log.ToEmail,
+                Subject = log.Subject,
+                Body = log.Body,
+                Replies = replies
+                    .Where(r => r.TrackingId == log.TrackingId || r.InReplyTo == log.MessageId)
+                    .OrderBy(r => r.Date)
+                    .Select(r => new EmailReplyDto
+                    {
+                        Id = r.Id,
+                        MessageId = r.MessageId,
+                        InReplyTo = r.InReplyTo,
+                        FromEmail = r.FromEmail,
+                        Subject = r.Subject,
+                        Body = r.Body,
+                        Date = r.Date,
+                        IsRead = r.IsRead ?? false
+                    })
+                    .ToList()
+            })
+            .ToList();
+
+        Log.Information("Step 4: Build response");
+
+        return new ContactEmailConversationContextDto
+        {
+            ClientId = clientId,
+            ContactId = contact.id,
+            FullName = contact.full_name,
+            Email = contact.email,
+            ContactCreatedAt = contact.created_at,
+            Emails = emails,
+            PromptContext = BuildPromptContext(contact.full_name, contact.email, contact.created_at, emails)
+        };
+    }
+    private static string BuildPromptContext(
+    string? fullName,
+    string? email,
+    DateTime? contactCreatedAt,
+    List<ConversationEmailDto> emails)
+    {
+        if (emails == null || !emails.Any())
+            return string.Empty;
+
+        var sb = new StringBuilder();
+
+        sb.AppendLine("PAST EMAIL CONVERSATION");
+        sb.AppendLine($"Contact: {fullName} <{email}>");
+
+        if (contactCreatedAt.HasValue)
+            sb.AppendLine($"Contact Created At: {contactCreatedAt.Value:dddd, MMMM d, yyyy h:mm tt}");
+
+        sb.AppendLine();
+
+        for (int i = 0; i < emails.Count; i++)
+        {
+            var item = emails[i];
+
+            sb.AppendLine($"Email #{i + 1}");
+            sb.AppendLine($"Sent At: {item.SentAt:dddd, MMMM d, yyyy h:mm tt}");
+            sb.AppendLine($"From: {item.SenderName} <{item.SenderEmailId}>");
+            sb.AppendLine($"To: {item.RecipientName} <{item.ToEmail}>");
+            sb.AppendLine($"Subject: {item.Subject}");
+            sb.AppendLine("Body:");
+            sb.AppendLine(item.Body);
+            sb.AppendLine();
+
+            if (item.Replies != null && item.Replies.Any())
+            {
+                sb.AppendLine("Replies:");
+                foreach (var reply in item.Replies.OrderBy(x => x.Date))
+                {
+                    sb.AppendLine($"- Reply At: {reply.Date:dddd, MMMM d, yyyy h:mm tt}");
+                    sb.AppendLine($"  From: {reply.FromEmail}");
+                    sb.AppendLine($"  Subject: {reply.Subject}");
+                    sb.AppendLine($"  Body: {reply.Body}");
+                    sb.AppendLine();
+                }
+            }
+            else
+            {
+                sb.AppendLine("Replies: None");
+                sb.AppendLine();
+            }
+
+            sb.AppendLine("--------------------------------------------------");
+        }
+
+        return sb.ToString();
+    }
+
+
 }
 
