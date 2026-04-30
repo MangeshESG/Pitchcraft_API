@@ -121,23 +121,21 @@ namespace PitchGenApi.Repositories
         // ================================
         // Add Email for Domain + OTP
         // ================================
-        public async Task<OperationResult> AddEmailForDomain(/*int domainId, */int clientId, string email, SmtpCredentialDto dto, string ip, string browsername)
+        public async Task<OperationResult> AddEmailForDomain(
+    int clientId,
+    string email,
+    SmtpCredentialDto dto,
+    string ip,
+    string browsername)
         {
             try
             {
-                //bool emailExists = await _db.DomainEmailVerification.AnyAsync(x =>
-                //    x.DomainId == domainId &&
-                //    x.Email.ToLower() == email.ToLower());
-
                 var user = await _db.ClientDetails
                     .FirstOrDefaultAsync(x => x.Id == clientId);
-                if (dto.IsUpdate == false)
-                {
-                    //if (emailExists)
-                    //    return Fail("Email already added");
 
+                if (!dto.IsUpdate)
+                {
                     string otp = OtpGenerator.GenerateSecureOtp();
-                    //dto.DomainId = domainId;
                     var smtpdetails = JsonSerializer.Serialize(dto);
 
                     var otpEntity = new EmailOtpVerification
@@ -154,29 +152,37 @@ namespace PitchGenApi.Repositories
 
                     await _db.EmailOtpVerifications.AddAsync(otpEntity);
 
-                    // 🔥 OTP EMAIL AFTER COMMIT (NON-BLOCKING)
-                    _ = Task.Run(() =>
-                        _reg.DomainVerifyOTP(email, otp, user.FirstName, ip, browsername, email
-                        )
+                    // no Task.Run
+                    await _reg.DomainVerifyOTP(
+                        email,
+                        otp,
+                        user.FirstName,
+                        ip,
+                        browsername,
+                        email
                     );
                 }
                 else
                 {
-                    var smtpupdate = new SmtpCredentials
-                    {
-                        ClientId = clientId.ToString(),
-                        Server = dto.Server,
-                        Port = dto.Port,
-                        Username = dto.Username,
-                        Password = dto.Password,
-                        FromEmail = dto.FromEmail,
-                        SenderName = dto.SenderName,
-                        //DomainId = domainId,
-                        UseSsl = dto.UseSsl,
-                        SecurityType = dto.SecurityType
-                    };
-                     _db.SmtpCredentials.Update(smtpupdate);
+                    var smtpupdate = await _db.SmtpCredentials
+                        .FirstOrDefaultAsync(x =>
+                            x.ClientId == clientId.ToString() &&
+                            x.FromEmail == dto.FromEmail);
+
+                    if (smtpupdate == null)
+                        return Fail("SMTP record not found");
+
+                    smtpupdate.Server = dto.Server;
+                    smtpupdate.Port = dto.Port;
+                    smtpupdate.Username = dto.Username;
+                    smtpupdate.Password = dto.Password;
+                    smtpupdate.SenderName = dto.SenderName;
+                    smtpupdate.UseSsl = dto.UseSsl;
+                    smtpupdate.SecurityType = dto.SecurityType;
                 }
+
+                await _db.SaveChangesAsync();
+
                 return Success("Prepared for verification");
             }
             catch (Exception ex)

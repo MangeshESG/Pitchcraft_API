@@ -13,6 +13,8 @@ using PitchGenApi.Models;
 using PitchGenApi.Interfaces;
 using System.Text.Json;
 using Stripe;
+using MailKit.Security;
+using MimeKit;
 
 namespace PitchGenApi.Controllers
 {
@@ -25,15 +27,17 @@ namespace PitchGenApi.Controllers
         private readonly EmailSendingHelper _emailHelper;
         private readonly IDomainVerificationRepository _repo;
         private readonly IReplyEmailRepository _replyRepo;
+        private readonly IInboxRepository _inboxRepository;
 
 
-        public SequenceEmailController(AppDbContext context, ContactRepository contactRepository, EmailSendingHelper emailHelper, IDomainVerificationRepository repository,IReplyEmailRepository replyRepo)
+        public SequenceEmailController(AppDbContext context, ContactRepository contactRepository, EmailSendingHelper emailHelper, IDomainVerificationRepository repository,IReplyEmailRepository replyRepo, IInboxRepository inboxRepository)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
             _contactRepository = contactRepository;
             _emailHelper = emailHelper;
             _repo = repository;
             _replyRepo = replyRepo;
+            _inboxRepository = inboxRepository;
         }
 
         // Step 1: Create a new email sequence with multiple steps
@@ -507,46 +511,53 @@ namespace PitchGenApi.Controllers
             // 🔥 STEP 1: SMTP FAST FAIL (NO DB TOUCH)
             try
             {
-                using var smtpClient = new SmtpClient(dto.Server)
+                using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
+
+                var socketOption = _inboxRepository.GetSecureOption(dto.SecurityType);
+
+                await smtpClient.ConnectAsync(dto.Server, dto.Port, socketOption);
+                await smtpClient.AuthenticateAsync(dto.Username, dto.Password);
+
+                var toMessage = new MimeMessage();
+
+                toMessage.From.Add(new MailboxAddress(dto.SenderName, dto.FromEmail));
+                toMessage.To.Add(MailboxAddress.Parse("support@pitchkraft.ai"));
+                toMessage.Subject = "SMTP Configuration Test";
+
+                toMessage.Body = new BodyBuilder
                 {
-                    Port = dto.Port,
-                    Credentials = new NetworkCredential(dto.Username, dto.Password),
-                    EnableSsl = dto.UseSsl
-                };
+                    HtmlBody = $@"
+                        <html>
+                        <body style='font-family: Arial, sans-serif; color:#333; line-height:1.6;'>
+                            <p>Hello,</p>
 
-                using var toMessage = new MailMessage
+                            <p>
+                                This is a test email sent from <b>{dto.SenderName}</b>
+                                (<a href='mailto:{dto.FromEmail}'>{dto.FromEmail}</a>)
+                                to verify outgoing email functionality.
+                            </p>
+
+                            <p>
+                                If you have received this message, the email setup is working correctly.
+                            </p>
+
+                            <br/>
+
+                            <p>
+                                Best regards,<br/>
+                                <b>{dto.SenderName}</b><br/>
+                                {dto.FromEmail}
+                            </p>
+                        </body>
+                        </html>"
+                }.ToMessageBody();
+
+                await smtpClient.SendAsync(toMessage);
+
+                if (smtpClient.IsConnected)
                 {
-                    From = new MailAddress(dto.FromEmail, dto.SenderName),
-                    Subject = "SMTP Configuration Test",
-                    Body = $@"
-                <html>
-                <body style='font-family: Arial, sans-serif; color:#333; line-height:1.6;'>
-                    <p>Hello,</p>
-
-                    <p>
-                        This is a test email sent from <b>{dto.SenderName}</b> 
-                        (<a href='mailto:{dto.FromEmail}'>{dto.FromEmail}</a>)
-                        to verify outgoing email functionality.
-                    </p>
-
-                    <p>
-                        If you have received this message, the email setup is working correctly.
-                    </p>
-
-                    <br/>
-
-                    <p>
-                        Best regards,<br/>
-                        <b>{dto.SenderName}</b><br/>
-                        {dto.FromEmail}
-                    </p>
-                </body>
-                </html>",
-                    IsBodyHtml = true
-                };
-                toMessage.To.Add("support@pitchkraft.ai");
-
-                await smtpClient.SendMailAsync(toMessage);
+                    await smtpClient.DisconnectAsync(true);
+                }
             }
             catch (Exception ex)
             {

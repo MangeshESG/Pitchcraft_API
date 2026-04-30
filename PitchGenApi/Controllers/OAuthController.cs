@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Http;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using PitchGenApi.Interfaces;
 
@@ -22,25 +23,51 @@ namespace PitchGenApi.Controllers
             return Redirect(url);
         }
 
+        [HttpGet("test")]
+        [AllowAnonymous]
+        public IActionResult Test()
+        {
+            return Ok("WORKING");
+        }
+
         [HttpGet("Gmail_callback")]
-        public async Task<IActionResult> GmailCallback(string code, string state)
+        [AllowAnonymous]
+        public async Task<IActionResult> GmailCallback([FromQuery]string code, [FromQuery] string state)
         {
             try
             {
+                // Ensure 'code' is not empty
                 if (string.IsNullOrEmpty(code))
                 {
-                    return Content("<h3> Authorization failed. No code received.</h3>", "text/html");
+                    return Content("<h3>Authorization failed. No code received.</h3>", "text/html");
                 }
 
-                // 🔥 decode state
+                // Ensure 'state' is not empty and decode it safely
+                if (string.IsNullOrEmpty(state))
+                {
+                    return Content("<h3>Authorization failed. No state received.</h3>", "text/html");
+                }
+
+                // Decode and parse the state
                 var parts = Uri.UnescapeDataString(state).Split('|');
 
-                int clientId = int.Parse(parts[0]);
+                if (parts.Length < 1)
+                {
+                    return Content("<h3>Invalid state received. Could not parse state.</h3>", "text/html");
+                }
+
+                // Safely parse clientId (use TryParse to prevent exception on invalid format)
+                if (!int.TryParse(parts[0], out int clientId))
+                {
+                    return Content("<h3>Invalid client ID received in state.</h3>", "text/html");
+                }
+
                 string senderName = parts.Length > 1 ? parts[1] : "";
 
+                // Call repository method to handle Gmail OAuth callback
                 var result = await _repo.GmailHandleCallbackAsync(code, clientId, senderName);
 
-                // 🔥 SUCCESS CASE
+                // Check if Gmail is successfully connected
                 if (result.Contains("Connected"))
                 {
                     var successHtml = @"
@@ -57,12 +84,12 @@ namespace PitchGenApi.Controllers
                     return Content(successHtml, "text/html");
                 }
 
-                // 🔥 FAILURE CASE (IMPORTANT)
+                // Failure case
                 var failHtml = $@"
         <html>
         <body style='font-family:Arial'>
             <h3 style='color:red;'>❌ {result}</h3>
-            <p>try again.</p>
+            <p>Please try again.</p>
         </body>
         </html>";
 
@@ -70,10 +97,12 @@ namespace PitchGenApi.Controllers
             }
             catch (Exception ex)
             {
+                // Catch unexpected errors and display them
                 var errorHtml = $@"
         <html>
         <body style='font-family:Arial'>
             <h3 style='color:red;'>❌ Error: {ex.Message}</h3>
+            <p>Stack Trace: {ex.StackTrace}</p>
         </body>
         </html>";
 

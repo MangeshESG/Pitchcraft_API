@@ -1,4 +1,5 @@
-﻿using PitchGenApi.Model;
+﻿using MailKit.Security;
+using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 
 namespace PitchGenApi.Interfaces
@@ -17,6 +18,7 @@ namespace PitchGenApi.Interfaces
         Task<List<InboxDropdownDto>> GetInboxPickListByClientIdAsync(int clientId);
         Task<bool> MarkEmailAsReadAsync(string replyId);
         Task<List<EmailThreadDto>> GetInboxThreads(int inboxId, string Provider);
+        SecureSocketOptions GetSecureOption(string encryption);
 
 
     }

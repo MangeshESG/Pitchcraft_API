@@ -63,9 +63,11 @@ public class InboxRepository : IInboxRepository
             {
                 using var client = new ImapClient();
 
-                var options = GetSecureOption(dto.Port, dto.UseSSL);
+                // map UI value to SecureSocketOptions
+                var option = GetSecureOption(dto.encryption);
 
-                await client.ConnectAsync(dto.Host, dto.Port, options);
+                await client.ConnectAsync(dto.Host, dto.Port, option);
+
                 await client.AuthenticateAsync(dto.Username, dto.Password);
                 await client.DisconnectAsync(true);
 
@@ -75,9 +77,10 @@ public class InboxRepository : IInboxRepository
             {
                 using var client = new Pop3Client();
 
-                var options = GetSecureOption(dto.Port, dto.UseSSL);
+                var option = GetSecureOption(dto.encryption);
 
-                await client.ConnectAsync(dto.Host, dto.Port, options);
+                await client.ConnectAsync(dto.Host, dto.Port, option);
+
                 await client.AuthenticateAsync(dto.Username, dto.Password);
                 await client.DisconnectAsync(true);
 
@@ -88,7 +91,7 @@ public class InboxRepository : IInboxRepository
         }
         catch (Exception ex)
         {
-            Console.WriteLine(ex.Message); // 🔥 debug
+            Console.WriteLine("Mail validation error: " + ex.Message);
             return false;
         }
     }
@@ -312,7 +315,7 @@ public class InboxRepository : IInboxRepository
         int? outboxId = 0;
 
         // =========================
-        // 🔥 OUTBOX RESOLVE
+        // OUTBOX RESOLVE
         // =========================
         if (Provider.ToUpper() == "IMAP")
         {
@@ -330,10 +333,10 @@ public class InboxRepository : IInboxRepository
             return new List<EmailThreadDto>();
 
         // =========================
-        // 🔥 SENT EMAILS
+        // SENT EMAILS
         // =========================
         var sentEmails = await _context.EmailLogs
-            .Where(x => x.outboxid == outboxId && x.IsSuccess == true)
+            .Where(x => x.outboxid == outboxId && x.IsSuccess)
             .ToListAsync();
 
         var messageIds = sentEmails
@@ -347,7 +350,7 @@ public class InboxRepository : IInboxRepository
             .ToList();
 
         // =========================
-        // 🔥 REPLIES
+        // REPLIES
         // =========================
         var replies = await _context.EmailReplies
             .Where(er =>
@@ -357,7 +360,24 @@ public class InboxRepository : IInboxRepository
             .ToListAsync();
 
         // =========================
-        // 🔥 THREAD BUILD
+        // CONTACT MAP
+        // =========================
+        var contactIds = sentEmails
+            .Where(x => x.ContactId != null)
+            .Select(x => x.ContactId.Value)
+            .Union(
+                replies.Where(x => x.ContactId != null)
+                       .Select(x => x.ContactId.Value)
+            )
+            .Distinct()
+            .ToList();
+
+        var contactMap = await _context.contacts
+            .Where(x => contactIds.Contains(x.id))
+            .ToDictionaryAsync(x => x.id, x => x.full_name);
+
+        // =========================
+        // THREAD BUILD
         // =========================
         var threads = sentEmails
             .GroupBy(x => x.TrackingId)
@@ -365,7 +385,13 @@ public class InboxRepository : IInboxRepository
             {
                 var threadMessages = new List<EmailConvDto>();
 
-                // 🔥 SENT
+                var groupContactId = g.FirstOrDefault(x => x.ContactId != null)?.ContactId ?? 0;
+
+                var groupContactName = contactMap.ContainsKey(groupContactId)
+                    ? contactMap[groupContactId]
+                    : "";
+
+                // SENT
                 threadMessages.AddRange(g.Select(s => new EmailConvDto
                 {
                     Type = "Sent",
@@ -376,10 +402,11 @@ public class InboxRepository : IInboxRepository
                     ToEmail = s.ToEmail,
                     Date = s.SentAt,
                     IsRead = true,
-                    ContactId = s.ContactId
+                    ContactId = s.ContactId ?? groupContactId,
+                    ContactName =  s.EmailSenderName
                 }));
 
-                // 🔥 REPLIES
+                // REPLY
                 threadMessages.AddRange(
                     replies
                     .Where(r =>
@@ -392,14 +419,16 @@ public class InboxRepository : IInboxRepository
                         Subject = r.Subject,
                         Body = r.Body,
                         FromEmail = r.FromEmail,
-                        ToEmail = "",
+                        ToEmail = g.FirstOrDefault()?.SenderEmailId ?? "",
                         Date = r.Date,
                         IsRead = r.IsRead ?? false,
-                        ContactId = r.ContactId
+                        ContactId = r.ContactId ?? groupContactId,
+                        ContactName = contactMap.ContainsKey(r.ContactId ?? groupContactId)
+                            ? contactMap[r.ContactId ?? groupContactId]
+                            : r.FromEmail
                     })
                 );
 
-                // 🔥 ORDER (IMPORTANT)
                 threadMessages = threadMessages
                     .OrderBy(x => x.Date)
                     .ToList();
@@ -412,6 +441,7 @@ public class InboxRepository : IInboxRepository
                     TotalMessages = threadMessages.Count,
                     LastMessageDate = threadMessages.Max(x => x.Date),
                     HasUnread = threadMessages.Any(x => x.Type == "Reply" && !x.IsRead),
+                    ContactId = groupContactId,
                     Messages = threadMessages
                 };
             })
@@ -420,19 +450,15 @@ public class InboxRepository : IInboxRepository
 
         return threads;
     }
-    private SecureSocketOptions GetSecureOption(int port, bool useSsl)
+    public SecureSocketOptions GetSecureOption(string encryption)
     {
-        if (useSsl)
-            return SecureSocketOptions.SslOnConnect;
-
-        // 🔥 SMART fallback
-        return port switch
+        return encryption?.ToUpper() switch
         {
-            993 => SecureSocketOptions.SslOnConnect, // IMAP SSL
-            995 => SecureSocketOptions.SslOnConnect, // POP3 SSL
-            143 => SecureSocketOptions.StartTls,     // IMAP TLS
-            110 => SecureSocketOptions.StartTls,     // POP3 TLS
-            _ => SecureSocketOptions.Auto           // 🔥 safest
+            "SSL/TLS" => SecureSocketOptions.SslOnConnect,
+            "STARTTLS" => SecureSocketOptions.StartTls,
+            "NONE" => SecureSocketOptions.None,
+            "AUTO" => SecureSocketOptions.Auto,
+            _ => SecureSocketOptions.Auto
         };
     }
 }

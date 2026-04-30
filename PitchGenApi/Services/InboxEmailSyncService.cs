@@ -13,11 +13,13 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 {
     private readonly AppDbContext _context;
     private readonly EmailSendingHelper _emailSending;
+    private readonly IInboxRepository _inboxRepository;
 
-    public InboxEmailSyncService(AppDbContext context, EmailSendingHelper emailSending)
+    public InboxEmailSyncService(AppDbContext context, EmailSendingHelper emailSending, IInboxRepository inboxRepository)
     {
         _context = context;
         _emailSending = emailSending;
+        _inboxRepository = inboxRepository;
     }
 
     public async Task SyncEmailsAsync(Inboxcredentials setting)
@@ -25,8 +27,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         Console.WriteLine($"\n🚀 Starting sync for: {setting.Username}");
 
         using var client = new ImapClient();
+        var option = _inboxRepository.GetSecureOption(setting.encryption);
 
-        await client.ConnectAsync(setting.Host, setting.Port, true);
+
+        await client.ConnectAsync(setting.Host, setting.Port, option);
         Console.WriteLine("🔌 Connected to IMAP");
 
         await client.AuthenticateAsync(setting.Username, setting.Password);
@@ -139,6 +143,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             body = Regex.Replace(body, @"(?m)^>\s?", "");
             body = body.Trim();
 
+            body = ExtractOnlyReply(body);
             var rawInReplyTo = msg.Headers["In-Reply-To"];
             var rawReferences = msg.Headers["References"];
             EmailLog? sent = null;
@@ -198,8 +203,8 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 continue;
             }
 
-            bool exists = await _context.EmailReplies
-                .AnyAsync(x => x.MessageId == msg.MessageId);
+            bool exists = await _context.EmailReplies.AnyAsync(x =>
+            x.MessageId == msg.MessageId);
 
             if (exists)
             {
@@ -225,17 +230,18 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
             if (uid.Id > maxUid)
                 maxUid = uid.Id;
+
+            if (maxUid > setting.LastUid)
+            {
+                setting.LastUid = maxUid;
+                _context.Inboxcredentials.Update(setting);
+                Console.WriteLine($"📌 LastUid Updated → {maxUid}");
+            }
+            await _context.SaveChangesAsync();
+            Console.WriteLine("✅ DB Saved");
         }
 
-        if (maxUid > setting.LastUid)
-        {
-            setting.LastUid = maxUid;
-            _context.Inboxcredentials.Update(setting);
-            Console.WriteLine($"📌 LastUid Updated → {maxUid}");
-        }
-
-        await _context.SaveChangesAsync();
-        Console.WriteLine("✅ DB Saved");
+        
 
         await client.DisconnectAsync(true);
         Console.WriteLine($"🔌 Disconnected: {setting.Username}");
@@ -677,19 +683,29 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         if (string.IsNullOrWhiteSpace(body))
             return "";
 
-        // 🔥 Gmail / Outlook / IMAP patterns
+        // html cleanup
+        body = Regex.Replace(body, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
+        body = Regex.Replace(body, "<.*?>", "", RegexOptions.Singleline);
+        body = System.Net.WebUtility.HtmlDecode(body);
+
         var patterns = new[]
         {
-        @"\nFrom:",
-        @"\nOn .*wrote:",
-        @"\n-----Original Message-----",
-        @"\nSent:",
-        @"\n> "
+        @"On\s.+?wrote:",
+        @"From:.*",
+        @"-----Original Message-----",
+        @"________________________________",
+        @"Sent from my iPhone",
+        @"^>.*"
     };
 
         foreach (var pattern in patterns)
         {
-            var match = Regex.Match(body, pattern, RegexOptions.IgnoreCase);
+            var match = Regex.Match(
+                body,
+                pattern,
+                RegexOptions.IgnoreCase |
+                RegexOptions.Multiline |
+                RegexOptions.Singleline);
 
             if (match.Success)
             {

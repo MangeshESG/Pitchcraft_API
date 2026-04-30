@@ -33,6 +33,8 @@ namespace PitchGenApi.Model
         public long LastUid { get; set; } // ✅ NEW FIELD
         public int SyncIntervalMinutes { get; set; } = 5;
         public int? Outboxid { get; set; }
+        public string? encryption { get; set; }
+
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 

@@ -24,6 +24,7 @@
         public DateTime? Date { get; set; }
         public bool IsRead { get; set; }
         public int? ContactId { get; set; }   // ✅ add
+        public string? ContactName { get; set; }   // ✅ add
 
     }
 }
