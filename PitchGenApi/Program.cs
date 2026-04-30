@@ -186,6 +186,8 @@ builder.Services.AddScoped<IInboxEmailSyncService, InboxEmailSyncService>();
 builder.Services.AddScoped<IInboxEmailService, InboxEmailService>();
 builder.Services.AddScoped<IOAuthRepository, OAuthRepository>();
 builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
+builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
+
 
 builder.Services.AddSingleton<JwtService>();
 

@@ -13,6 +13,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Helpers;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model;
+using PitchGenApi.Model.DTOs;
 using PitchGenApi.Services;
 using Stripe.Reporting;
 using UglyToad.PdfPig;
@@ -33,10 +34,22 @@ namespace PitchGenApi.Controllers
         private readonly AppDbContext _context;
         private readonly ZohoService _zohoService;
         private readonly ILogger<AuthController> _logger; // Add ILogger field
+        private readonly IContactQAService _contactQAService;
 
 
 
-        public AuthController(IRegisterEmailSender registeredServices,IUserRepository userRepository, JwtService jwtService, IPromptRepository promptRepository, IPitchService pitchservice, IPitchGenDataRepository pitchgenDataRepository, AppDbContext context, ZohoService zohoService, ILogger<AuthController> logger)
+
+        public AuthController(
+            IRegisterEmailSender registeredServices,
+            IUserRepository userRepository,
+            JwtService jwtService,
+            IPromptRepository promptRepository,
+            IPitchService pitchservice,
+            IPitchGenDataRepository pitchgenDataRepository,
+            AppDbContext context,
+            ZohoService zohoService,
+            ILogger<AuthController> logger,
+            IContactQAService contactQAService)
         {
             _reg = registeredServices;
             _userRepository = userRepository;
@@ -46,7 +59,9 @@ namespace PitchGenApi.Controllers
             _pitchgenDataRepository = pitchgenDataRepository;
             _context = context;
             _zohoService = zohoService;
-            _logger = logger; // Assign the injected logger to the field
+            _logger = logger;
+            _contactQAService = contactQAService;
+
 
         }
 
@@ -344,6 +359,19 @@ namespace PitchGenApi.Controllers
         }
 
 
+        [HttpPost("contact-qa/chat")]
+        public async Task<IActionResult> ContactQAChat([FromBody] ContactQARequest request)
+        {
+            if (request == null || string.IsNullOrWhiteSpace(request.Question))
+                return BadRequest(new { message = "Question is required." });
+
+            var result = await _contactQAService.AskAsync(request);
+
+            if (!result.IsSuccess)
+                return StatusCode(500, new { message = "Failed to generate answer.", error = result.Answer });
+
+            return Ok(new { answer = result.Answer, usage = result });
+        }
 
 
 
