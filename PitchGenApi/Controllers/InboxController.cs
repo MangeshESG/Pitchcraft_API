@@ -36,7 +36,7 @@ public class InboxController : ControllerBase
         var smtp = await _context.SmtpCredentials.FirstOrDefaultAsync(s => s.Username == dto.Username && s.ClientId == dto.ClientId.ToString());
 
         if (smtp == null)
-            return BadRequest("Please add inbox first.");
+            return BadRequest("Please add outbox first.");
 
         var isValid = await _repo.ValidateAsync(dto);
 
@@ -54,6 +54,7 @@ public class InboxController : ControllerBase
             Username = dto.Username,
             Password = EncryptPassword(dto.Password),
             Outboxid = smtp.Id,
+            encryption = dto.encryption,
             //SyncIntervalMinutes = dto.SyncIntervalMinutes,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -123,7 +124,7 @@ public class InboxController : ControllerBase
     }
 
     [HttpPost("mark-read")]
-    public async Task<IActionResult> MarkAsRead([FromQuery]string id)
+    public async Task<IActionResult> MarkAsRead([FromQuery] string id)
     {
         var result = await _repo.MarkEmailAsReadAsync(id);
 

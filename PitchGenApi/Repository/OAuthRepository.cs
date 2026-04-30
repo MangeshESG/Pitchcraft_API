@@ -21,17 +21,26 @@ namespace PitchGenApi.Repository
         {
             var cfg = _config.GetSection("GoogleOAuth");
 
-            // 🔥 pack in state
             var state = Uri.EscapeDataString($"{clientId}|{SenderName}");
+
+            var scopes = new[]
+            {
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.send"
+    };
+
+            var scope = Uri.EscapeDataString(string.Join(" ", scopes)); // 🔥 FIX
 
             var url = $"https://accounts.google.com/o/oauth2/v2/auth?" +
                       $"client_id={cfg["ClientId"]}" +
-                      $"&redirect_uri={cfg["RedirectUri"]}" +
+                      $"&redirect_uri={Uri.EscapeDataString(cfg["RedirectUri"])}" + // 🔥 also encode this
                       $"&response_type=code" +
-                      $"&scope=openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send" +
+                      $"&scope={scope}" +
                       $"&access_type=offline" +
                       $"&prompt=consent" +
-                      $"&state={state}"; // ✅ correct
+                      $"&state={state}";
 
             return Task.FromResult(url);
         }
@@ -43,26 +52,41 @@ namespace PitchGenApi.Repository
             var client = new HttpClient();
 
             var values = new Dictionary<string, string>
-            {
-                { "code", code },
-                { "client_id", cfg["ClientId"] },
-                { "client_secret", cfg["ClientSecret"] },
-                { "redirect_uri", cfg["RedirectUri"] },
-                { "grant_type", "authorization_code" }
-            };
+    {
+        { "code", code },
+        { "client_id", cfg["ClientId"] },
+        { "client_secret", cfg["ClientSecret"] },
+        { "redirect_uri", cfg["RedirectUri"] },
+        { "grant_type", "authorization_code" }
+    };
 
             var response = await client.PostAsync(
                 "https://oauth2.googleapis.com/token",
                 new FormUrlEncodedContent(values));
 
             var json = await response.Content.ReadAsStringAsync();
+
+            // 🔥 FIX 1: Check Google response success
+            if (!response.IsSuccessStatusCode)
+            {
+                return "Google Token Error: " + json;
+            }
+
             dynamic token = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+
+            // 🔥 FIX 2: Validate token before use
+            if (token == null || token.access_token == null)
+            {
+                return "Invalid token response from Google: " + json;
+            }
 
             string accessToken = token.access_token;
             string refreshToken = token.refresh_token;
             int expiresIn = token.expires_in;
 
+            // =========================
             // 🔥 Get Email
+            // =========================
             client.DefaultRequestHeaders.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
 
@@ -110,7 +134,7 @@ namespace PitchGenApi.Repository
 
             await _context.SaveChangesAsync();
 
-            return "✅ Gmail Connected Successfully";
+            return "Connected";
         }
 
         public Task<string> OutlookGetAuthUrlAsync(int clientId, string senderName)

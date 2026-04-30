@@ -26,7 +26,9 @@ namespace PitchGenApi.Model.DTOs
         public string Username { get; set; }
 
         [Required]
-        public string Password { get; set; } // API me encrypted store karenge
+        public string Password { get; set; }
+        public string encryption { get; set; }
+
 
         //public int SyncIntervalMinutes { get; set; } = 5;
     }

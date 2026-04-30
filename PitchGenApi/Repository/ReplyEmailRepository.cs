@@ -16,10 +16,12 @@ namespace PitchGenApi.Repository
     {
         private readonly AppDbContext _context;
         private readonly EmailSendingHelper _emailSending;
-        public ReplyEmailRepository(AppDbContext context, EmailSendingHelper emailSending)
+        private readonly IInboxRepository _inboxRepository;
+        public ReplyEmailRepository(AppDbContext context, EmailSendingHelper emailSending,IInboxRepository inboxRepository)
         {
             _context = context;
             _emailSending = emailSending;
+            _inboxRepository = inboxRepository;      
         }
         public async Task<EmailSendResult> ReplyEmailUsingSmtp( Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
         {
@@ -65,68 +67,96 @@ namespace PitchGenApi.Repository
 
             try
             {
-                using var smtpClient = new SmtpClient(smtpCredential.Server)
-                {
-                    Port = smtpCredential.Port,
-                    Credentials = new NetworkCredential(
-                        smtpCredential.Username,
-                        smtpCredential.Password),
-                    EnableSsl = smtpCredential.UseSsl
-                };
+                using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
+
+                var socketOption = _inboxRepository.GetSecureOption(smtpCredential.SecurityType);
+
+                await smtpClient.ConnectAsync(
+                    smtpCredential.Server,
+                    smtpCredential.Port,
+                    socketOption);
+
+                await smtpClient.AuthenticateAsync(
+                    smtpCredential.Username,
+                    smtpCredential.Password);
 
                 string finalBody = replyBody;
 
-                // 🔥 tracking only if enabled
+                // tracking
                 if (user.IsTracking)
                 {
-                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, trackingid.ToString());
-                    finalBody += EmailTrackingHelper.GetPixelTag(trackingid.ToString());
+                    finalBody = EmailTrackingHelper.InjectClickTracking(
+                        finalBody,
+                        trackingid.ToString());
+
+                    finalBody += EmailTrackingHelper.GetPixelTag(
+                        trackingid.ToString());
                 }
 
-                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, trackingid.ToString());
+                finalBody = EmailTrackingHelper.InjectinboxTracking(
+                    finalBody,
+                    trackingid.ToString());
 
-                using var mail = new MailMessage
-                {
-                    From = new MailAddress(smtpCredential.FromEmail, smtpCredential.SenderName),
-                    Subject = lastSent?.Subject?.StartsWith("Re:") == true
+                // 🔥 MIME MESSAGE
+                var mail = new MimeMessage();
+
+                mail.From.Add(
+                    new MailboxAddress(
+                        smtpCredential.SenderName,
+                        smtpCredential.FromEmail));
+
+                mail.To.Add(
+                    MailboxAddress.Parse(lastSent.ToEmail));
+
+                mail.Subject =
+                    lastSent?.Subject?.StartsWith("Re:") == true
                         ? lastSent.Subject
-                        : "Re: " + lastSent?.Subject,
-                    Body = finalBody,
-                    IsBodyHtml = true
-                };
+                        : "Re: " + lastSent?.Subject;
 
-                mail.To.Add(lastSent.ToEmail);
+                // NEW MESSAGE ID
+                mail.MessageId = newMessageId;
 
-                // 🔥🔥 THREADING FIX (MAIN PART)
-                if (!string.IsNullOrEmpty(lastMessageId))
+                // THREADING FIX
+                if (!string.IsNullOrWhiteSpace(lastMessageId))
                 {
-                    mail.Headers.Add("In-Reply-To", lastMessageId);
+                    mail.InReplyTo = lastMessageId;
 
-                    // optional: build full chain
                     var allMessageIds = await _context.EmailLogs
                         .Where(x => x.TrackingId == trackingid)
                         .Select(x => x.MessageId)
+                        .Where(x => !string.IsNullOrEmpty(x))
                         .ToListAsync();
 
                     var replyIds = await _context.EmailReplies
                         .Where(x => x.TrackingId == trackingid)
                         .Select(x => x.MessageId)
+                        .Where(x => !string.IsNullOrEmpty(x))
                         .ToListAsync();
 
-                    var references = string.Join(" ", allMessageIds.Concat(replyIds).Where(x => !string.IsNullOrEmpty(x)));
-
-                    mail.Headers.Add("References", references);
+                    foreach (var id in allMessageIds.Concat(replyIds).Distinct())
+                    {
+                        mail.References.Add(id);
+                    }
                 }
 
-                // always new message id
-                mail.Headers.Add("Message-ID", newMessageId);
+                mail.Body = new BodyBuilder
+                {
+                    HtmlBody = finalBody
+                }.ToMessageBody();
 
-                await smtpClient.SendMailAsync(mail);
+                await smtpClient.SendAsync(mail);
 
-                // 🔥 SAVE LOG
+                if (smtpClient.IsConnected)
+                    await smtpClient.DisconnectAsync(true);
+
+                // SAVE LOG
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
+                    ContactId = lastSent.ContactId,
+                    CampaignId = lastSent.CampaignId,
+                    BlueprintId = lastSent.BlueprintId,
+                    SegmentId = lastSent.SegmentId,
                     ToEmail = lastSent.ToEmail,
                     Subject = mail.Subject,
                     Body = replyBody,

@@ -1,15 +1,10 @@
-﻿using System;
-using System.Net;
-using System.Net.Mail;
-using System.Threading.Tasks;
+﻿
 using PitchGenApi.Database;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
-using System.Text.RegularExpressions;
 using PitchGenApi.Interfaces;
-using Org.BouncyCastle.Crypto;
 using PitchGenApi.Model.DTOs;
-using static PitchGenApi.Model.ChatGptResponse;
+using MailKit.Security;
 using MimeKit;
 using MimeKit.Utils;
 using System.Net.Http.Headers;
@@ -21,13 +16,15 @@ public class EmailSendingHelper
     private readonly ContactRepository _repository;
     private readonly IDomainVerificationRepository _domain;
     private readonly IConfiguration _config;
+    private readonly IInboxRepository _inboxRepository;
 
-    public EmailSendingHelper(AppDbContext context, ContactRepository repository,IDomainVerificationRepository domain, IConfiguration config)
+    public EmailSendingHelper(AppDbContext context, ContactRepository repository,IDomainVerificationRepository domain, IConfiguration config, IInboxRepository inboxRepository)
     {
         _context = context;
         _repository = repository;
         _domain = domain;
         _config = config;
+        _inboxRepository = inboxRepository;
     }
 
     public async Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId,bool isFollowUp, string BccEmail = "", int SmtpID = 0)
@@ -98,12 +95,13 @@ public class EmailSendingHelper
 
         string smtpServer = smtpCredential.Server;
         int smtpPort = smtpCredential.Port;
-        bool useSsl = smtpCredential.UseSsl;
         string smtpUsername = smtpCredential.Username;
         string smtpPassword = smtpCredential.Password;
 
         string fromEmailToUse = smtpCredential.FromEmail;
         string senderName = smtpCredential.SenderName;
+
+        MailKit.Net.Smtp.SmtpClient smtpClient = new();
 
         try
         {
@@ -122,12 +120,12 @@ public class EmailSendingHelper
 
             string messageId = MimeUtils.GenerateMessageId();
 
-            using var smtpClient = new SmtpClient(smtpServer)
-            {
-                Port = smtpPort,
-                Credentials = new NetworkCredential(smtpUsername, smtpPassword),
-                EnableSsl = useSsl,
-            };
+
+            var socketOption = _inboxRepository.GetSecureOption(smtpCredential.SecurityType);
+
+
+            await smtpClient.ConnectAsync(smtpServer, smtpPort, socketOption);
+            await smtpClient.AuthenticateAsync(smtpUsername, smtpPassword);
 
             string finalEmailBody = EmailDetails.email_body;
             
@@ -177,17 +175,22 @@ public class EmailSendingHelper
                     finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
                 }
 
-                using var toMessage = new MailMessage
-                {
-                    From = new MailAddress(fromEmailToUse,senderName),
-                    Subject = EmailDetails.email_subject,
-                    Body = finalEmailBody,   //Body = finalEmailBody- for non traking     Body = bodyWithTracking- for traking
-                    IsBodyHtml = true
-                };
-                toMessage.Headers.Add("Message-ID", messageId);
+                var toMessage = new MimeMessage();
 
-                toMessage.To.Add(EmailDetails.email);
-                await smtpClient.SendMailAsync(toMessage);
+                toMessage.From.Add(new MailboxAddress(senderName, fromEmailToUse));
+                toMessage.To.Add(MailboxAddress.Parse(EmailDetails.email));
+                toMessage.Subject = EmailDetails.email_subject;
+
+                // same MessageId jayega
+                toMessage.MessageId = messageId;
+
+                // same body jayegi
+                toMessage.Body = new BodyBuilder
+                {
+                    HtmlBody = finalEmailBody
+                }.ToMessageBody();
+
+                await smtpClient.SendAsync(toMessage);
 
                 _context.EmailLogs.Add(new EmailLog
                 {
@@ -217,26 +220,31 @@ public class EmailSendingHelper
             // Send BCC email
             if (!string.IsNullOrWhiteSpace(BccEmail))
             {
-                using var bccMessage = new MailMessage
+                var bccMessage = new MimeMessage();
+
+                bccMessage.From.Add(new MailboxAddress(senderName, fromEmailToUse));
+                bccMessage.Bcc.Add(MailboxAddress.Parse(BccEmail));
+                bccMessage.Subject = EmailDetails.email_subject;
+
+                bccMessage.Body = new BodyBuilder
                 {
-                    From = new MailAddress(fromEmailToUse),
-                    Subject = EmailDetails.email_subject,
-                    Body = EmailDetails.email_body,
-                    IsBodyHtml = true
-                };
+                    HtmlBody = EmailDetails.email_body
+                }.ToMessageBody();
 
-                // Add a visible recipient for compatibility
-                bccMessage.Bcc.Add(BccEmail);
+                await smtpClient.SendAsync(bccMessage);
+            }
 
-                await smtpClient.SendMailAsync(bccMessage);
+            if (smtpClient.IsConnected)
+            {
+                await smtpClient.DisconnectAsync(true);
             }
 
             await _context.SaveChangesAsync();
+
             return new EmailSendResult
             {
                 Success = true,
                 Message = $"Email sent successfully to {EmailDetails.email}.",
-
             };
         }
         catch (Exception ex)
@@ -258,18 +266,25 @@ public class EmailSendingHelper
                 Provider = "SMTP",
                 outboxid = smtpCredential.Id,
                 zohoViewName = "from pitch craft",
-                DataFileId= DataFileId,
+                DataFileId = DataFileId,
                 SegmentId = Blueprint.SegmentId,
                 SentAt = DateTime.UtcNow,
                 process_name = "Single"
             });
 
+            if (smtpClient.IsConnected)
+            {
+                await smtpClient.DisconnectAsync(true);
+            }
+
+            smtpClient.Dispose();
+
             await _context.SaveChangesAsync();
+
             return new EmailSendResult
             {
                 Success = false,
-                Message = ex.Message,
-
+                Message = ex.Message
             };
         }
     }
@@ -436,13 +451,13 @@ public class EmailSendingHelper
             });
 
             await _context.SaveChangesAsync();
-
             return new EmailSendResult
             {
                 Success = false,
                 Message = ex.Message
             };
         }
+
     }
 
     public async Task<EmailSendResult> SendEmailUsingOutlookApi(
