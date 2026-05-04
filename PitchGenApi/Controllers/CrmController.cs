@@ -187,144 +187,174 @@ namespace PitchGenApi.Controllers
         [HttpPost("uploadcontacts")]
         public async Task<IActionResult> UploadContacts([FromBody] DataFileWithContactsDto request)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync();
+            var strategy = _context.Database.CreateExecutionStrategy();
 
             try
             {
-                // Create DataFile
-                var dataFile = new DataFile
+                return await strategy.ExecuteAsync<IActionResult>(async () =>
                 {
-                    client_id = request.clientId,
-                    name = request.name,
-                    data_file_name = request.dataFileName,
-                    description = request.description,
-                    created_at = DateTime.UtcNow
-                };
+                    using var transaction = await _context.Database.BeginTransactionAsync();
 
-                _context.data_files.Add(dataFile);
-                await _context.SaveChangesAsync();
-
-                // Create Contacts
-                var contacts = request.contacts
-                    .Select(c =>
+                    try
                     {
-                        var firstName = c.firstName?.Trim();
-                        var lastName = c.lastName?.Trim();
-
-                        // Auto split
-                        if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(c.fullName))
-                        {
-                            var parts = c.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                            firstName = parts.FirstOrDefault();
-                            lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
-                        }
-
-                        var fullName = !string.IsNullOrWhiteSpace(c.fullName)
-                            ? c.fullName.Trim()
-                            : $"{firstName} {lastName}".Trim();
-
-                        if (string.IsNullOrWhiteSpace(fullName))
-                        {
-                            fullName = !string.IsNullOrWhiteSpace(c.email) ? c.email : "Unknown";
-                        }
-
-                        return new Contact
-                        {
-                            DataFileId = dataFile.id,
-                            first_name = firstName,
-                            last_name = lastName,
-                            full_name = fullName,
-                            email = c.email?.Trim(),
-                            website = c.website,
-                            company_name = c.companyName,
-                            job_title = c.jobTitle,
-                            linkedin_url = c.linkedInUrl,
-                            country_or_address = c.countryOrAddress,
-                            email_subject = c.emailSubject,
-                            email_body = c.emailBody,
-                            CompanyTelephone = c.CompanyTelephone,
-                            CompanyEmployeeCount = c.CompanyEmployeeCount,
-                            CompanyIndustry = c.CompanyIndustry,
-                            CompanyLinkedInURL = c.CompanyLinkedInURL,
-                            linkedIninformation = c.linkedIninformation,
-                            created_at = DateTime.UtcNow,
-                            updated_at = null
-                        };
-                    })
-                    .Where(c => c != null)
-                    .ToList();
-
-
-                _context.contacts.AddRange(contacts);
-                await _context.SaveChangesAsync();
-
-                // Load Custom Fields (Case insensitive dictionary)
-                var customFieldMap = await _context.crm_custom_fields
-                    .Where(f => f.client_id == request.clientId)
-                    .ToDictionaryAsync(
-                        f => f.field_name.ToLower(),
-                        f => f.id
-                    );
-
-                var customValues = new List<ContactCustomFieldValue>();
-
-                for (int i = 0; i < contacts.Count; i++)
-                {
-                    var contact = contacts[i];
-                    var dto = request.contacts[i];
-
-                    if (dto.customFields == null || dto.customFields.Count == 0)
-                        continue;
-
-                    var processedFields = new HashSet<string>();
-
-                    foreach (var field in dto.customFields)
-                    {
-                        var key = field.Key.ToLower();
-
-                        // Prevent duplicate fields
-                        if (processedFields.Contains(key))
-                            continue;
-
-                        processedFields.Add(key);
-
-                        if (string.IsNullOrWhiteSpace(field.Value))
-                            continue;
-
-                        if (!customFieldMap.TryGetValue(key, out var fieldId))
-                            continue;
-
-                        customValues.Add(new ContactCustomFieldValue
+                        // -----------------------------
+                        // 1. Create DataFile
+                        // -----------------------------
+                        var dataFile = new DataFile
                         {
                             client_id = request.clientId,
-                            contact_id = contact.id,
-                            field_id = fieldId,
-                            value = field.Value,
+                            name = request.name,
+                            data_file_name = request.dataFileName,
+                            description = request.description,
                             created_at = DateTime.UtcNow
+                        };
+
+                        _context.data_files.Add(dataFile);
+                        await _context.SaveChangesAsync();
+
+                        // -----------------------------
+                        // 2. Load Custom Fields
+                        // -----------------------------
+                        var customFieldMap = await _context.crm_custom_fields
+                            .Where(f => f.client_id == request.clientId)
+                            .ToDictionaryAsync(
+                                f => f.field_name.ToLower(),
+                                f => f.id
+                            );
+
+                        // -----------------------------
+                        // 3. Build Contacts
+                        // -----------------------------
+                        var contacts = new List<Contact>();
+                        var customValues = new List<ContactCustomFieldValue>();
+
+                        for (int i = 0; i < request.contacts.Count; i++)
+                        {
+                            var c = request.contacts[i];
+
+                            var firstName = c.firstName?.Trim();
+                            var lastName = c.lastName?.Trim();
+
+                            if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(c.fullName))
+                            {
+                                var parts = c.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                                firstName = parts.FirstOrDefault();
+                                lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+                            }
+
+                            var fullName = !string.IsNullOrWhiteSpace(c.fullName)
+                                ? c.fullName.Trim()
+                                : $"{firstName} {lastName}".Trim();
+
+                            if (string.IsNullOrWhiteSpace(fullName))
+                            {
+                                fullName = !string.IsNullOrWhiteSpace(c.email) ? c.email : "Unknown";
+                            }
+
+                            var contact = new Contact
+                            {
+                                DataFileId = dataFile.id,
+                                first_name = firstName,
+                                last_name = lastName,
+                                full_name = fullName,
+                                email = c.email?.Trim(),
+                                website = c.website,
+                                company_name = c.companyName,
+                                job_title = c.jobTitle,
+                                linkedin_url = c.linkedInUrl,
+                                country_or_address = c.countryOrAddress,
+                                email_subject = c.emailSubject,
+                                email_body = c.emailBody,
+                                CompanyTelephone = c.CompanyTelephone,
+                                CompanyEmployeeCount = c.CompanyEmployeeCount,
+                                CompanyIndustry = c.CompanyIndustry,
+                                CompanyLinkedInURL = c.CompanyLinkedInURL,
+                                linkedIninformation = c.linkedIninformation,
+                                created_at = DateTime.UtcNow
+                            };
+
+                            contacts.Add(contact);
+                        }
+
+                        // -----------------------------
+                        // 4. Save Contacts
+                        // -----------------------------
+                        _context.contacts.AddRange(contacts);
+                        await _context.SaveChangesAsync();
+
+                        // -----------------------------
+                        // 5. Map Custom Fields
+                        // -----------------------------
+                        for (int i = 0; i < contacts.Count; i++)
+                        {
+                            var contact = contacts[i];
+                            var dto = request.contacts[i];
+
+                            if (dto.customFields == null || dto.customFields.Count == 0)
+                                continue;
+
+                            var processedFields = new HashSet<string>();
+
+                            foreach (var field in dto.customFields)
+                            {
+                                var key = field.Key.ToLower();
+
+                                if (processedFields.Contains(key))
+                                    continue;
+
+                                processedFields.Add(key);
+
+                                if (string.IsNullOrWhiteSpace(field.Value))
+                                    continue;
+
+                                if (!customFieldMap.TryGetValue(key, out var fieldId))
+                                    continue;
+
+                                customValues.Add(new ContactCustomFieldValue
+                                {
+                                    client_id = request.clientId,
+                                    contact_id = contact.id,
+                                    field_id = fieldId,
+                                    value = field.Value,
+                                    created_at = DateTime.UtcNow
+                                });
+                            }
+                        }
+
+                        // -----------------------------
+                        // 6. Save Custom Values
+                        // -----------------------------
+                        if (customValues.Any())
+                        {
+                            _context.contact_custom_field_values.AddRange(customValues);
+                            await _context.SaveChangesAsync();
+                        }
+
+                        await transaction.CommitAsync();
+
+                        return Ok(new
+                        {
+                            success = true,
+                            message = "Contacts uploaded successfully",
+                            dataFileId = dataFile.id,
+                            contactCount = contacts.Count
                         });
                     }
-                }
+                    catch (Exception ex)
+                    {
+                        await transaction.RollbackAsync();
 
-                if (customValues.Any())
-                {
-                    _context.contact_custom_field_values.AddRange(customValues);
-                    await _context.SaveChangesAsync();
-                }
-
-                await transaction.CommitAsync();
-
-                return Ok(new
-                {
-                    success = true,
-                    message = "Contacts uploaded successfully",
-                    dataFileId = dataFile.id,
-                    contactCount = contacts.Count
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "Upload failed",
+                            error = ex.InnerException?.Message ?? ex.Message
+                        });
+                    }
                 });
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
-
                 return BadRequest(new
                 {
                     success = false,
@@ -333,8 +363,6 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
-
-
 
         [HttpPost("add-single-contact")]
         public async Task<IActionResult> AddSingleContact([FromQuery] int DataFileId, ContactDto request)
