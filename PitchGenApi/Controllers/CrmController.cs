@@ -2360,71 +2360,72 @@ namespace PitchGenApi.Controllers
         [HttpPost("create-view")]
         public async Task<IActionResult> CreateView([FromBody] CreateViewDto dto)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync();
+            var strategy = _context.Database.CreateExecutionStrategy();
 
-            try
+            return await strategy.ExecuteAsync<IActionResult>(async () =>
             {
-                var view = new CrmView
-                {
-                    client_id = dto.ClientId,
-                    name = dto.Name,
-                    description = dto.Description,
-                    filters_json = dto.FiltersJson,
-                    created_at = DateTime.UtcNow,
-                    use_all_datafiles = dto.UseAllDataFiles
-                };
+                using var transaction = await _context.Database.BeginTransactionAsync();
 
-                _context.crm_views.Add(view);
-                await _context.SaveChangesAsync();
-
-                if (!dto.UseAllDataFiles && dto.DataFileIds != null && dto.DataFileIds.Any())
+                try
                 {
-                    foreach (var df in dto.DataFileIds)
+                    var view = new CrmView
                     {
-                        _context.crm_view_datafiles.Add(new CrmViewDatafile
+                        client_id = dto.ClientId,
+                        name = dto.Name,
+                        description = dto.Description,
+                        filters_json = dto.FiltersJson,
+                        created_at = DateTime.UtcNow,
+                        use_all_datafiles = dto.UseAllDataFiles
+                    };
+
+                    _context.crm_views.Add(view);
+                    await _context.SaveChangesAsync();
+
+                    if (!dto.UseAllDataFiles && dto.DataFileIds?.Any() == true)
+                    {
+                        var datafiles = dto.DataFileIds.Select(df => new CrmViewDatafile
                         {
                             view_id = view.id,
                             datafile_id = df
                         });
-                    }
-                }
 
-                if (dto.UseAllDataFiles && dto.ExcludedDataFileIds != null && dto.ExcludedDataFileIds.Any())
-                {
-                    foreach (var df in dto.ExcludedDataFileIds)
+                        _context.crm_view_datafiles.AddRange(datafiles);
+                    }
+
+                    if (dto.UseAllDataFiles && dto.ExcludedDataFileIds?.Any() == true)
                     {
-                        _context.crm_view_excluded_datafiles.Add(new CrmViewExcludedDatafile
+                        var excluded = dto.ExcludedDataFileIds.Select(df => new CrmViewExcludedDatafile
                         {
                             view_id = view.id,
                             datafile_id = df
                         });
-                    }
-                }
 
-                if (dto.SegmentIds != null && dto.SegmentIds.Any())
-                {
-                    foreach (var seg in dto.SegmentIds)
+                        _context.crm_view_excluded_datafiles.AddRange(excluded);
+                    }
+
+                    if (dto.SegmentIds?.Any() == true)
                     {
-                        _context.crm_view_segments.Add(new CrmViewSegment
+                        var segments = dto.SegmentIds.Select(seg => new CrmViewSegment
                         {
                             view_id = view.id,
                             segment_id = seg
                         });
+
+                        _context.crm_view_segments.AddRange(segments);
                     }
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(view);
                 }
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(view);
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-                return BadRequest(ex.Message);
-            }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+                    return BadRequest(ex.Message);
+                }
+            });
         }
-
         [HttpGet("views-by-client")]
         public async Task<IActionResult> GetViewsByClient(int clientId)
         {
@@ -2983,18 +2984,7 @@ namespace PitchGenApi.Controllers
 
 
 
-        [HttpGet("db-check")]
-        public async Task<IActionResult> DbCheck()
-        {
-            var conn = _context.Database.GetDbConnection();
 
-            return Ok(new
-            {
-                DataSource = conn.DataSource,
-                Database = conn.Database,
-                CanConnect = await _context.Database.CanConnectAsync()
-            });
-        }
 
         [HttpGet("email-conversation-context")]
         public async Task<IActionResult> GetEmailConversationContextApi(int clientId, int contactId)
