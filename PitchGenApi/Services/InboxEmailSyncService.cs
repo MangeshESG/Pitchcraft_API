@@ -21,7 +21,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         _emailSending = emailSending;
         _inboxRepository = inboxRepository;
     }
-
+    
     public async Task SyncEmailsAsync(Inboxcredentials setting)
     {
         Console.WriteLine($"\n🚀 Starting sync for: {setting.Username}");
@@ -124,14 +124,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             Console.WriteLine($"📡 Provider: {provider}");
             string rawBody = "";
 
-            if (provider == "Gmail")
-            {
-               rawBody = msg.HtmlBody ?? msg.TextBody ?? "";
-            }
-            else
-            {
-                 rawBody = msg.TextBody ?? msg.HtmlBody ?? "";
-            }
+             rawBody = msg.HtmlBody ?? msg.TextBody ?? "";
             // 🔥 PROVIDER DETECTION END
 
             // 🔥 TRACKING ID
@@ -139,11 +132,8 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             Console.WriteLine($"🎯 TrackingId: {trackingId}");
 
             // 🔥 CLEAN BODY
-            var body = Regex.Replace(rawBody, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
-            body = Regex.Replace(body, @"(?m)^>\s?", "");
-            body = body.Trim();
+            var body = ExtractOnlyReply(rawBody);
 
-            body = ExtractOnlyReply(body);
             var rawInReplyTo = msg.Headers["In-Reply-To"];
             var rawReferences = msg.Headers["References"];
             EmailLog? sent = null;
@@ -624,7 +614,15 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             {
                 foreach (var part in payload.parts)
                 {
-                    if (part.mimeType == "text/plain" || part.mimeType == "text/html")
+                    if (part.mimeType == "text/html")
+                    {
+                        if (part.body != null && part.body.data != null)
+                        {
+                            return DecodeBase64(part.body.data.ToString());
+                        }
+                    }
+
+                    if (part.mimeType == "text/plain")
                     {
                         if (part.body != null && part.body.data != null)
                         {
@@ -678,41 +676,187 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             return "";
         }
     }
+    //private string ExtractOnlyReply(string body)
+    //{
+    //    if (string.IsNullOrWhiteSpace(body))
+    //        return "";
+
+    //    // remove tracking id
+    //    body = Regex.Replace(
+    //        body,
+    //        @"<div[^>]*>\s*TRACKING_ID:[0-9a-fA-F\-]{36}\s*</div>",
+    //        "",
+    //        RegexOptions.IgnoreCase);
+
+    //    body = Regex.Replace(
+    //        body,
+    //        @"TRACKING_ID:[0-9a-fA-F\-]{36}",
+    //        "",
+    //        RegexOptions.IgnoreCase);
+
+    //    // HTML case
+    //    if (body.Contains("<"))
+    //    {
+    //        var quoteMatch = Regex.Match(
+    //            body,
+    //            @"<div[^>]*class=""[^""]*(gmail_quote|gmail_attr)[^""]*""[^>]*>|<blockquote[^>]*>|<hr[^>]*id=""replySplit[^""]*""[^>]*>",
+    //            RegexOptions.IgnoreCase);
+
+    //        if (quoteMatch.Success)
+    //            body = body.Substring(0, quoteMatch.Index);
+
+    //        body = Regex.Replace(
+    //            body,
+    //            @"<div[^>]*display\s*:\s*none[^>]*>.*?</div>",
+    //            "",
+    //            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+    //        body = Regex.Replace(
+    //            body,
+    //            @"<img[^>]*track/open[^>]*>",
+    //            "",
+    //            RegexOptions.IgnoreCase);
+
+    //        return body.Trim();
+    //    }
+
+    //    // plain text case
+    //    var textPatterns = new[]
+    //    {
+    //    @"On\s.+?wrote:",
+    //    @"-----Original Message-----",
+    //    @"^\s*From:\s.*$",
+    //    @"^\s*Sent:\s.*$",
+    //    @"^\s*To:\s.*$",
+    //    @"^\s*Subject:\s.*$",
+    //    @"^\s*_{5,}\s*$",
+    //    @"^\s*>.*$"
+    //};
+
+    //    int cutIndex = -1;
+
+    //    foreach (var pattern in textPatterns)
+    //    {
+    //        var match = Regex.Match(
+    //            body,
+    //            pattern,
+    //            RegexOptions.IgnoreCase | RegexOptions.Multiline);
+
+    //        if (match.Success)
+    //        {
+    //            if (cutIndex == -1 || match.Index < cutIndex)
+    //                cutIndex = match.Index;
+    //        }
+    //    }
+
+    //    if (cutIndex > 0)
+    //        body = body.Substring(0, cutIndex);
+
+    //    body = Regex.Replace(body, @"(\r?\n){3,}", "\n\n");
+
+    //    return body.Trim();
+    //}
     private string ExtractOnlyReply(string body)
     {
         if (string.IsNullOrWhiteSpace(body))
             return "";
 
-        // html cleanup
-        body = Regex.Replace(body, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
-        body = Regex.Replace(body, "<.*?>", "", RegexOptions.Singleline);
-        body = System.Net.WebUtility.HtmlDecode(body);
+        // =========================
+        // remove tracking id
+        // =========================
+        body = Regex.Replace(
+            body,
+            @"<div[^>]*>\s*TRACKING_ID:[0-9a-fA-F\-]{36}\s*</div>",
+            "",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
-        var patterns = new[]
+        body = Regex.Replace(
+            body,
+            @"TRACKING_ID:[0-9a-fA-F\-]{36}",
+            "",
+            RegexOptions.IgnoreCase);
+
+        // remove tracking pixel
+        body = Regex.Replace(
+            body,
+            @"<img[^>]*track/open[^>]*>",
+            "",
+            RegexOptions.IgnoreCase);
+
+        // =========================
+        // HTML case
+        // =========================
+        if (body.Contains("<"))
         {
-        @"On\s.+?wrote:",
-        @"From:.*",
-        @"-----Original Message-----",
-        @"________________________________",
-        @"Sent from my iPhone",
-        @"^>.*"
+            var quoteMatch = Regex.Match(
+                body,
+                @"<div[^>]*class=""[^""]*(gmail_quote|gmail_attr)[^""]*""[^>]*>" + // Gmail
+                @"|<blockquote[^>]*>" +                                            // generic
+                @"|<hr[^>]*id=""replySplit[^""]*""[^>]*>" +                         // Outlook
+                @"|<div[^>]*id=""appendonsend""[^>]*>" +                            // Outlook Web
+                @"|<div[^>]*border-top:\s*solid[^>]*>" +                            // Outlook Desktop
+                @"|<b>\s*From:\s*</b>",                                             // Outlook header
+                RegexOptions.IgnoreCase);
+
+            if (quoteMatch.Success)
+                body = body.Substring(0, quoteMatch.Index);
+
+            // hidden div remove
+            body = Regex.Replace(
+                body,
+                @"<div[^>]*display\s*:\s*none[^>]*>.*?</div>",
+                "",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+            // tracking div remove
+            body = Regex.Replace(
+                body,
+                @"<div[^>]*>.*?TRACKING_ID:[0-9a-fA-F\-]{36}.*?</div>",
+                "",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+            return body.Trim();
+        }
+
+        // =========================
+        // plain text case
+        // =========================
+        var textPatterns = new[]
+        {
+        @"^On\s.+?wrote:",
+        @"^-----Original Message-----",
+        @"^\s*From:\s.*$",
+        @"^\s*Sent:\s.*$",
+        @"^\s*To:\s.*$",
+        @"^\s*Subject:\s.*$",
+        @"^\s*_{5,}\s*$",
+        @"^\s*>.*$"
     };
 
-        foreach (var pattern in patterns)
+        int cutIndex = -1;
+
+        foreach (var pattern in textPatterns)
         {
             var match = Regex.Match(
                 body,
                 pattern,
-                RegexOptions.IgnoreCase |
-                RegexOptions.Multiline |
-                RegexOptions.Singleline);
+                RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
             if (match.Success)
             {
-                body = body.Substring(0, match.Index);
-                break;
+                if (cutIndex == -1 || match.Index < cutIndex)
+                    cutIndex = match.Index;
             }
         }
+
+        if (cutIndex > 0)
+            body = body.Substring(0, cutIndex);
+
+        // cleanup extra blank lines
+        body = Regex.Replace(
+            body,
+            @"(\r?\n){3,}",
+            Environment.NewLine + Environment.NewLine);
 
         return body.Trim();
     }

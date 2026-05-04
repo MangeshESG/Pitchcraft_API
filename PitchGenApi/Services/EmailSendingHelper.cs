@@ -461,11 +461,18 @@ public class EmailSendingHelper
     }
 
     public async Task<EmailSendResult> SendEmailUsingOutlookApi(
-    int clientId, int contactId, int? CampaignId, bool isFollowUp,
-    string BccEmail = "", int OutBoxId = 0)
+    int clientId,
+    int contactId,
+    int? CampaignId,
+    bool isFollowUp,
+    string BccEmail = "",
+    int OutBoxId = 0)
     {
-        var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
-        var Blueprint = await _context.Campaigns.FirstOrDefaultAsync(x => x.Id == CampaignId);
+        var EmailDetails = await _context.contacts
+            .FirstOrDefaultAsync(x => x.id == contactId);
+
+        var Blueprint = await _context.Campaigns
+            .FirstOrDefaultAsync(x => x.Id == CampaignId);
 
         int DataFileId = 0;
         if (!string.IsNullOrWhiteSpace(Blueprint?.ZohoViewId))
@@ -481,10 +488,12 @@ public class EmailSendingHelper
             };
         }
 
-        var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
+        var user = await _context.ClientDetails
+            .FirstOrDefaultAsync(x => x.Id == clientId);
 
-        // 🔥 Get Outlook Token
+        // Outlook token
         var tokenData = await GetValidOutlookTokenAsync(OutBoxId);
+
         if (tokenData == null)
         {
             return new EmailSendResult
@@ -497,41 +506,53 @@ public class EmailSendingHelper
         try
         {
             string trackingId = Guid.NewGuid().ToString();
-            string messageId = Guid.NewGuid().ToString(); // Outlook uses its own id
 
             string finalEmailBody = EmailDetails.email_body;
 
-            // 🔁 Follow-up
+            // Follow up
             if (isFollowUp)
             {
                 string oldThread = await _repository.BuildEmailThreadAsync(
-                    clientId, DataFileId, EmailDetails.id, Blueprint?.SegmentId);
+                    clientId,
+                    DataFileId,
+                    EmailDetails.id,
+                    Blueprint?.SegmentId);
 
                 finalEmailBody = $"{EmailDetails.email_body}{oldThread}";
             }
 
-            // 🔥 Tracking
-            finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
+            // Inbox tracking
+            finalEmailBody = EmailTrackingHelper.InjectinboxTracking(
+                finalEmailBody,
+                trackingId);
 
-            if (user.IsTracking)
+            // Click tracking + pixel
+            if (user?.IsTracking == true)
             {
-                finalEmailBody = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
+                finalEmailBody = EmailTrackingHelper.InjectClickTracking(
+                    finalEmailBody,
+                    trackingId);
+
                 finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
             }
 
             // =========================
-            // 🔥 GRAPH API PAYLOAD
+            // BUILD MESSAGE
             // =========================
-            var mail = new
+            object message;
+
+            if (!string.IsNullOrWhiteSpace(BccEmail))
             {
                 message = new
                 {
                     subject = EmailDetails.email_subject,
+
                     body = new
                     {
                         contentType = "HTML",
                         content = finalEmailBody
                     },
+
                     toRecipients = new[]
                     {
                     new
@@ -542,29 +563,102 @@ public class EmailSendingHelper
                         }
                     }
                 },
+
+                    bccRecipients = new[]
+                    {
+                    new
+                    {
+                        emailAddress = new
+                        {
+                            address = BccEmail
+                        }
+                    }
+                },
+
                     internetMessageHeaders = new[]
                     {
-                    new { name = "X-Tracking-Id", value = trackingId }
+                    new
+                    {
+                        name = "X-Tracking-Id",
+                        value = trackingId
+                    }
                 }
+                };
+            }
+            else
+            {
+                message = new
+                {
+                    subject = EmailDetails.email_subject,
+
+                    body = new
+                    {
+                        contentType = "HTML",
+                        content = finalEmailBody
+                    },
+
+                    toRecipients = new[]
+                    {
+                    new
+                    {
+                        emailAddress = new
+                        {
+                            address = EmailDetails.email
+                        }
+                    }
                 },
-                saveToSentItems = true
-            };
 
-            var client = new HttpClient();
+                    internetMessageHeaders = new[]
+                    {
+                    new
+                    {
+                        name = "X-Tracking-Id",
+                        value = trackingId
+                    }
+                }
+                };
+            }
+
+            using var client = new HttpClient();
             client.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
-
-            var response = await client.PostAsJsonAsync(
-                "https://graph.microsoft.com/v1.0/me/sendMail",
-                mail);
-
-            var result = await response.Content.ReadAsStringAsync();
-
-            if (!response.IsSuccessStatusCode)
-                throw new Exception(result);
+                new AuthenticationHeaderValue(
+                    "Bearer",
+                    tokenData.AccessToken);
 
             // =========================
-            // 🔥 SAVE LOG
+            // STEP 1: CREATE DRAFT
+            // =========================
+            var createResponse = await client.PostAsJsonAsync(
+                "https://graph.microsoft.com/v1.0/me/messages",
+                message);
+
+            var createResult = await createResponse.Content.ReadAsStringAsync();
+
+            if (!createResponse.IsSuccessStatusCode)
+                throw new Exception(createResult);
+
+            dynamic createdMail =
+                Newtonsoft.Json.JsonConvert.DeserializeObject(createResult);
+
+            string graphMessageId = createdMail.id;
+
+            if (string.IsNullOrWhiteSpace(graphMessageId))
+                throw new Exception("Outlook MessageId not returned");
+
+            // =========================
+            // STEP 2: SEND DRAFT
+            // =========================
+            var sendResponse = await client.PostAsync(
+                $"https://graph.microsoft.com/v1.0/me/messages/{graphMessageId}/send",
+                null);
+
+            var sendResult = await sendResponse.Content.ReadAsStringAsync();
+
+            if (!sendResponse.IsSuccessStatusCode)
+                throw new Exception(sendResult);
+
+            // =========================
+            // SAVE LOG
             // =========================
             _context.EmailLogs.Add(new EmailLog
             {
@@ -585,7 +679,10 @@ public class EmailSendingHelper
                 IsSuccess = true,
                 SentAt = DateTime.UtcNow,
                 TrackingId = Guid.Parse(trackingId),
-                MessageId = messageId,
+
+                // 🔥 REAL GRAPH MESSAGE ID
+                MessageId = graphMessageId,
+
                 process_name = "Single"
             });
 

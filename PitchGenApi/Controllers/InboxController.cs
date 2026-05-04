@@ -4,6 +4,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
+using System.Net;
 
 [ApiController]
 [Route("api/[controller]")]
@@ -11,11 +12,13 @@ public class InboxController : ControllerBase
 {
     private readonly IInboxRepository _repo;
     private readonly AppDbContext _context;
+    private readonly IInboxEmailSyncService _inbox;
 
-    public InboxController(IInboxRepository repo, AppDbContext context)
+    public InboxController(IInboxRepository repo, AppDbContext context, IInboxEmailSyncService inbox)
     {
         _repo = repo;
         _context = context;
+        _inbox = inbox;
     }
 
     [HttpGet("Get-Inboxcredentials")]
@@ -137,5 +140,102 @@ public class InboxController : ControllerBase
     {
         // Implement AES or KeyVault encryption here
         return plain; // placeholder
+    }
+
+
+    [HttpPost("RefreshInbox")]
+    public async Task<IActionResult> RefreshInbox([FromQuery] int inboxId, [FromQuery] string provider)
+    {
+        try
+        {
+            if (inboxId <= 0)
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid inboxId"
+                });
+            }
+
+            if (string.IsNullOrWhiteSpace(provider))
+            {
+                return BadRequest(new
+                {
+                    message = "Provider is required"
+                });
+            }
+
+            provider = provider.ToUpper();
+
+            EmailOAuthTokens? oauth = null;
+
+            // OAuth provider check
+            if (provider == "OUTLOOK" || provider == "GMAIL")
+            {
+                oauth = await _context.EmailOAuthTokens
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == inboxId &&
+                        x.Provider.ToUpper() == provider);
+
+                if (oauth == null)
+                {
+                    return BadRequest(new
+                    {
+                        message = $"OAuth token not found for {provider}"
+                    });
+                }
+            }
+
+            switch (provider)
+            {
+                case "IMAP":
+                case "SMTP":
+                    {
+                        var imap = await _context.Inboxcredentials
+                            .FirstOrDefaultAsync(x => x.Id == inboxId);
+
+                        if (imap == null)
+                        {
+                            return NotFound(new
+                            {
+                                message = "Inbox credential not found"
+                            });
+                        }
+
+                        await _inbox.SyncEmailsAsync(imap);
+                        break;
+                    }
+
+                case "OUTLOOK":
+                    {
+                        await _inbox.SyncOutlookInboxAsync(oauth);
+                        break;
+                    }
+
+                case "GMAIL":
+                    {
+                        await _inbox.SyncGmailInboxAsync(oauth);
+                        break;
+                    }
+
+                default:
+                    return BadRequest(new
+                    {
+                        message = "Invalid provider. Use IMAP, OUTLOOK, or GMAIL."
+                    });
+            }
+
+            return Ok(new
+            {
+                message = "Inbox refreshed successfully"
+            });
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(500, new
+            {
+                message = "Unexpected error",
+                error = ex.Message
+            });
+        }
     }
 }
