@@ -365,12 +365,18 @@ namespace PitchGenApi.Repository
             }
         }
 
-        public async Task<EmailSendResult> ReplyEmailUsingOutlookApi(Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
+        public async Task<EmailSendResult> ReplyEmailUsingOutlookApi(
+    Guid trackingid,
+    int clientId,
+    string replyBody,
+    int outboxId,
+    string BccEmail = "")
         {
             var user = await _context.ClientDetails
                 .FirstOrDefaultAsync(x => x.Id == clientId);
 
             var tokenData = await _emailSending.GetValidOutlookTokenAsync(outboxId);
+
             if (tokenData == null)
             {
                 return new EmailSendResult
@@ -380,12 +386,13 @@ namespace PitchGenApi.Repository
                 };
             }
 
-            // 🔥 STEP 1: last sent + reply
+            // Last sent mail
             var lastSent = await _context.EmailLogs
                 .Where(x => x.TrackingId == trackingid)
                 .OrderByDescending(x => x.SentAt)
                 .FirstOrDefaultAsync();
 
+            // Last reply
             var lastReply = await _context.EmailReplies
                 .Where(x => x.TrackingId == trackingid)
                 .OrderByDescending(x => x.Date)
@@ -400,101 +407,137 @@ namespace PitchGenApi.Repository
                 };
             }
 
-            // 🔥 STEP 2: correct messageId
-            string lastMessageId = null;
+            // Latest message id in thread
+            string lastMessageId;
 
-            if (lastReply != null && lastSent != null)
+            if (lastReply != null)
             {
                 lastMessageId = lastReply.Date > lastSent.SentAt
                     ? lastReply.MessageId
                     : lastSent.MessageId;
-            }
-            else if (lastReply != null)
-            {
-                lastMessageId = lastReply.MessageId;
             }
             else
             {
                 lastMessageId = lastSent.MessageId;
             }
 
+            if (string.IsNullOrWhiteSpace(lastMessageId))
+            {
+                return new EmailSendResult
+                {
+                    Success = false,
+                    Message = "Thread MessageId not found"
+                };
+            }
+
             try
             {
                 string finalBody = replyBody;
 
-                // ✅ tracking
-                if (user.IsTracking)
+                // Tracking
+                if (user?.IsTracking == true)
                 {
-                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, trackingid.ToString());
-                    finalBody += EmailTrackingHelper.GetPixelTag(trackingid.ToString());
+                    finalBody = EmailTrackingHelper.InjectClickTracking(
+                        finalBody,
+                        trackingid.ToString());
+
+                    finalBody += EmailTrackingHelper.GetPixelTag(
+                        trackingid.ToString());
                 }
 
-                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, trackingid.ToString());
+                finalBody = EmailTrackingHelper.InjectinboxTracking(
+                    finalBody,
+                    trackingid.ToString());
 
                 // =========================
-                // 🔥 GRAPH API BODY
+                // Build payload
                 // =========================
-                var messagePayload = new
+                object payload;
+
+                if (!string.IsNullOrWhiteSpace(BccEmail))
                 {
-                    message = new
+                    payload = new
                     {
-                        subject = lastSent.Subject.StartsWith("Re:")
-                            ? lastSent.Subject
-                            : "Re: " + lastSent.Subject,
+                        message = new
+                        {
+                            body = new
+                            {
+                                contentType = "HTML",
+                                content = finalBody
+                            },
 
-                        body = new
+                            bccRecipients = new[]
+                            {
+                        new
                         {
-                            contentType = "HTML",
-                            content = finalBody
-                        },
+                            emailAddress = new
+                            {
+                                address = BccEmail
+                            }
+                        }
+                    },
 
-                        toRecipients = new[]
+                            internetMessageHeaders = new[]
+                            {
+                        new
                         {
-                    new
-                    {
-                        emailAddress = new
-                        {
-                            address = lastSent.ToEmail
+                            name = "X-Tracking-Id",
+                            value = trackingid.ToString()
                         }
                     }
-                },
-
-                        // 🔥 THREADING (IMPORTANT)
-                        internetMessageHeaders = new[]
-                        {
-                    new { name = "In-Reply-To", value = lastMessageId },
-                    new { name = "References", value = lastMessageId },
-                    new { name = "X-Tracking-Id", value = trackingid.ToString() }
+                        }
+                    };
                 }
+                else
+                {
+                    payload = new
+                    {
+                        message = new
+                        {
+                            body = new
+                            {
+                                contentType = "HTML",
+                                content = finalBody
+                            },
+
+                            internetMessageHeaders = new[]
+                            {
+                        new
+                        {
+                            name = "X-Tracking-Id",
+                            value = trackingid.ToString()
+                        }
                     }
-                };
+                        }
+                    };
+                }
 
-                var client = new HttpClient();
+                using var client = new HttpClient();
                 client.DefaultRequestHeaders.Authorization =
-                    new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
+                    new AuthenticationHeaderValue(
+                        "Bearer",
+                        tokenData.AccessToken);
 
+                // SAME THREAD reply
                 var response = await client.PostAsJsonAsync(
-                    "https://graph.microsoft.com/v1.0/me/sendMail",
-                    messagePayload);
+                    $"https://graph.microsoft.com/v1.0/me/messages/{lastMessageId}/reply",
+                    payload);
 
                 var result = await response.Content.ReadAsStringAsync();
 
                 if (!response.IsSuccessStatusCode)
                     throw new Exception(result);
 
-                // ⚠️ Outlook Graph yahan direct messageId return nahi karta
-                // isliye hum apna logical tracking + fallback store karenge
+                // Save log
+                string newMessageId = MimeKit.Utils.MimeUtils.GenerateMessageId();
 
-                string newMessageId = MimeUtils.GenerateMessageId();
-
-                // =========================
-                // 🔥 SAVE LOG
-                // =========================
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
                     ToEmail = lastSent.ToEmail,
-                    Subject = messagePayload.message.subject,
+                    Subject = lastSent.Subject.StartsWith("Re:")
+                        ? lastSent.Subject
+                        : "Re: " + lastSent.Subject,
                     Body = replyBody,
                     SenderEmailId = tokenData.Email,
                     EmailSenderName = tokenData.SenderName,
@@ -503,8 +546,8 @@ namespace PitchGenApi.Repository
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
                     TrackingId = trackingid,
-                    MessageId = newMessageId, // fallback
-                    ThreadId = lastSent.ThreadId, // reuse
+                    MessageId = newMessageId,
+                    ThreadId = lastSent.ThreadId,
                     process_name = "ThreadReply"
                 });
 

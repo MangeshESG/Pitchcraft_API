@@ -347,7 +347,6 @@ namespace PitchGenApi.Controllers
                     });
                 }
 
-                // ✅ Success ke baad contact update
                 if (dto.contactid > 0)
                 {
                     var contact = await _context.contacts
