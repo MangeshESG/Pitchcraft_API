@@ -14,18 +14,15 @@
     {
         private readonly HttpClient _httpClient;
         private readonly AppDbContext _context;
-        private readonly ContactRepository _contactRepository;
         private readonly string _apiKey;
 
         public ContactQAService(
             HttpClient httpClient,
             AppDbContext context,
-            ContactRepository contactRepository,
             IOptions<OpenAISettings> openAIOptions)
         {
             _httpClient = httpClient;
             _context = context;
-            _contactRepository = contactRepository;
             _apiKey = openAIOptions.Value.ApiKey;
 
             _httpClient.DefaultRequestHeaders.Clear();
@@ -62,16 +59,6 @@
                 {
                     IsSuccess = false,
                     Answer = "Model pricing not configured."
-                };
-            }
-
-            var creditDeducted = await _contactRepository.CreditDeduction(request.ClientId);
-            if (!creditDeducted)
-            {
-                return new ContactQAResponse
-                {
-                    IsSuccess = false,
-                    Answer = "Insufficient credits."
                 };
             }
 
