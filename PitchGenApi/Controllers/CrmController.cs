@@ -187,170 +187,116 @@ namespace PitchGenApi.Controllers
         [HttpPost("uploadcontacts")]
         public async Task<IActionResult> UploadContacts([FromBody] DataFileWithContactsDto request)
         {
-            var strategy = _context.Database.CreateExecutionStrategy();
-
             try
             {
-                return await strategy.ExecuteAsync<IActionResult>(async () =>
+                // 1️⃣ Create DataFile
+                var dataFile = new DataFile
                 {
-                    using var transaction = await _context.Database.BeginTransactionAsync();
+                    client_id = request.clientId,
+                    name = request.name,
+                    data_file_name = request.dataFileName,
+                    description = request.description,
+                    created_at = DateTime.UtcNow
+                };
 
-                    try
+                _context.data_files.Add(dataFile);
+
+                // 2️⃣ Load Custom Fields
+                var customFieldMap = await _context.crm_custom_fields
+                    .Where(f => f.client_id == request.clientId)
+                    .ToDictionaryAsync(f => f.field_name.ToLower(), f => f.id);
+
+                var contacts = new List<Contact>();
+                var customValues = new List<ContactCustomFieldValue>();
+
+                // 3️⃣ Build Contacts
+                foreach (var c in request.contacts)
+                {
+                    var firstName = c.firstName?.Trim();
+                    var lastName = c.lastName?.Trim();
+
+                    if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(c.fullName))
                     {
-                        // -----------------------------
-                        // 1. Create DataFile
-                        // -----------------------------
-                        var dataFile = new DataFile
+                        var parts = c.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        firstName = parts.FirstOrDefault();
+                        lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+                    }
+
+                    var fullName = !string.IsNullOrWhiteSpace(c.fullName)
+                        ? c.fullName.Trim()
+                        : $"{firstName} {lastName}".Trim();
+
+                    if (string.IsNullOrWhiteSpace(fullName))
+                        fullName = c.email ?? "Unknown";
+
+                    var contact = new Contact
+                    {
+                        DataFileId = dataFile.id,
+                        first_name = firstName,
+                        last_name = lastName,
+                        full_name = fullName,
+                        email = c.email?.Trim(),
+                        website = c.website,
+                        company_name = c.companyName,
+                        job_title = c.jobTitle,
+                        linkedin_url = c.linkedInUrl,
+                        country_or_address = c.countryOrAddress,
+                        email_subject = c.emailSubject,
+                        email_body = c.emailBody,
+                        CompanyTelephone = c.CompanyTelephone,
+                        CompanyEmployeeCount = c.CompanyEmployeeCount,
+                        CompanyIndustry = c.CompanyIndustry,
+                        CompanyLinkedInURL = c.CompanyLinkedInURL,
+                        linkedIninformation = c.linkedIninformation,
+                        created_at = DateTime.UtcNow
+                    };
+
+                    contacts.Add(contact);
+                }
+
+                _context.contacts.AddRange(contacts);
+
+                // 4️⃣ Save once → EF handles transaction
+                await _context.SaveChangesAsync();
+
+                // 5️⃣ Map custom fields (after IDs exist)
+                for (int i = 0; i < contacts.Count; i++)
+                {
+                    var contact = contacts[i];
+                    var dto = request.contacts[i];
+
+                    if (dto.customFields == null) continue;
+
+                    foreach (var field in dto.customFields)
+                    {
+                        if (string.IsNullOrWhiteSpace(field.Value)) continue;
+
+                        if (!customFieldMap.TryGetValue(field.Key.ToLower(), out var fieldId))
+                            continue;
+
+                        customValues.Add(new ContactCustomFieldValue
                         {
                             client_id = request.clientId,
-                            name = request.name,
-                            data_file_name = request.dataFileName,
-                            description = request.description,
+                            contact_id = contact.id,
+                            field_id = fieldId,
+                            value = field.Value,
                             created_at = DateTime.UtcNow
-                        };
-
-                        _context.data_files.Add(dataFile);
-                        await _context.SaveChangesAsync();
-
-                        // -----------------------------
-                        // 2. Load Custom Fields
-                        // -----------------------------
-                        var customFieldMap = await _context.crm_custom_fields
-                            .Where(f => f.client_id == request.clientId)
-                            .ToDictionaryAsync(
-                                f => f.field_name.ToLower(),
-                                f => f.id
-                            );
-
-                        // -----------------------------
-                        // 3. Build Contacts
-                        // -----------------------------
-                        var contacts = new List<Contact>();
-                        var customValues = new List<ContactCustomFieldValue>();
-
-                        for (int i = 0; i < request.contacts.Count; i++)
-                        {
-                            var c = request.contacts[i];
-
-                            var firstName = c.firstName?.Trim();
-                            var lastName = c.lastName?.Trim();
-
-                            if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(c.fullName))
-                            {
-                                var parts = c.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                                firstName = parts.FirstOrDefault();
-                                lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
-                            }
-
-                            var fullName = !string.IsNullOrWhiteSpace(c.fullName)
-                                ? c.fullName.Trim()
-                                : $"{firstName} {lastName}".Trim();
-
-                            if (string.IsNullOrWhiteSpace(fullName))
-                            {
-                                fullName = !string.IsNullOrWhiteSpace(c.email) ? c.email : "Unknown";
-                            }
-
-                            var contact = new Contact
-                            {
-                                DataFileId = dataFile.id,
-                                first_name = firstName,
-                                last_name = lastName,
-                                full_name = fullName,
-                                email = c.email?.Trim(),
-                                website = c.website,
-                                company_name = c.companyName,
-                                job_title = c.jobTitle,
-                                linkedin_url = c.linkedInUrl,
-                                country_or_address = c.countryOrAddress,
-                                email_subject = c.emailSubject,
-                                email_body = c.emailBody,
-                                CompanyTelephone = c.CompanyTelephone,
-                                CompanyEmployeeCount = c.CompanyEmployeeCount,
-                                CompanyIndustry = c.CompanyIndustry,
-                                CompanyLinkedInURL = c.CompanyLinkedInURL,
-                                linkedIninformation = c.linkedIninformation,
-                                created_at = DateTime.UtcNow
-                            };
-
-                            contacts.Add(contact);
-                        }
-
-                        // -----------------------------
-                        // 4. Save Contacts
-                        // -----------------------------
-                        _context.contacts.AddRange(contacts);
-                        await _context.SaveChangesAsync();
-
-                        // -----------------------------
-                        // 5. Map Custom Fields
-                        // -----------------------------
-                        for (int i = 0; i < contacts.Count; i++)
-                        {
-                            var contact = contacts[i];
-                            var dto = request.contacts[i];
-
-                            if (dto.customFields == null || dto.customFields.Count == 0)
-                                continue;
-
-                            var processedFields = new HashSet<string>();
-
-                            foreach (var field in dto.customFields)
-                            {
-                                var key = field.Key.ToLower();
-
-                                if (processedFields.Contains(key))
-                                    continue;
-
-                                processedFields.Add(key);
-
-                                if (string.IsNullOrWhiteSpace(field.Value))
-                                    continue;
-
-                                if (!customFieldMap.TryGetValue(key, out var fieldId))
-                                    continue;
-
-                                customValues.Add(new ContactCustomFieldValue
-                                {
-                                    client_id = request.clientId,
-                                    contact_id = contact.id,
-                                    field_id = fieldId,
-                                    value = field.Value,
-                                    created_at = DateTime.UtcNow
-                                });
-                            }
-                        }
-
-                        // -----------------------------
-                        // 6. Save Custom Values
-                        // -----------------------------
-                        if (customValues.Any())
-                        {
-                            _context.contact_custom_field_values.AddRange(customValues);
-                            await _context.SaveChangesAsync();
-                        }
-
-                        await transaction.CommitAsync();
-
-                        return Ok(new
-                        {
-                            success = true,
-                            message = "Contacts uploaded successfully",
-                            dataFileId = dataFile.id,
-                            contactCount = contacts.Count
                         });
                     }
-                    catch (Exception ex)
-                    {
-                        await transaction.RollbackAsync();
+                }
 
-                        return BadRequest(new
-                        {
-                            success = false,
-                            message = "Upload failed",
-                            error = ex.InnerException?.Message ?? ex.Message
-                        });
-                    }
+                if (customValues.Any())
+                {
+                    _context.contact_custom_field_values.AddRange(customValues);
+                    await _context.SaveChangesAsync();
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Contacts uploaded successfully",
+                    dataFileId = dataFile.id,
+                    contactCount = contacts.Count
                 });
             }
             catch (Exception ex)
@@ -363,17 +309,14 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
-
         [HttpPost("add-single-contact")]
         public async Task<IActionResult> AddSingleContact([FromQuery] int DataFileId, ContactDto request)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-
             try
             {
                 DataFile dataFile = null;
 
-                // 🔹 CASE 1: DataFileId = 0 → create/find manual DataFile
+                // CASE 1: Create/find manual DataFile
                 if (DataFileId <= 0)
                 {
                     dataFile = await _context.data_files
@@ -392,7 +335,7 @@ namespace PitchGenApi.Controllers
                         };
 
                         _context.data_files.Add(dataFile);
-                        await _context.SaveChangesAsync();
+                        await _context.SaveChangesAsync(); // safe
                     }
 
                     DataFileId = dataFile.id;
@@ -412,11 +355,10 @@ namespace PitchGenApi.Controllers
                     }
                 }
 
-                // ✅ NAME HANDLING (IMPORTANT)
+                // NAME HANDLING
                 var firstName = request.firstName?.Trim();
                 var lastName = request.lastName?.Trim();
 
-                // Auto split if only fullName is provided
                 if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(request.fullName))
                 {
                     var parts = request.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -424,18 +366,16 @@ namespace PitchGenApi.Controllers
                     lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
                 }
 
-                // Build full name
                 var fullName = !string.IsNullOrWhiteSpace(request.fullName)
                     ? request.fullName.Trim()
                     : $"{firstName} {lastName}".Trim();
 
-                // Final fallback
                 if (string.IsNullOrWhiteSpace(fullName))
                 {
                     fullName = !string.IsNullOrWhiteSpace(request.email) ? request.email : "Unknown";
                 }
 
-                // 🔹 Create Contact
+                // CREATE CONTACT
                 var contact = new Contact
                 {
                     DataFileId = DataFileId,
@@ -455,14 +395,11 @@ namespace PitchGenApi.Controllers
                     CompanyIndustry = request.CompanyIndustry,
                     CompanyLinkedInURL = request.CompanyLinkedInURL,
                     linkedIninformation = request.linkedIninformation,
-                    created_at = DateTime.UtcNow,
-                    updated_at = null
+                    created_at = DateTime.UtcNow
                 };
 
                 _context.contacts.Add(contact);
                 await _context.SaveChangesAsync();
-
-                await transaction.CommitAsync();
 
                 return Ok(new
                 {
@@ -474,8 +411,6 @@ namespace PitchGenApi.Controllers
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
-
                 return BadRequest(new
                 {
                     success = false,
@@ -484,6 +419,8 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
+
+
         [HttpPost]
         [Route("update-contact")]
         public async Task<IActionResult> UpdateContact([FromQuery] int id, [FromBody] ContactDto model)
@@ -1675,50 +1612,28 @@ namespace PitchGenApi.Controllers
         [HttpPost("delete-segment")]
         public async Task<IActionResult> DeleteSegment([FromQuery] int segmentId)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-
             try
             {
-                // Step 1: Fetch the Segment (null-safe, no properties accessed)
                 var segment = await _context.segments
-                                            .FirstOrDefaultAsync(s => s.Id == segmentId);
+                    .FirstOrDefaultAsync(s => s.Id == segmentId);
 
                 if (segment == null)
-                {
                     return NotFound(new { message = "Segment not found." });
-                }
 
-                // Step 2: Get SegmentContacts list (null-safe)
-                var segmentContacts = await _context.segmentContacts
-                                                    .Where(sc => sc.SegmentId == segmentId)
-                                                    .ToListAsync();
+                _context.segmentContacts.RemoveRange(
+                    _context.segmentContacts.Where(sc => sc.SegmentId == segmentId));
 
-                // Step 3: Remove related contacts
-                if (segmentContacts?.Count > 0)
-                {
-                    _context.segmentContacts.RemoveRange(segmentContacts);
-                }
-
-                // Step 4: Remove the Segment
                 _context.segments.Remove(segment);
 
-                // Save all changes
                 await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
 
-                return Ok(new { message = "Segment and related contacts deleted successfully." });
+                return Ok(new { message = "Segment deleted successfully." });
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
-                return StatusCode(500, new
-                {
-                    message = "Internal server error",
-                    error = ex.InnerException?.Message ?? ex.Message
-                });
+                return StatusCode(500, ex.Message);
             }
         }
-
 
         [HttpGet("user_credit")]
         public async Task<IActionResult> GetCredit([FromQuery] int clientId)
@@ -2385,6 +2300,44 @@ namespace PitchGenApi.Controllers
         }
 
 
+        [HttpGet("view-by-id")]
+        public async Task<IActionResult> GetViewById([FromQuery] int clientId, [FromQuery] int viewId)
+        {
+            var view = await _context.crm_views
+                .Where(v => v.id == viewId && v.client_id == clientId)
+                .Select(v => new
+                {
+                    v.id,
+                    v.name,
+                    v.description,
+                    v.created_at,
+                    v.filters_json,
+                    v.use_all_datafiles,
+
+                    dataFileIds = _context.crm_view_datafiles
+                        .Where(x => x.view_id == v.id)
+                        .Select(x => x.datafile_id)
+                        .ToList(),
+
+                    excludedDataFileIds = _context.crm_view_excluded_datafiles
+                        .Where(x => x.view_id == v.id)
+                        .Select(x => x.datafile_id)
+                        .ToList(),
+
+                    segmentIds = _context.crm_view_segments
+                        .Where(x => x.view_id == v.id)
+                        .Select(x => x.segment_id)
+                        .ToList()
+                })
+                .FirstOrDefaultAsync();
+
+            if (view == null)
+                return NotFound("View not found");
+
+            return Ok(view);
+        }
+
+
         [HttpPost("create-view")]
         public async Task<IActionResult> CreateView([FromBody] CreateViewDto dto)
         {
@@ -2475,8 +2428,6 @@ namespace PitchGenApi.Controllers
         [HttpPost("delete-view")]
         public async Task<IActionResult> DeleteView(int viewId)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-
             try
             {
                 var view = await _context.crm_views
@@ -2485,38 +2436,29 @@ namespace PitchGenApi.Controllers
                 if (view == null)
                     return NotFound();
 
-                var datafiles = _context.crm_view_datafiles
-                    .Where(x => x.view_id == viewId);
+                _context.crm_view_datafiles.RemoveRange(
+                    _context.crm_view_datafiles.Where(x => x.view_id == viewId));
 
-                var segments = _context.crm_view_segments
-                    .Where(x => x.view_id == viewId);
+                _context.crm_view_segments.RemoveRange(
+                    _context.crm_view_segments.Where(x => x.view_id == viewId));
 
-                var excluded = _context.crm_view_excluded_datafiles
-                    .Where(x => x.view_id == viewId);
-
-                _context.crm_view_datafiles.RemoveRange(datafiles);
-                _context.crm_view_segments.RemoveRange(segments);
-                _context.crm_view_excluded_datafiles.RemoveRange(excluded);
+                _context.crm_view_excluded_datafiles.RemoveRange(
+                    _context.crm_view_excluded_datafiles.Where(x => x.view_id == viewId));
 
                 _context.crm_views.Remove(view);
 
                 await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
 
                 return Ok("View deleted");
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
                 return BadRequest(ex.Message);
             }
         }
-
         [HttpPost("update-view")]
         public async Task<IActionResult> UpdateView([FromBody] UpdateViewDto dto)
         {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-
             try
             {
                 var view = await _context.crm_views
@@ -2525,80 +2467,83 @@ namespace PitchGenApi.Controllers
                 if (view == null)
                     return NotFound("View not found");
 
+                // Update main fields
                 view.name = dto.Name;
                 view.description = dto.Description;
                 view.filters_json = dto.FiltersJson;
                 view.use_all_datafiles = dto.UseAllDataFiles;
 
-                _context.crm_views.Update(view);
-
-                // Clear existing datafile links
+                // Remove existing mappings
                 var existingDatafiles = _context.crm_view_datafiles
                     .Where(x => x.view_id == dto.ViewId);
-                _context.crm_view_datafiles.RemoveRange(existingDatafiles);
 
-                // Clear exclusions
                 var existingExcluded = _context.crm_view_excluded_datafiles
                     .Where(x => x.view_id == dto.ViewId);
-                _context.crm_view_excluded_datafiles.RemoveRange(existingExcluded);
 
+                var existingSegments = _context.crm_view_segments
+                    .Where(x => x.view_id == dto.ViewId);
+
+                _context.crm_view_datafiles.RemoveRange(existingDatafiles);
+                _context.crm_view_excluded_datafiles.RemoveRange(existingExcluded);
+                _context.crm_view_segments.RemoveRange(existingSegments);
+
+                // Insert new mappings
                 if (dto.UseAllDataFiles)
                 {
-                    // Store exclusions (unchecked)
-                    if (dto.ExcludedDataFileIds != null && dto.ExcludedDataFileIds.Any())
+                    if (dto.ExcludedDataFileIds?.Any() == true)
                     {
-                        var newExcluded = dto.ExcludedDataFileIds.Select(df => new CrmViewExcludedDatafile
-                        {
-                            view_id = dto.ViewId,
-                            datafile_id = df
-                        });
+                        var excluded = dto.ExcludedDataFileIds.Select(df =>
+                            new CrmViewExcludedDatafile
+                            {
+                                view_id = dto.ViewId,
+                                datafile_id = df
+                            });
 
-                        await _context.crm_view_excluded_datafiles.AddRangeAsync(newExcluded);
+                        await _context.crm_view_excluded_datafiles.AddRangeAsync(excluded);
                     }
                 }
                 else
                 {
-                    if (dto.DataFileIds != null && dto.DataFileIds.Any())
+                    if (dto.DataFileIds?.Any() == true)
                     {
-                        var newDatafiles = dto.DataFileIds.Select(df => new CrmViewDatafile
-                        {
-                            view_id = dto.ViewId,
-                            datafile_id = df
-                        });
+                        var datafiles = dto.DataFileIds.Select(df =>
+                            new CrmViewDatafile
+                            {
+                                view_id = dto.ViewId,
+                                datafile_id = df
+                            });
 
-                        await _context.crm_view_datafiles.AddRangeAsync(newDatafiles);
+                        await _context.crm_view_datafiles.AddRangeAsync(datafiles);
                     }
                 }
 
-                // Update segments
-                var existingSegments = _context.crm_view_segments
-                    .Where(x => x.view_id == dto.ViewId);
-
-                _context.crm_view_segments.RemoveRange(existingSegments);
-
-                if (dto.SegmentIds != null && dto.SegmentIds.Any())
+                if (dto.SegmentIds?.Any() == true)
                 {
-                    var newSegments = dto.SegmentIds.Select(seg => new CrmViewSegment
-                    {
-                        view_id = dto.ViewId,
-                        segment_id = seg
-                    });
+                    var segments = dto.SegmentIds.Select(seg =>
+                        new CrmViewSegment
+                        {
+                            view_id = dto.ViewId,
+                            segment_id = seg
+                        });
 
-                    await _context.crm_view_segments.AddRangeAsync(newSegments);
+                    await _context.crm_view_segments.AddRangeAsync(segments);
                 }
 
                 await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
 
                 return Ok("View updated successfully");
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
                 return BadRequest(ex.Message);
             }
         }
+
+
+
         [HttpPost("view-contacts")]
+
+
         public async Task<IActionResult> GetViewContacts([FromBody] ViewContactsRequest dto)
         {
             try

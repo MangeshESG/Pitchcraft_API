@@ -35,6 +35,7 @@ namespace PitchGenApi.Controllers
         private readonly ZohoService _zohoService;
         private readonly ILogger<AuthController> _logger; // Add ILogger field
         private readonly IContactQAService _contactQAService;
+        private readonly DeepSeekPitchService _deepSeekService;
 
 
 
@@ -49,7 +50,9 @@ namespace PitchGenApi.Controllers
             AppDbContext context,
             ZohoService zohoService,
             ILogger<AuthController> logger,
-            IContactQAService contactQAService)
+            IContactQAService contactQAService,
+            DeepSeekPitchService deepSeekService)
+
         {
             _reg = registeredServices;
             _userRepository = userRepository;
@@ -61,6 +64,7 @@ namespace PitchGenApi.Controllers
             _zohoService = zohoService;
             _logger = logger;
             _contactQAService = contactQAService;
+            _deepSeekService = deepSeekService;
 
 
         }
@@ -785,7 +789,7 @@ namespace PitchGenApi.Controllers
                     existingSettings.Instruction = updatedSettings.Instruction;
                     existingSettings.System_instruction = updatedSettings.System_instruction;
                     existingSettings.Subject_instruction = updatedSettings.Subject_instruction; // Add this line
-                                                                                                
+
                 }
 
                 await _context.SaveChangesAsync();
@@ -817,7 +821,7 @@ namespace PitchGenApi.Controllers
         }
 
 
-     
+
 
 
 
@@ -1189,6 +1193,192 @@ namespace PitchGenApi.Controllers
                 PreviousPageToken = previousPageToken,
                 MoreRecords = moreRecords
             });
+        }
+
+
+
+        [HttpPost("deepseek/generate-with-search")]
+        public async Task<IActionResult> GenerateWithSearch(
+            [FromBody] DeepSeekGenerateRequest request)
+        {
+            try
+            {
+                // =====================================
+                // VALIDATION
+                // =====================================
+
+                if (request == null)
+                {
+                    return BadRequest(new
+                    {
+                        Message = "Request body is required."
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(request.Prompt))
+                {
+                    return BadRequest(new
+                    {
+                        Message = "Prompt is required."
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(request.ModelName))
+                {
+                    return BadRequest(new
+                    {
+                        Message = "ModelName is required."
+                    });
+                }
+
+                if (string.IsNullOrWhiteSpace(request.TavilySearchTerm))
+                {
+                    return BadRequest(new
+                    {
+                        Message = "TavilySearchTerm is required."
+                    });
+                }
+
+                if (!request.Prompt.Contains("{web_searched_data}"))
+                {
+                    return BadRequest(new
+                    {
+                        Message =
+                        "Prompt must contain {web_searched_data} placeholder."
+                    });
+                }
+
+                // =====================================
+                // TAVILY SEARCH
+                // =====================================
+
+                using var client = new HttpClient();
+
+                var tavilyRequest = new
+                {
+                    api_key = "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",
+                    query = request.TavilySearchTerm,
+                    search_depth = "basic",
+                    max_results = 5
+                };
+
+                var tavilyResponse = await client.PostAsync(
+                    "https://api.tavily.com/search",
+                    new StringContent(
+                        JsonConvert.SerializeObject(tavilyRequest),
+                        Encoding.UTF8,
+                        "application/json"));
+
+                var tavilyJson =
+                    await tavilyResponse.Content.ReadAsStringAsync();
+
+                if (!tavilyResponse.IsSuccessStatusCode)
+                {
+                    return StatusCode(500, new
+                    {
+                        Message = "Tavily search failed",
+                        Error = tavilyJson
+                    });
+                }
+
+                string webSearchData = "";
+
+                dynamic parsed =
+                    JsonConvert.DeserializeObject(tavilyJson);
+
+                if (parsed.results != null)
+                {
+                    foreach (var item in parsed.results)
+                    {
+                        string content =
+                            item.content?.ToString() ?? "";
+
+                        // Prevent huge prompts
+                        if (content.Length > 1500)
+                        {
+                            content = content.Substring(0, 1500);
+                        }
+
+                        webSearchData += content + "\n\n";
+                    }
+                }
+
+                // =====================================
+                // REPLACE PLACEHOLDER
+                // =====================================
+
+                string finalPrompt =
+                    request.Prompt.Replace(
+                        "{web_searched_data}",
+                        webSearchData);
+
+                // =====================================
+                // DEEPSEEK CALL
+                // =====================================
+
+                var enquiryRequest = new EnquiryRequest
+                {
+                    Prompt = finalPrompt,
+                    ModelName = request.ModelName,
+                    ScrappedData = ""
+                };
+
+                var result =
+                    await _deepSeekService.GeneratePitchAsync(
+                        enquiryRequest);
+
+                if (!result.IsSuccess)
+                {
+                    return StatusCode(500, new
+                    {
+                        Message = "DeepSeek generation failed",
+                        Error = result.Content
+                    });
+                }
+
+                // =====================================
+                // RESPONSE
+                // =====================================
+
+                return Ok(new
+                {
+                    Provider = "DeepSeek",
+
+                    Model = request.ModelName,
+
+                    TavilySearchTerm = request.TavilySearchTerm,
+
+                    WebSearchData = webSearchData,
+
+                    FinalPrompt = finalPrompt,
+
+                    Response = result.Content,
+
+                    Usage = new
+                    {
+                        result.PromptTokens,
+                        result.CompletionTokens,
+                        result.TotalTokens,
+                        result.CurrentCost
+                    }
+                });
+            }
+            catch (TaskCanceledException ex)
+            {
+                return StatusCode(408, new
+                {
+                    Message = "Request timeout",
+                    Error = ex.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Internal server error",
+                    Error = ex.Message
+                });
+            }
         }
 
     }

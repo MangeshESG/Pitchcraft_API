@@ -188,6 +188,11 @@ builder.Services.AddScoped<IOAuthRepository, OAuthRepository>();
 builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
 builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
 
+builder.Services.Configure<DeepSeekSettings>(
+    builder.Configuration.GetSection("DeepSeekSettings"));
+
+builder.Services.AddHttpClient<DeepSeekPitchService>();
+
 
 builder.Services.AddSingleton<JwtService>();
 
