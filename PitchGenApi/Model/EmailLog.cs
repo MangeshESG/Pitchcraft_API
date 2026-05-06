@@ -12,6 +12,7 @@
     public string Body { get; set; }
 
     public bool IsSuccess { get; set; }
+    public bool IsDeleted { get; set; }
 
     public string? ErrorMessage { get; set; }
     public string? SenderEmailId { get; set; }

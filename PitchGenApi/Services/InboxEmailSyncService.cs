@@ -480,6 +480,14 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 string subject = msg.subject;
                 string from = msg.from?.emailAddress?.address;
 
+                // Skip our own sent mails
+                if (!string.IsNullOrWhiteSpace(from) &&
+                    from.Equals(tokenData.Email, StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine(" Own mail skipped");
+                    continue;
+                }
+
                 // =========================
                 // 🔥 FIXED HEADER PARSE (NO LAMBDA)
                 // =========================

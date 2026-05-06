@@ -238,4 +238,16 @@ public class InboxController : ControllerBase
             });
         }
     }
+
+    [HttpPost("delete-conversation")]
+    public async Task<IActionResult> DeleteConversation(DeleteConversationDto dto)
+    {
+        var result = await _repo.DeleteConversationAsync(dto);
+
+        return Ok(new
+        {
+            success = true,
+            message = result
+        });
+    }
 }

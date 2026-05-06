@@ -336,7 +336,7 @@ public class InboxRepository : IInboxRepository
         // SENT EMAILS
         // =========================
         var sentEmails = await _context.EmailLogs
-            .Where(x => x.outboxid == outboxId && x.IsSuccess)
+            .Where(x => x.outboxid == outboxId && x.IsSuccess && x.IsDeleted == false)
             .ToListAsync();
 
         var messageIds = sentEmails
@@ -353,11 +353,15 @@ public class InboxRepository : IInboxRepository
         // REPLIES
         // =========================
         var replies = await _context.EmailReplies
-            .Where(er =>
-                (er.TrackingId != null && trackingIds.Contains(er.TrackingId))
-                || (er.InReplyTo != null && messageIds.Contains(er.InReplyTo))
-            )
-            .ToListAsync();
+             .Where(er =>
+                 (
+                     (er.TrackingId != null && trackingIds.Contains(er.TrackingId))
+                     ||
+                     (er.InReplyTo != null && messageIds.Contains(er.InReplyTo))
+                 )
+                 && er.IsDeleted == false
+             )
+             .ToListAsync();
 
         // =========================
         // CONTACT MAP
@@ -460,5 +464,34 @@ public class InboxRepository : IInboxRepository
             "AUTO" => SecureSocketOptions.Auto,
             _ => SecureSocketOptions.Auto
         };
+    }
+
+    public async Task<string> DeleteConversationAsync(DeleteConversationDto dto)
+    {
+        var logs = await _context.EmailLogs
+            .Where(x => x.TrackingId == dto.TrackingId && x.ClientId == dto.clientid)
+            .ToListAsync();
+
+        var replies = await _context.EmailReplies
+            .Where(x => x.TrackingId == dto.TrackingId && x.ClientId == dto.clientid)
+            .ToListAsync();
+
+        if (!logs.Any() && !replies.Any())
+            return "Conversation not found";
+
+        if (dto.DeleteMode.Equals("Permanent", StringComparison.OrdinalIgnoreCase))
+        {
+            _context.EmailLogs.RemoveRange(logs);
+            _context.EmailReplies.RemoveRange(replies);
+        }
+        else
+        {
+            logs.ForEach(x => x.IsDeleted = true);
+            replies.ForEach(x => x.IsDeleted = true);
+        }
+
+        await _context.SaveChangesAsync();
+
+        return $"Deleted successfully (Logs={logs.Count}, Replies={replies.Count})";
     }
 }
