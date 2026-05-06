@@ -491,7 +491,6 @@ public class EmailSendingHelper
         var user = await _context.ClientDetails
             .FirstOrDefaultAsync(x => x.Id == clientId);
 
-        // Outlook token
         var tokenData = await GetValidOutlookTokenAsync(OutBoxId);
 
         if (tokenData == null)
@@ -509,7 +508,6 @@ public class EmailSendingHelper
 
             string finalEmailBody = EmailDetails.email_body;
 
-            // Follow up
             if (isFollowUp)
             {
                 string oldThread = await _repository.BuildEmailThreadAsync(
@@ -521,12 +519,10 @@ public class EmailSendingHelper
                 finalEmailBody = $"{EmailDetails.email_body}{oldThread}";
             }
 
-            // Inbox tracking
             finalEmailBody = EmailTrackingHelper.InjectinboxTracking(
                 finalEmailBody,
                 trackingId);
 
-            // Click tracking + pixel
             if (user?.IsTracking == true)
             {
                 finalEmailBody = EmailTrackingHelper.InjectClickTracking(
@@ -536,88 +532,36 @@ public class EmailSendingHelper
                 finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
             }
 
-            // =========================
-            // BUILD MESSAGE
-            // =========================
-            object message;
-
-            if (!string.IsNullOrWhiteSpace(BccEmail))
+            var message = new
             {
-                message = new
+                subject = EmailDetails.email_subject,
+
+                body = new
                 {
-                    subject = EmailDetails.email_subject,
-
-                    body = new
-                    {
-                        contentType = "HTML",
-                        content = finalEmailBody
-                    },
-
-                    toRecipients = new[]
-                    {
-                    new
-                    {
-                        emailAddress = new
-                        {
-                            address = EmailDetails.email
-                        }
-                    }
+                    contentType = "HTML",
+                    content = finalEmailBody
                 },
 
-                    bccRecipients = new[]
+                toRecipients = new[]
+                {
+                new
+                {
+                    emailAddress = new
                     {
-                    new
-                    {
-                        emailAddress = new
-                        {
-                            address = BccEmail
-                        }
-                    }
-                },
-
-                    internetMessageHeaders = new[]
-                    {
-                    new
-                    {
-                        name = "X-Tracking-Id",
-                        value = trackingId
+                        address = EmailDetails.email
                     }
                 }
-                };
-            }
-            else
-            {
-                message = new
+            },
+
+                internetMessageHeaders = new[]
                 {
-                    subject = EmailDetails.email_subject,
-
-                    body = new
-                    {
-                        contentType = "HTML",
-                        content = finalEmailBody
-                    },
-
-                    toRecipients = new[]
-                    {
-                    new
-                    {
-                        emailAddress = new
-                        {
-                            address = EmailDetails.email
-                        }
-                    }
-                },
-
-                    internetMessageHeaders = new[]
-                    {
-                    new
-                    {
-                        name = "X-Tracking-Id",
-                        value = trackingId
-                    }
+                new
+                {
+                    name = "X-Tracking-Id",
+                    value = trackingId
                 }
-                };
             }
+            };
 
             using var client = new HttpClient();
             client.DefaultRequestHeaders.Authorization =
@@ -625,9 +569,7 @@ public class EmailSendingHelper
                     "Bearer",
                     tokenData.AccessToken);
 
-            // =========================
-            // STEP 1: CREATE DRAFT
-            // =========================
+            // CREATE DRAFT
             var createResponse = await client.PostAsJsonAsync(
                 "https://graph.microsoft.com/v1.0/me/messages",
                 message);
@@ -640,16 +582,18 @@ public class EmailSendingHelper
             dynamic createdMail =
                 Newtonsoft.Json.JsonConvert.DeserializeObject(createResult);
 
-            string graphMessageId = createdMail.id;
+            string graphMessageId = createdMail?.id?.ToString();
+            string internetMessageId = createdMail?.internetMessageId?.ToString();
 
             if (string.IsNullOrWhiteSpace(graphMessageId))
-                throw new Exception("Outlook MessageId not returned");
+                throw new Exception("Outlook draft id not returned");
 
-            // =========================
-            // STEP 2: SEND DRAFT
-            // =========================
+            if (string.IsNullOrWhiteSpace(internetMessageId))
+                throw new Exception("internetMessageId not returned");
+
+            // SEND
             var sendResponse = await client.PostAsync(
-                $"https://graph.microsoft.com/v1.0/me/messages/{graphMessageId}/send",
+                $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(graphMessageId)}/send",
                 null);
 
             var sendResult = await sendResponse.Content.ReadAsStringAsync();
@@ -657,9 +601,7 @@ public class EmailSendingHelper
             if (!sendResponse.IsSuccessStatusCode)
                 throw new Exception(sendResult);
 
-            // =========================
-            // SAVE LOG
-            // =========================
+            // SAVE
             _context.EmailLogs.Add(new EmailLog
             {
                 ClientId = clientId,
@@ -680,8 +622,11 @@ public class EmailSendingHelper
                 SentAt = DateTime.UtcNow,
                 TrackingId = Guid.Parse(trackingId),
 
-                // 🔥 REAL GRAPH MESSAGE ID
-                MessageId = graphMessageId,
+                // IMPORTANT
+                MessageId = internetMessageId,
+
+                // optional
+                ThreadId = graphMessageId,
 
                 process_name = "Single"
             });

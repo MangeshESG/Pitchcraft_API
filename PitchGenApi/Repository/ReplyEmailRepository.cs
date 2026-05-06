@@ -365,12 +365,7 @@ namespace PitchGenApi.Repository
             }
         }
 
-        public async Task<EmailSendResult> ReplyEmailUsingOutlookApi(
-    Guid trackingid,
-    int clientId,
-    string replyBody,
-    int outboxId,
-    string BccEmail = "")
+        public async Task<EmailSendResult> ReplyEmailUsingOutlookApi(Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
         {
             var user = await _context.ClientDetails
                 .FirstOrDefaultAsync(x => x.Id == clientId);
@@ -386,16 +381,10 @@ namespace PitchGenApi.Repository
                 };
             }
 
-            // Last sent mail
+            // Latest mail from OUR system for this tracking
             var lastSent = await _context.EmailLogs
-                .Where(x => x.TrackingId == trackingid)
+                .Where(x => x.TrackingId == trackingid && x.Provider == "Outlook")
                 .OrderByDescending(x => x.SentAt)
-                .FirstOrDefaultAsync();
-
-            // Last reply
-            var lastReply = await _context.EmailReplies
-                .Where(x => x.TrackingId == trackingid)
-                .OrderByDescending(x => x.Date)
                 .FirstOrDefaultAsync();
 
             if (lastSent == null)
@@ -407,26 +396,15 @@ namespace PitchGenApi.Repository
                 };
             }
 
-            // Latest message id in thread
-            string lastMessageId;
+            // This is now internetMessageId (<....@....>)
+            var internetMessageId = lastSent.MessageId;
 
-            if (lastReply != null)
-            {
-                lastMessageId = lastReply.Date > lastSent.SentAt
-                    ? lastReply.MessageId
-                    : lastSent.MessageId;
-            }
-            else
-            {
-                lastMessageId = lastSent.MessageId;
-            }
-
-            if (string.IsNullOrWhiteSpace(lastMessageId))
+            if (string.IsNullOrWhiteSpace(internetMessageId))
             {
                 return new EmailSendResult
                 {
                     Success = false,
-                    Message = "Thread MessageId not found"
+                    Message = "MessageId missing"
                 };
             }
 
@@ -434,7 +412,6 @@ namespace PitchGenApi.Repository
             {
                 string finalBody = replyBody;
 
-                // Tracking
                 if (user?.IsTracking == true)
                 {
                     finalBody = EmailTrackingHelper.InjectClickTracking(
@@ -449,78 +426,48 @@ namespace PitchGenApi.Repository
                     finalBody,
                     trackingid.ToString());
 
-                // =========================
-                // Build payload
-                // =========================
-                object payload;
-
-                if (!string.IsNullOrWhiteSpace(BccEmail))
-                {
-                    payload = new
-                    {
-                        message = new
-                        {
-                            body = new
-                            {
-                                contentType = "HTML",
-                                content = finalBody
-                            },
-
-                            bccRecipients = new[]
-                            {
-                        new
-                        {
-                            emailAddress = new
-                            {
-                                address = BccEmail
-                            }
-                        }
-                    },
-
-                            internetMessageHeaders = new[]
-                            {
-                        new
-                        {
-                            name = "X-Tracking-Id",
-                            value = trackingid.ToString()
-                        }
-                    }
-                        }
-                    };
-                }
-                else
-                {
-                    payload = new
-                    {
-                        message = new
-                        {
-                            body = new
-                            {
-                                contentType = "HTML",
-                                content = finalBody
-                            },
-
-                            internetMessageHeaders = new[]
-                            {
-                        new
-                        {
-                            name = "X-Tracking-Id",
-                            value = trackingid.ToString()
-                        }
-                    }
-                        }
-                    };
-                }
-
                 using var client = new HttpClient();
                 client.DefaultRequestHeaders.Authorization =
                     new AuthenticationHeaderValue(
                         "Bearer",
                         tokenData.AccessToken);
 
-                // SAME THREAD reply
+                // STEP 1: Find CURRENT Graph Id from internetMessageId
+                var encodedMsgId = internetMessageId.Replace("'", "''");
+
+                var findResponse = await client.GetAsync(
+                    $"https://graph.microsoft.com/v1.0/me/messages?$filter=internetMessageId eq '{encodedMsgId}'");
+
+                var findJson = await findResponse.Content.ReadAsStringAsync();
+
+                if (!findResponse.IsSuccessStatusCode)
+                    throw new Exception(findJson);
+
+                dynamic found =
+                    Newtonsoft.Json.JsonConvert.DeserializeObject(findJson);
+
+                string graphId = found?.value?[0]?.id?.ToString();
+
+                if (string.IsNullOrWhiteSpace(graphId))
+                    throw new Exception("Current Outlook message not found");
+
+                // STEP 2: Reply
+                var payload = new
+                {
+                    message = new
+                    {
+                        body = new
+                        {
+                            contentType = "HTML",
+                            content = finalBody
+                        }
+                    }
+                };
+
+                var safeId = Uri.EscapeDataString(graphId);
+
                 var response = await client.PostAsJsonAsync(
-                    $"https://graph.microsoft.com/v1.0/me/messages/{lastMessageId}/reply",
+                    $"https://graph.microsoft.com/v1.0/me/messages/{safeId}/reply",
                     payload);
 
                 var result = await response.Content.ReadAsStringAsync();
@@ -528,9 +475,7 @@ namespace PitchGenApi.Repository
                 if (!response.IsSuccessStatusCode)
                     throw new Exception(result);
 
-                // Save log
-                string newMessageId = MimeKit.Utils.MimeUtils.GenerateMessageId();
-
+                // SAVE LOG
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
@@ -546,7 +491,10 @@ namespace PitchGenApi.Repository
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
                     TrackingId = trackingid,
-                    MessageId = newMessageId,
+
+                    // keep same stable id
+                    MessageId = internetMessageId,
+
                     ThreadId = lastSent.ThreadId,
                     process_name = "ThreadReply"
                 });

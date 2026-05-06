@@ -142,7 +142,10 @@ namespace PitchGenApi.Repository
             var cfg = _config.GetSection("MicrosoftOAuth");
 
             var scope = Uri.EscapeDataString(
-                "openid email offline_access https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send"
+                "openid email offline_access " +
+                "https://graph.microsoft.com/User.Read " +
+                "https://graph.microsoft.com/Mail.ReadWrite " +
+                "https://graph.microsoft.com/Mail.Send"
             );
 
             var url =
@@ -152,6 +155,7 @@ namespace PitchGenApi.Repository
                 $"&redirect_uri={Uri.EscapeDataString(cfg["RedirectUri"])}" +
                 $"&response_mode=query" +
                 $"&scope={scope}" +
+                $"&prompt=consent" + // force new consent
                 $"&state={clientId}|{senderName}";
 
             return Task.FromResult(url);
