@@ -19,6 +19,7 @@ namespace PitchGenApi.Interfaces
         Task<bool> MarkEmailAsReadAsync(string replyId);
         Task<List<EmailThreadDto>> GetInboxThreads(int inboxId, string Provider);
         SecureSocketOptions GetSecureOption(string encryption);
+        Task<string> DeleteConversationAsync(DeleteConversationDto dto);
 
 
     }
