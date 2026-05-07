@@ -8,6 +8,7 @@ using PitchGenApi.Interfaces;
 using MimeKit;
 using Newtonsoft.Json;
 using System.Net.Http.Headers;
+using System.Text;
 
 namespace PitchGenApi.Repository
 {
@@ -25,139 +26,172 @@ namespace PitchGenApi.Repository
         }
         public async Task<EmailSendResult> ReplyEmailUsingSmtp( Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
         {
-            var inbox = await _context.Inboxcredentials
-                .FirstOrDefaultAsync(x => x.Id == outboxId && x.ClientId == clientId);
-
-            var smtpCredential = await _context.SmtpCredentials
-                .FirstOrDefaultAsync(x => x.Id == inbox.Outboxid);
-
-            var user = await _context.ClientDetails
-                .FirstOrDefaultAsync(x => x.Id == clientId);
-
-            // 🔥 STEP 1: get latest message from BOTH tables
-            var lastSent = await _context.EmailLogs
-                .Where(x => x.TrackingId == trackingid)
-                .OrderByDescending(x => x.SentAt)
-                .FirstOrDefaultAsync();
-
-            var lastReply = await _context.EmailReplies
-                .Where(x => x.TrackingId == trackingid)
-                .OrderByDescending(x => x.Date)
-                .FirstOrDefaultAsync();
-
-            // 🔥 choose latest message (VERY IMPORTANT)
-            string lastMessageId = null;
-
-            if (lastReply != null && lastSent != null)
-            {
-                lastMessageId = lastReply.Date > lastSent.SentAt
-                    ? lastReply.MessageId
-                    : lastSent.MessageId;
-            }
-            else if (lastReply != null)
-            {
-                lastMessageId = lastReply.MessageId;
-            }
-            else if (lastSent != null)
-            {
-                lastMessageId = lastSent.MessageId;
-            }
-
-            string newMessageId = MimeUtils.GenerateMessageId();
-
             try
             {
-                using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
+                var inbox = await _context.Inboxcredentials
+                    .FirstOrDefaultAsync(x =>
+                        x.Id == outboxId &&
+                        x.ClientId == clientId);
 
-                var socketOption = _inboxRepository.GetSecureOption(smtpCredential.SecurityType);
+                if (inbox == null)
+                    return new EmailSendResult { Success = false, Message = "Inbox not found" };
+
+                var smtpCredential = await _context.SmtpCredentials
+                    .FirstOrDefaultAsync(x => x.Id == inbox.Outboxid);
+
+                if (smtpCredential == null)
+                    return new EmailSendResult { Success = false, Message = "SMTP credential not found" };
+
+                var user = await _context.ClientDetails
+                    .FirstOrDefaultAsync(x => x.Id == clientId);
+
+                var firstSent = await _context.EmailLogs
+                    .Where(x => x.TrackingId == trackingid)
+                    .OrderBy(x => x.SentAt)
+                    .FirstOrDefaultAsync();
+
+                if (firstSent == null)
+                    return new EmailSendResult { Success = false, Message = "Original email not found" };
+
+                var lastSent = await _context.EmailLogs
+                    .Where(x => x.TrackingId == trackingid)
+                    .OrderByDescending(x => x.SentAt)
+                    .FirstOrDefaultAsync();
+
+                var lastReply = await _context.EmailReplies
+                    .Where(x => x.TrackingId == trackingid && !string.IsNullOrEmpty(x.ThreadId))
+                    .OrderByDescending(x => x.Date)
+                    .FirstOrDefaultAsync();
+
+                // =========================
+                // 🔥 FIXED CORE LOGIC
+                // =========================
+                var latestMessageId =
+                    lastReply?.MessageId ??
+                    lastSent?.MessageId ??
+                    firstSent.MessageId;
+
+                var replyToEmail =
+                    lastReply?.FromEmail != null
+                        ? MailboxAddress.Parse(lastReply.FromEmail).Address
+                        : lastSent.ToEmail;
+
+                var threadSubject = (lastReply?.Subject ?? lastSent?.Subject ?? "Re:").Trim();
+
+                if (!threadSubject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase))
+                    threadSubject = "Re: " + threadSubject;
+
+                // =========================
+                // References chain (safe)
+                // =========================
+                var references = await _context.EmailLogs
+                    .Where(x => x.TrackingId == trackingid && !string.IsNullOrEmpty(x.MessageId))
+                    .Select(x => x.MessageId)
+                    .ToListAsync();
+
+                references.AddRange(await _context.EmailReplies
+                    .Where(x => x.TrackingId == trackingid && !string.IsNullOrEmpty(x.MessageId))
+                    .Select(x => x.MessageId)
+                    .ToListAsync());
+
+                references = references.Distinct().ToList();
+
+                var normalizedRefs = references
+                    .Select(x =>
+                    {
+                        x = x.Trim();
+                        if (!x.StartsWith("<")) x = "<" + x;
+                        if (!x.EndsWith(">")) x += ">";
+                        return x;
+                    })
+                    .ToList();
+
+                string finalBody = replyBody;
+
+                if (user?.IsTracking == true)
+                {
+                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, trackingid.ToString());
+                    finalBody += EmailTrackingHelper.GetPixelTag(trackingid.ToString());
+                }
+
+                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, trackingid.ToString());
+
+                var mail = new MimeMessage();
+
+                mail.From.Add(new MailboxAddress(smtpCredential.SenderName, smtpCredential.FromEmail));
+                mail.To.Add(MailboxAddress.Parse(replyToEmail));
+
+                if (!string.IsNullOrWhiteSpace(BccEmail))
+                    mail.Bcc.Add(MailboxAddress.Parse(BccEmail));
+
+                mail.Subject = threadSubject;
+                var newMessageId = $"<{MimeKit.Utils.MimeUtils.GenerateMessageId().Trim('<', '>')}>"; // normalized
+                mail.Headers.Replace(HeaderId.MessageId, newMessageId);
+                var threadIndex = firstSent.ThreadId;
+
+                if (!string.IsNullOrEmpty(threadIndex))
+                {
+                    try
+                    {
+                        // Outlook Desktop requires Thread-Index to be parent bytes + 5 child bytes
+                        byte[] parentBytes = Convert.FromBase64String(threadIndex.PadRight(
+                            threadIndex.Length + (4 - threadIndex.Length % 4) % 4, '='));
+                        byte[] childBytes = new byte[parentBytes.Length + 5];
+                        Array.Copy(parentBytes, childBytes, parentBytes.Length);
+                        new Random().NextBytes(new Span<byte>(childBytes, parentBytes.Length, 5));
+                        mail.Headers.Add("Thread-Index", Convert.ToBase64String(childBytes));
+                    }
+                    catch
+                    {
+                        mail.Headers.Add("Thread-Index", threadIndex);
+                    }
+                    mail.Headers.Add("Thread-Topic", threadSubject.Replace("Re: ", "").Replace("RE: ", "").Trim());
+                }
+
+                // 🔥 IMPORTANT THREADING FIX
+                if (!string.IsNullOrEmpty(latestMessageId))
+                {
+                    var normalizedLatest = latestMessageId.Trim();
+                    if (!normalizedLatest.StartsWith("<")) normalizedLatest = "<" + normalizedLatest;
+                    if (!normalizedLatest.EndsWith(">")) normalizedLatest += ">";
+
+                    mail.InReplyTo = normalizedLatest;
+
+                    normalizedRefs.RemoveAll(x => x == normalizedLatest);
+                    normalizedRefs.Add(normalizedLatest);
+                }
+
+                normalizedRefs = normalizedRefs.Where(x => !string.IsNullOrEmpty(x)).ToList();
+                mail.Headers.Replace(HeaderId.References, string.Join(" ", normalizedRefs));
+
+
+                mail.Body = new BodyBuilder { HtmlBody = finalBody }.ToMessageBody();
+
+                using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
 
                 await smtpClient.ConnectAsync(
                     smtpCredential.Server,
                     smtpCredential.Port,
-                    socketOption);
+                    _inboxRepository.GetSecureOption(smtpCredential.SecurityType));
 
                 await smtpClient.AuthenticateAsync(
                     smtpCredential.Username,
                     smtpCredential.Password);
-
-                string finalBody = replyBody;
-
-                // tracking
-                if (user.IsTracking)
-                {
-                    finalBody = EmailTrackingHelper.InjectClickTracking(
-                        finalBody,
-                        trackingid.ToString());
-
-                    finalBody += EmailTrackingHelper.GetPixelTag(
-                        trackingid.ToString());
-                }
-
-                finalBody = EmailTrackingHelper.InjectinboxTracking(
-                    finalBody,
-                    trackingid.ToString());
-
-                // 🔥 MIME MESSAGE
-                var mail = new MimeMessage();
-
-                mail.From.Add(
-                    new MailboxAddress(
-                        smtpCredential.SenderName,
-                        smtpCredential.FromEmail));
-
-                mail.To.Add(
-                    MailboxAddress.Parse(lastSent.ToEmail));
-
-                mail.Subject =
-                    lastSent?.Subject?.StartsWith("Re:") == true
-                        ? lastSent.Subject
-                        : "Re: " + lastSent?.Subject;
-
-                // NEW MESSAGE ID
-                mail.MessageId = newMessageId;
-
-                // THREADING FIX
-                if (!string.IsNullOrWhiteSpace(lastMessageId))
-                {
-                    mail.InReplyTo = lastMessageId;
-
-                    var allMessageIds = await _context.EmailLogs
-                        .Where(x => x.TrackingId == trackingid)
-                        .Select(x => x.MessageId)
-                        .Where(x => !string.IsNullOrEmpty(x))
-                        .ToListAsync();
-
-                    var replyIds = await _context.EmailReplies
-                        .Where(x => x.TrackingId == trackingid)
-                        .Select(x => x.MessageId)
-                        .Where(x => !string.IsNullOrEmpty(x))
-                        .ToListAsync();
-
-                    foreach (var id in allMessageIds.Concat(replyIds).Distinct())
-                    {
-                        mail.References.Add(id);
-                    }
-                }
-
-                mail.Body = new BodyBuilder
-                {
-                    HtmlBody = finalBody
-                }.ToMessageBody();
+                Console.WriteLine("latestMessageId = " + latestMessageId);
+                Console.WriteLine("Generated MessageId = " + newMessageId);
+                Console.WriteLine("Thread-Index = " + threadIndex);
 
                 await smtpClient.SendAsync(mail);
+                await smtpClient.DisconnectAsync(true);
 
-                if (smtpClient.IsConnected)
-                    await smtpClient.DisconnectAsync(true);
-
-                // SAVE LOG
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
-                    ContactId = lastSent.ContactId,
-                    CampaignId = lastSent.CampaignId,
-                    BlueprintId = lastSent.BlueprintId,
-                    SegmentId = lastSent.SegmentId,
-                    ToEmail = lastSent.ToEmail,
+                    ContactId = firstSent.ContactId,
+                    CampaignId = firstSent.CampaignId,
+                    BlueprintId = firstSent.BlueprintId,
+                    SegmentId = firstSent.SegmentId,
+                    ToEmail = replyToEmail,
                     Subject = mail.Subject,
                     Body = replyBody,
                     SenderEmailId = smtpCredential.FromEmail,
@@ -168,6 +202,7 @@ namespace PitchGenApi.Repository
                     SentAt = DateTime.UtcNow,
                     TrackingId = trackingid,
                     MessageId = newMessageId,
+                    ThreadId = threadIndex,
                     process_name = "ThreadReply"
                 });
 
@@ -176,7 +211,7 @@ namespace PitchGenApi.Repository
                 return new EmailSendResult
                 {
                     Success = true,
-                    Message = "Reply sent in SAME conversation ✅"
+                    Message = "Reply sent in SAME thread successfully ✅"
                 };
             }
             catch (Exception ex)

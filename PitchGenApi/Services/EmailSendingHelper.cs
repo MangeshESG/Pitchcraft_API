@@ -118,8 +118,10 @@ public class EmailSendingHelper
             //}
             string trackingId = Guid.NewGuid().ToString();
 
-            string messageId = MimeUtils.GenerateMessageId();
+            string rawMessageId = MimeUtils.GenerateMessageId();
+            string messageId = $"<{rawMessageId.Trim('<', '>')}>"; // normalize with <>
 
+            string threadIndex = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
 
             var socketOption = _inboxRepository.GetSecureOption(smtpCredential.SecurityType);
 
@@ -181,10 +183,11 @@ public class EmailSendingHelper
                 toMessage.To.Add(MailboxAddress.Parse(EmailDetails.email));
                 toMessage.Subject = EmailDetails.email_subject;
 
-                // same MessageId jayega
-                toMessage.MessageId = messageId;
+                toMessage.Headers.Replace(HeaderId.MessageId, messageId); // keep <> brackets
 
-                // same body jayegi
+                toMessage.Headers.Add("Thread-Index", threadIndex);
+                toMessage.Headers.Add("Thread-Topic", toMessage.Subject);
+
                 toMessage.Body = new BodyBuilder
                 {
                     HtmlBody = finalEmailBody
@@ -213,7 +216,8 @@ public class EmailSendingHelper
                     SentAt = DateTime.UtcNow,
                     TrackingId = Guid.Parse(trackingId),
                     MessageId = messageId,
-                    process_name = "Single"
+                    process_name = "Single",
+                    ThreadId = threadIndex
                 });
             }
 
