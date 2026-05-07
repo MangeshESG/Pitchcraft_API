@@ -21,23 +21,46 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         _emailSending = emailSending;
         _inboxRepository = inboxRepository;
     }
-    
+
+    private string NormalizeMessageId(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        value = value.Trim();
+
+        // remove duplicate brackets/spaces
+        value = value.Replace("<", "").Replace(">", "").Trim();
+
+        return $"<{value}>";
+    }
+
     public async Task SyncEmailsAsync(Inboxcredentials setting)
     {
         Console.WriteLine($"\n🚀 Starting sync for: {setting.Username}");
 
         using var client = new ImapClient();
-        var option = _inboxRepository.GetSecureOption(setting.encryption);
 
+        var option =
+            _inboxRepository.GetSecureOption(setting.encryption);
 
-        await client.ConnectAsync(setting.Host, setting.Port, option);
+        await client.ConnectAsync(
+            setting.Host,
+            setting.Port,
+            option);
+
         Console.WriteLine("🔌 Connected to IMAP");
 
-        await client.AuthenticateAsync(setting.Username, setting.Password);
+        await client.AuthenticateAsync(
+            setting.Username,
+            setting.Password);
+
         Console.WriteLine("🔐 Authenticated");
 
         var inbox = client.Inbox;
+
         await inbox.OpenAsync(FolderAccess.ReadOnly);
+
         Console.WriteLine("📂 Inbox opened");
 
         var uids = await inbox.SearchAsync(SearchQuery.All);
@@ -62,21 +85,31 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
             Console.WriteLine($"📧 Subject: {msg.Subject}");
 
-            // 🔥 PROVIDER DETECTION START
+            // =========================================
+            // PROVIDER DETECTION
+            // =========================================
+
             string provider = "Unknown";
 
-            // 1. DKIM (best)
             var dkim = msg.Headers["DKIM-Signature"];
+
             if (!string.IsNullOrEmpty(dkim))
             {
-                if (dkim.Contains("google.com")) provider = "Gmail";
-                else if (dkim.Contains("outlook.com") || dkim.Contains("microsoft.com")) provider = "Outlook";
+                if (dkim.Contains("google.com"))
+                    provider = "Gmail";
+
+                else if (
+                    dkim.Contains("outlook.com") ||
+                    dkim.Contains("microsoft.com"))
+                {
+                    provider = "Outlook";
+                }
             }
 
-            // 2. Received headers
             if (provider == "Unknown")
             {
-                var receivedHeaders = msg.Headers.Where(h => h.Field == "Received");
+                var receivedHeaders =
+                    msg.Headers.Where(h => h.Field == "Received");
 
                 foreach (var h in receivedHeaders)
                 {
@@ -87,7 +120,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         provider = "Gmail";
                         break;
                     }
-                    else if (val.Contains("outlook.com") || val.Contains("microsoft.com"))
+
+                    if (
+                        val.Contains("outlook.com") ||
+                        val.Contains("microsoft.com"))
                     {
                         provider = "Outlook";
                         break;
@@ -95,128 +131,231 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 }
             }
 
-            // 3. Mailer
             if (provider == "Unknown")
             {
-                var mailer = msg.Headers["X-Mailer"] ?? msg.Headers["User-Agent"];
+                var mailer =
+                    msg.Headers["X-Mailer"] ??
+                    msg.Headers["User-Agent"];
 
                 if (!string.IsNullOrEmpty(mailer))
                 {
-                    if (mailer.Contains("Outlook")) provider = "Outlook";
-                    else if (mailer.Contains("Apple Mail")) provider = "Apple";
-                    else if (mailer.Contains("Gmail")) provider = "Gmail";
-                }
-            }
+                    if (mailer.Contains("Outlook"))
+                        provider = "Outlook";
 
-            // 4. Fallback (email)
-            if (provider == "Unknown")
-            {
-                var fromEmail = msg.From.Mailboxes.FirstOrDefault()?.Address?.ToLower();
+                    else if (mailer.Contains("Apple Mail"))
+                        provider = "Apple";
 
-                if (!string.IsNullOrEmpty(fromEmail))
-                {
-                    if (fromEmail.Contains("gmail.com")) provider = "Gmail";
-                    else if (fromEmail.Contains("outlook.com") || fromEmail.Contains("hotmail.com")) provider = "Outlook";
-                    else if (fromEmail.Contains("icloud.com")) provider = "Apple";
+                    else if (mailer.Contains("Gmail"))
+                        provider = "Gmail";
                 }
             }
 
             Console.WriteLine($"📡 Provider: {provider}");
-            string rawBody = "";
 
-             rawBody = msg.HtmlBody ?? msg.TextBody ?? "";
-            // 🔥 PROVIDER DETECTION END
+            // =========================================
+            // BODY
+            // =========================================
 
-            // 🔥 TRACKING ID
-            var trackingId = EmailTrackingHelper.ExtractinboxTrackingId(rawBody);
+            string rawBody =
+                msg.HtmlBody ??
+                msg.TextBody ??
+                "";
+
+            // =========================================
+            // TRACKING ID
+            // =========================================
+
+            var trackingId =
+                EmailTrackingHelper.ExtractinboxTrackingId(rawBody);
+
             Console.WriteLine($"🎯 TrackingId: {trackingId}");
 
-            // 🔥 CLEAN BODY
+            // =========================================
+            // CLEAN BODY
+            // =========================================
+
             var body = ExtractOnlyReply(rawBody);
 
-            var rawInReplyTo = msg.Headers["In-Reply-To"];
-            var rawReferences = msg.Headers["References"];
+            // =========================================
+            // NORMALIZED HEADERS
+            // =========================================
+
+            var normalizedMessageId =
+                NormalizeMessageId(msg.MessageId);
+
+            var normalizedInReplyTo =
+                NormalizeMessageId(
+                    msg.Headers["In-Reply-To"]);
+
+            var rawReferences =
+                msg.Headers["References"];
+            var threadIndex =
+                 msg.Headers["Thread-Index"];
+
+            Console.WriteLine($"🧵 THREAD-INDEX: {threadIndex}");
+            Console.WriteLine("=================================");
+            Console.WriteLine($"📨 MESSAGE-ID: {normalizedMessageId}");
+            Console.WriteLine($"↩️ IN-REPLY-TO: {normalizedInReplyTo}");
+            Console.WriteLine($"📚 REFERENCES: {rawReferences}");
+            Console.WriteLine("=================================");
+            var fromEmail = msg.From.Mailboxes.FirstOrDefault()?.Address;
+
+            // Skip own mails and our sent ThreadReplies
+            if (!string.IsNullOrWhiteSpace(fromEmail) &&
+                fromEmail.Equals(setting.EmailAddress, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("Own mail skipped");
+                continue;
+            }
+
+            // Skip if this is our own ThreadReply saved in EmailLogs
+            bool isOurReply = await _context.EmailLogs
+                .AnyAsync(x => x.MessageId == normalizedMessageId);
+
+            if (isOurReply)
+            {
+                Console.WriteLine("Our ThreadReply skipped");
+                continue;
+            }
+            // =========================================
+            // FIND ORIGINAL SENT MAIL
+            // =========================================
+
             EmailLog? sent = null;
 
-            // 🔥 MATCHING LOGIC (same as yours)
+            // -----------------------------------------
+            // 1. TRACKING ID MATCH
+            // -----------------------------------------
+
             if (trackingId != null)
             {
                 sent = await _context.EmailLogs
-                    .FirstOrDefaultAsync(x => x.TrackingId == trackingId);
+                    .FirstOrDefaultAsync(x =>
+                        x.TrackingId == trackingId);
 
                 if (sent != null)
-                    Console.WriteLine("🔥 Matched via TrackingId");
+                {
+                    Console.WriteLine(
+                        "🔥 Matched via TrackingId");
+                }
             }
 
-            if (sent == null && !string.IsNullOrEmpty(rawInReplyTo))
+            // -----------------------------------------
+            // 2. IN-REPLY-TO MATCH
+            // -----------------------------------------
+
+            if (sent == null &&
+                !string.IsNullOrWhiteSpace(normalizedInReplyTo))
             {
                 sent = await _context.EmailLogs
-                    .FirstOrDefaultAsync(x => x.MessageId == rawInReplyTo);
+                    .FirstOrDefaultAsync(x =>
+                        x.MessageId == normalizedInReplyTo);
 
                 if (sent != null)
-                    Console.WriteLine("✅ Matched via InReplyTo");
+                {
+                    Console.WriteLine(
+                        "✅ Matched via InReplyTo");
+                }
             }
 
-            if (sent == null && !string.IsNullOrEmpty(rawReferences))
+            // -----------------------------------------
+            // 3. REFERENCES MATCH
+            // -----------------------------------------
+
+            if (sent == null &&
+                !string.IsNullOrWhiteSpace(rawReferences))
             {
-                var refs = rawReferences.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                var refs = rawReferences
+                    .Split(' ',
+                        StringSplitOptions.RemoveEmptyEntries)
+                    .Select(x => NormalizeMessageId(x))
+                    .Distinct()
+                    .ToList();
 
                 foreach (var refId in refs)
                 {
                     sent = await _context.EmailLogs
-                        .FirstOrDefaultAsync(x => x.MessageId == refId);
+                        .FirstOrDefaultAsync(x =>
+                            x.MessageId == refId);
 
                     if (sent != null)
                     {
-                        Console.WriteLine("✅ Matched via References");
+                        Console.WriteLine(
+                            "✅ Matched via References");
+
                         break;
                     }
                 }
             }
 
-            if (sent == null)
-            {
-                var fromEmail = msg.From.Mailboxes.FirstOrDefault()?.Address?.ToLower();
-
-                sent = await _context.EmailLogs
-                    .Where(x => x.ToEmail.ToLower() == fromEmail)
-                    .OrderByDescending(x => x.SentAt)
-                    .FirstOrDefaultAsync();
-
-                if (sent != null)
-                    Console.WriteLine("✅ Matched via fallback email");
-            }
+            // =========================================
+            // IF NO MATCH
+            // =========================================
 
             if (sent == null)
             {
-                Console.WriteLine("❌ No match → Skipped");
+                Console.WriteLine(
+                    "❌ No thread match found → Skipped");
+
                 continue;
             }
 
-            bool exists = await _context.EmailReplies.AnyAsync(x =>
-            x.MessageId == msg.MessageId);
+            // =========================================
+            // DUPLICATE CHECK
+            // =========================================
+
+            bool exists = await _context.EmailReplies
+                .AnyAsync(x =>
+                    x.MessageId == normalizedMessageId ||
+                    x.MessageId == normalizedMessageId.Trim('<', '>'));
 
             if (exists)
             {
-                Console.WriteLine("⚠️ Already exists → Skipped");
+                Console.WriteLine(
+                    "⚠️ Already exists → Skipped");
+
                 continue;
             }
+
+            // =========================================
+            // SAVE REPLY
+            // =========================================
 
             _context.EmailReplies.Add(new EmailReplies
             {
                 ClientId = sent.ClientId,
+
                 ContactId = sent.ContactId,
+
                 CampaignId = sent.CampaignId,
-                MessageId = msg.MessageId,
-                InReplyTo = rawInReplyTo,
+
+                MessageId = normalizedMessageId,
+
+                InReplyTo = normalizedInReplyTo,
+
                 FromEmail = msg.From.ToString(),
+
                 Subject = msg.Subject,
+
                 Body = body,
-                TrackingId = trackingId ?? Guid.Empty,
-                Date = msg.Date.UtcDateTime
+
+                TrackingId =
+                    trackingId ??
+                    sent.TrackingId,
+
+                Date = msg.Date.UtcDateTime,
+
+                ThreadId =
+                    !string.IsNullOrWhiteSpace(threadIndex)
+                        ? threadIndex
+                        : (sent.ThreadId ?? sent.MessageId)
             });
 
-            Console.WriteLine("💾 Saved");
+            Console.WriteLine("💾 Reply Saved");
+
+            // =========================================
+            // UPDATE UID
+            // =========================================
 
             if (uid.Id > maxUid)
                 maxUid = uid.Id;
@@ -224,17 +363,22 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             if (maxUid > setting.LastUid)
             {
                 setting.LastUid = maxUid;
+
                 _context.Inboxcredentials.Update(setting);
-                Console.WriteLine($"📌 LastUid Updated → {maxUid}");
+
+                Console.WriteLine(
+                    $"📌 LastUid Updated → {maxUid}");
             }
+
             await _context.SaveChangesAsync();
+
             Console.WriteLine("✅ DB Saved");
         }
 
-        
-
         await client.DisconnectAsync(true);
-        Console.WriteLine($"🔌 Disconnected: {setting.Username}");
+
+        Console.WriteLine(
+            $"🔌 Disconnected: {setting.Username}");
     }
 
 
@@ -485,6 +629,17 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     from.Equals(tokenData.Email, StringComparison.OrdinalIgnoreCase))
                 {
                     Console.WriteLine(" Own mail skipped");
+                    continue;
+                }
+
+                // Skip if this is our own ThreadReply
+                bool isOurReply = await _context.EmailLogs
+                    .AnyAsync(x => x.MessageId == messageId ||
+                                   x.MessageId == $"<{messageId.Trim('<', '>')}>");
+
+                if (isOurReply)
+                {
+                    Console.WriteLine("Our ThreadReply skipped");
                     continue;
                 }
 
@@ -798,12 +953,12 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         {
             var quoteMatch = Regex.Match(
                 body,
-                @"<div[^>]*class=""[^""]*(gmail_quote|gmail_attr)[^""]*""[^>]*>" + // Gmail
-                @"|<blockquote[^>]*>" +                                            // generic
-                @"|<hr[^>]*id=""replySplit[^""]*""[^>]*>" +                         // Outlook
-                @"|<div[^>]*id=""appendonsend""[^>]*>" +                            // Outlook Web
-                @"|<div[^>]*border-top:\s*solid[^>]*>" +                            // Outlook Desktop
-                @"|<b>\s*From:\s*</b>",                                             // Outlook header
+                @"<div[^>]*class=""[^""]*(gmail_quote|gmail_attr)[^""]*""[^>]*>" +
+                @"|<blockquote[^>]*>" +
+                @"|<div[^>]*id=""appendonsend""[^>]*>" +
+                @"|<div[^>]*border-top:\s*solid[^>]*>" +
+                @"|<div[^>]*id=""divRplyFwdMsg""[^>]*>" +
+                @"|<b>\s*From:\s*</b>",
                 RegexOptions.IgnoreCase);
 
             if (quoteMatch.Success)
