@@ -491,6 +491,10 @@ namespace PitchGenApi.Repository
                 {
                     message = new
                     {
+                        toRecipients = new[]
+                        {
+                            new { emailAddress = new { address = lastSent.ToEmail } }
+                        },
                         body = new
                         {
                             contentType = "HTML",
