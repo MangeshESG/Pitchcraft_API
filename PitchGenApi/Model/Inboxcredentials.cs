@@ -24,6 +24,7 @@ namespace PitchGenApi.Model
         public int Port { get; set; }
 
         public bool UseSSL { get; set; } = true;
+        public bool FullInboxSync { get; set; } = true;
 
         [Required]
         public string Username { get; set; }

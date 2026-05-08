@@ -17,9 +17,9 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("Gmail_login")]
-        public async Task<IActionResult> GmailLogin(int clientId, string SenderName)
+        public async Task<IActionResult> GmailLogin(int clientId, string SenderName, bool FullInboxSync)
         {
-            var url = await _repo.GmailGetAuthUrlAsync(clientId, SenderName);
+            var url = await _repo.GmailGetAuthUrlAsync(clientId, SenderName, FullInboxSync);
             return Redirect(url);
         }
 
@@ -63,9 +63,10 @@ namespace PitchGenApi.Controllers
                 }
 
                 string senderName = parts.Length > 1 ? parts[1] : "";
+                bool fullInboxSync = parts.Length > 2 && bool.TryParse(parts[2], out bool fis) && fis;
 
                 // Call repository method to handle Gmail OAuth callback
-                var result = await _repo.GmailHandleCallbackAsync(code, clientId, senderName);
+                var result = await _repo.GmailHandleCallbackAsync(code, clientId, senderName, fullInboxSync);
 
                 // Check if Gmail is successfully connected
                 if (result.Contains("Connected"))
@@ -111,9 +112,9 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("Outlook_login")]
-        public async Task<IActionResult> Login(int clientId, string SenderName)
+        public async Task<IActionResult> Login(int clientId, string SenderName, bool FullInboxSync)
         {
-            var url = await _repo.OutlookGetAuthUrlAsync(clientId, SenderName);
+            var url = await _repo.OutlookGetAuthUrlAsync(clientId, SenderName, FullInboxSync);
             return Redirect(url);
         }
 
@@ -132,8 +133,9 @@ namespace PitchGenApi.Controllers
 
                 int clientId = int.Parse(parts[0]);
                 string senderName = parts.Length > 1 ? parts[1] : "";
+                bool fullInboxSync = parts.Length > 2 && bool.TryParse(parts[2], out bool fis) && fis;
 
-                var result = await _repo.OutlookHandleCallbackAsync(code, clientId, senderName);
+                var result = await _repo.OutlookHandleCallbackAsync(code, clientId, senderName, fullInboxSync);
 
                 // =========================
                 // ✅ SUCCESS

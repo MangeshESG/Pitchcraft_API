@@ -17,10 +17,10 @@ namespace PitchGenApi.Interfaces
         Task<List<EmailReplies>> GetRepliesByInboxIdAsync(int inboxId, string Provider);
         Task<List<InboxDropdownDto>> GetInboxPickListByClientIdAsync(int clientId);
         Task<bool> MarkEmailAsReadAsync(string replyId);
+        Task<bool> MarkEmailAsUnassignedReadAsync(string messageId);
         Task<List<EmailThreadDto>> GetInboxThreads(int inboxId, string Provider);
         SecureSocketOptions GetSecureOption(string encryption);
         Task<string> DeleteConversationAsync(DeleteConversationDto dto);
-
-
+        Task<List<InboxEmailDto>> GetInboxEmails(int clientId, int inboxId);
     }
 }

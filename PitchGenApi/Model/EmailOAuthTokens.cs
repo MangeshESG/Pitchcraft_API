@@ -12,6 +12,7 @@
         public string SenderName { get; set; }
         public DateTime ExpiryTime { get; set; }
         public DateTime? LastInboxSyncAt { get; set; }
+        public bool FullInboxSync { get; set; } = false;
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     }

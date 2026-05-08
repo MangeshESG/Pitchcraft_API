@@ -58,6 +58,7 @@ public class InboxController : ControllerBase
             Password = EncryptPassword(dto.Password),
             Outboxid = smtp.Id,
             encryption = dto.encryption,
+            FullInboxSync = dto.FullInboxSync,  
             //SyncIntervalMinutes = dto.SyncIntervalMinutes,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -241,6 +242,7 @@ public class InboxController : ControllerBase
 
     [HttpPost("delete-conversation")]
     public async Task<IActionResult> DeleteConversation(DeleteConversationDto dto)
+
     {
         var result = await _repo.DeleteConversationAsync(dto);
 
@@ -249,5 +251,28 @@ public class InboxController : ControllerBase
             success = true,
             message = result
         });
+    }
+
+    [HttpGet("get_unassigned_inbox")]
+    public async Task<IActionResult> GetInboxEmails(int clientId, int inboxId)
+    {
+        var data = await _repo.GetInboxEmails(clientId, inboxId);
+
+        return Ok(new
+        {
+            success = true,
+            count = data.Count,
+            data
+        });
+    }
+    [HttpPost("mark-unassigned-read")]
+    public async Task<IActionResult> MarkAsUnassignedRead([FromQuery] string id)
+    {
+        var result = await _repo.MarkEmailAsUnassignedReadAsync(id);
+
+        if (!result)
+            return NotFound(new { success = false, message = "Email not found" });
+
+        return Ok(new { success = true, message = "Marked as read" });
     }
 }

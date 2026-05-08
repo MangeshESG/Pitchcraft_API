@@ -17,11 +17,11 @@ namespace PitchGenApi.Repository
             _config = config;
         }
 
-        public Task<string> GmailGetAuthUrlAsync(int clientId, string SenderName)
+        public Task<string> GmailGetAuthUrlAsync(int clientId, string SenderName, bool FullInboxSync)
         {
             var cfg = _config.GetSection("GoogleOAuth");
 
-            var state = Uri.EscapeDataString($"{clientId}|{SenderName}");
+            var state = Uri.EscapeDataString($"{clientId}|{SenderName}|{FullInboxSync}");
 
             var scopes = new[]
             {
@@ -45,7 +45,7 @@ namespace PitchGenApi.Repository
             return Task.FromResult(url);
         }
 
-        public async Task<string> GmailHandleCallbackAsync(string code, int clientId, string SenderName)
+        public async Task<string> GmailHandleCallbackAsync(string code, int clientId, string SenderName, bool FullInboxSync)
         {
             var cfg = _config.GetSection("GoogleOAuth");
 
@@ -122,6 +122,7 @@ namespace PitchGenApi.Repository
                     AccessToken = accessToken,
                     RefreshToken = refreshToken,
                     SenderName = SenderName,
+                    FullInboxSync = FullInboxSync,
                     ExpiryTime = DateTime.UtcNow.AddSeconds(expiresIn)
                 });
             }
@@ -130,6 +131,7 @@ namespace PitchGenApi.Repository
                 existing.AccessToken = accessToken;
                 existing.RefreshToken = refreshToken ?? existing.RefreshToken;
                 existing.ExpiryTime = DateTime.UtcNow.AddSeconds(expiresIn);
+                existing.FullInboxSync = FullInboxSync;
             }
 
             await _context.SaveChangesAsync();
@@ -137,7 +139,7 @@ namespace PitchGenApi.Repository
             return "Connected";
         }
 
-        public Task<string> OutlookGetAuthUrlAsync(int clientId, string senderName)
+        public Task<string> OutlookGetAuthUrlAsync(int clientId, string senderName, bool FullInboxSync)
         {
             var cfg = _config.GetSection("MicrosoftOAuth");
 
@@ -155,13 +157,13 @@ namespace PitchGenApi.Repository
                 $"&redirect_uri={Uri.EscapeDataString(cfg["RedirectUri"])}" +
                 $"&response_mode=query" +
                 $"&scope={scope}" +
-                $"&prompt=consent" + // force new consent
-                $"&state={clientId}|{senderName}";
+                $"&prompt=consent" +
+                $"&state={clientId}|{senderName}|{FullInboxSync}";
 
             return Task.FromResult(url);
         }
 
-        public async Task<string> OutlookHandleCallbackAsync(string code, int clientId, string SenderName)
+        public async Task<string> OutlookHandleCallbackAsync(string code, int clientId, string SenderName, bool FullInboxSync)
         {
             
             var cfg = _config.GetSection("MicrosoftOAuth");
@@ -217,6 +219,7 @@ namespace PitchGenApi.Repository
                     AccessToken = accessToken,
                     RefreshToken = refreshToken,
                     SenderName = SenderName,
+                    FullInboxSync = FullInboxSync,
                     ExpiryTime = DateTime.UtcNow.AddSeconds(expiresIn),
                     CreatedAt = DateTime.UtcNow
                 });
@@ -226,6 +229,7 @@ namespace PitchGenApi.Repository
                 existing.AccessToken = accessToken;
                 existing.RefreshToken = refreshToken ?? existing.RefreshToken;
                 existing.ExpiryTime = DateTime.UtcNow.AddSeconds(expiresIn);
+                existing.FullInboxSync = FullInboxSync;
             }
 
             await _context.SaveChangesAsync();
