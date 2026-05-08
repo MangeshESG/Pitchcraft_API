@@ -242,6 +242,19 @@ public class InboxRepository : IInboxRepository
         await _context.SaveChangesAsync();
         return true;
     }
+    public async Task<bool> MarkEmailAsUnassignedReadAsync(string messageId)
+    {
+        var email = await _context.InboxEmails
+            .FirstOrDefaultAsync(x => x.MessageId == messageId);
+
+        if (email == null)
+            return false;
+
+        email.IsRead = true;
+
+        await _context.SaveChangesAsync();
+        return true;
+    }
 
     public async Task<string> BuildEmailThreadForInbox(int clientId, Guid trackingId)
     {
@@ -493,5 +506,29 @@ public class InboxRepository : IInboxRepository
         await _context.SaveChangesAsync();
 
         return $"Deleted successfully (Logs={logs.Count}, Replies={replies.Count})";
+    }
+    public async Task<List<InboxEmailDto>> GetInboxEmails(int clientId, int inboxId)
+    {
+        return await _context.InboxEmails
+            .AsNoTracking()
+            .Where(x =>
+                x.ClientId == clientId &&
+                x.InboxId == inboxId &&
+                !x.IsDeleted)
+            .OrderByDescending(x => x.Date)
+            .Select(x => new InboxEmailDto
+            {
+                Id = x.Id,
+                MessageId = x.MessageId,
+                InReplyTo = x.InReplyTo,
+                ThreadId = x.ThreadId,
+                FromEmail = x.FromEmail,
+                Subject = x.Subject,
+                Body = x.Body,
+                Date = x.Date,
+                IsRead = x.IsRead,
+                Provider = x.Provider
+            })
+            .ToListAsync();
     }
 }
