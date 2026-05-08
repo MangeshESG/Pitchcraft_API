@@ -483,70 +483,87 @@ public class ContactRepository
 
     public async Task<bool> BulkUpdateFieldAsync(BulkUpdateFieldDto dto)
     {
-        using var transaction = await _context.Database.BeginTransactionAsync();
+        var strategy = _context.Database.CreateExecutionStrategy();
 
-        try
+        return await strategy.ExecuteAsync(async () =>
         {
-            if (!dto.IsCustom)
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+
+            try
             {
-                // ✅ NORMAL FIELD UPDATE
-                var contacts = await _context.contacts
-                    .Where(x => dto.ContactIds.Contains(x.id))
-                    .ToListAsync();
-
-                foreach (var contact in contacts)
+                if (!dto.IsCustom)
                 {
-                    var prop = typeof(Contact).GetProperty(dto.FieldName);
+                    // ✅ NORMAL FIELD UPDATE
+                    var contacts = await _context.contacts
+                        .Where(x => dto.ContactIds.Contains(x.id))
+                        .ToListAsync();
 
-                    if (prop != null && prop.CanWrite)
+                    foreach (var contact in contacts)
                     {
-                        prop.SetValue(contact, Convert.ChangeType(dto.Value, prop.PropertyType));
+                        var prop = typeof(Contact).GetProperty(dto.FieldName);
+
+                        if (prop != null && prop.CanWrite)
+                        {
+                            var targetType = Nullable.GetUnderlyingType(prop.PropertyType)
+                                             ?? prop.PropertyType;
+
+                            var safeValue = dto.Value == null
+                                ? null
+                                : Convert.ChangeType(dto.Value, targetType);
+
+                            prop.SetValue(contact, safeValue);
+                        }
                     }
                 }
-            }
-            else
-            {
-                // ✅ CUSTOM FIELD UPDATE / CREATE
-                var existingValues = await _context.contact_custom_field_values
-                    .Where(x => dto.ContactIds.Contains(x.contact_id) && x.field_id == dto.FieldId)
-                    .ToListAsync();
-
-                var existingContactIds = existingValues.Select(x => x.contact_id).ToList();
-
-                // 🔁 UPDATE existing
-                foreach (var item in existingValues)
+                else
                 {
-                    item.value = dto.Value;
-                    item.created_at = DateTime.UtcNow;
-                }
+                    // ✅ CUSTOM FIELD UPDATE / CREATE
+                    var existingValues = await _context.contact_custom_field_values
+                        .Where(x =>
+                            dto.ContactIds.Contains(x.contact_id) &&
+                            x.field_id == dto.FieldId)
+                        .ToListAsync();
 
-                // ➕ CREATE missing
-                var missingContactIds = dto.ContactIds.Except(existingContactIds);
+                    var existingContactIds = existingValues
+                        .Select(x => x.contact_id)
+                        .ToHashSet();
 
-                foreach (var contactId in missingContactIds)
-                {
-                    _context.contact_custom_field_values.Add(new ContactCustomFieldValue
+                    // 🔁 UPDATE existing
+                    foreach (var item in existingValues)
                     {
-                        contact_id = contactId,
-                        field_id = dto.FieldId.Value,
-                        value = dto.Value,
-                        created_at = DateTime.UtcNow
-                    });
+                        item.value = dto.Value;
+                        item.created_at = DateTime.UtcNow;
+                    }
+
+                    // ➕ CREATE missing
+                    var missingContactIds = dto.ContactIds
+                        .Where(id => !existingContactIds.Contains(id));
+
+                    foreach (var contactId in missingContactIds)
+                    {
+                        _context.contact_custom_field_values.Add(
+                            new ContactCustomFieldValue
+                            {
+                                contact_id = contactId,
+                                field_id = dto.FieldId.Value,
+                                value = dto.Value,
+                                created_at = DateTime.UtcNow
+                            });
+                    }
                 }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return true;
             }
-
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-
-            return true;
-        }
-        catch
-        {
-            await transaction.RollbackAsync();
-            throw;
-        }
+            catch
+            {
+                await transaction.RollbackAsync();
+                throw;
+            }
+        });
     }
-
     //-------------------------------------------------------------------------------------private---------------------------------------------------------------------------------------------------------------
     private string? GetSourceName(EmailLog log)
     {

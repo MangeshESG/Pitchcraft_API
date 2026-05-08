@@ -122,48 +122,128 @@ namespace PitchGenApi.Controllers
         [HttpPost("custom-field-rename")]
         public async Task<IActionResult> UpdateCustomField([FromBody] UpdateCustomFieldDto dto)
         {
-            var field = await _context.crm_custom_fields.FindAsync(dto.Id);
+            var strategy = _context.Database.CreateExecutionStrategy();
 
-            if (field == null)
-                return NotFound("Field not found");
-
-            // Only check dropdown options
-            if (field.field_type == "dropdown" && !string.IsNullOrEmpty(field.options_json))
+            return await strategy.ExecuteAsync<IActionResult>(async () =>
             {
-                var oldOptions = System.Text.Json.JsonSerializer.Deserialize<List<string>>(field.options_json) ?? new List<string>();
-                var newOptions = System.Text.Json.JsonSerializer.Deserialize<List<string>>(dto.OptionsJson ?? "[]") ?? new List<string>();
+                await using var transaction = await _context.Database.BeginTransactionAsync();
 
-                // Find removed options
-                var removedOptions = oldOptions.Except(newOptions).ToList();
-
-                if (removedOptions.Any())
+                try
                 {
-                    // Check if removed options are used in contacts
-                    var usedOptions = await _context.contact_custom_field_values
-                        .Where(v => v.field_id == dto.Id && removedOptions.Contains(v.value))
-                        .Select(v => v.value)
-                        .Distinct()
-                        .ToListAsync();
+                    var field = await _context.crm_custom_fields.FindAsync(dto.Id);
 
-                    if (usedOptions.Any())
+                    if (field == null)
+                        return NotFound("Field not found");
+
+                    var oldOptions = new List<string>();
+                    var newOptions = new List<string>();
+
+                    if (field.field_type == "dropdown" && !string.IsNullOrWhiteSpace(field.options_json))
                     {
-                        return BadRequest(new
-                        {
-                            message = "Cannot delete option because it is used in contacts",
-                            usedOptions = usedOptions
-                        });
+                        oldOptions = JsonSerializer.Deserialize<List<string>>(field.options_json)
+                            ?? new List<string>();
                     }
+
+                    if (dto.FieldType == "dropdown" && !string.IsNullOrWhiteSpace(dto.OptionsJson))
+                    {
+                        newOptions = JsonSerializer.Deserialize<List<string>>(dto.OptionsJson)
+                            ?? new List<string>();
+                    }
+
+                    oldOptions = oldOptions
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Select(x => x.Trim())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    newOptions = newOptions
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Select(x => x.Trim())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    var optionRenames = dto.OptionRenames ?? new Dictionary<string, string>();
+
+                    if (field.field_type == "dropdown")
+                    {
+                        foreach (var rename in optionRenames)
+                        {
+                            var oldValue = rename.Key?.Trim();
+                            var newValue = rename.Value?.Trim();
+
+                            if (string.IsNullOrWhiteSpace(oldValue) || string.IsNullOrWhiteSpace(newValue))
+                                return BadRequest("Invalid dropdown rename value.");
+
+                            if (!oldOptions.Contains(oldValue, StringComparer.OrdinalIgnoreCase))
+                                return BadRequest($"Old option '{oldValue}' does not exist.");
+
+                            if (!newOptions.Contains(newValue, StringComparer.OrdinalIgnoreCase))
+                                return BadRequest($"New option '{newValue}' must exist in dropdown options.");
+
+                            var valuesToUpdate = await _context.contact_custom_field_values
+                                .Where(v => v.field_id == dto.Id && v.value == oldValue)
+                                .ToListAsync();
+
+                            foreach (var value in valuesToUpdate)
+                            {
+                                value.value = newValue;
+                            }
+                        }
+
+                        var renamedOldOptions = optionRenames.Keys
+                            .Where(x => !string.IsNullOrWhiteSpace(x))
+                            .Select(x => x.Trim())
+                            .ToList();
+
+                        var removedOptions = oldOptions
+                            .Where(oldOption =>
+                                !newOptions.Contains(oldOption, StringComparer.OrdinalIgnoreCase) &&
+                                !renamedOldOptions.Contains(oldOption, StringComparer.OrdinalIgnoreCase))
+                            .ToList();
+
+                        if (removedOptions.Any())
+                        {
+                            var usedOptions = await _context.contact_custom_field_values
+                                .Where(v => v.field_id == dto.Id && removedOptions.Contains(v.value))
+                                .Select(v => v.value)
+                                .Distinct()
+                                .ToListAsync();
+
+                            if (usedOptions.Any())
+                            {
+                                return BadRequest(new
+                                {
+                                    message = "Cannot delete option because it is used in contacts",
+                                    usedOptions
+                                });
+                            }
+                        }
+                    }
+
+                    field.field_name = dto.FieldName;
+                    field.field_type = dto.FieldType;
+                    field.options_json = dto.FieldType == "dropdown"
+                        ? JsonSerializer.Serialize(newOptions)
+                        : "[]";
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(field);
                 }
-            }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
 
-            field.field_name = dto.FieldName;
-            field.field_type = dto.FieldType;
-            field.options_json = dto.OptionsJson;
-
-            await _context.SaveChangesAsync();
-
-            return Ok(field);
+                    return BadRequest(new
+                    {
+                        message = "Failed to update custom field",
+                        error = ex.Message
+                    });
+                }
+            });
         }
+
 
         [HttpPost("custom-field-delete/{id}")]
         public async Task<IActionResult> DeleteCustomField(int id)
@@ -187,128 +267,152 @@ namespace PitchGenApi.Controllers
         [HttpPost("uploadcontacts")]
         public async Task<IActionResult> UploadContacts([FromBody] DataFileWithContactsDto request)
         {
-            try
+            var strategy = _context.Database.CreateExecutionStrategy();
+
+            return await strategy.ExecuteAsync<IActionResult>(async () =>
             {
-                // 1️⃣ Create DataFile
-                var dataFile = new DataFile
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+
+                try
                 {
-                    client_id = request.clientId,
-                    name = request.name,
-                    data_file_name = request.dataFileName,
-                    description = request.description,
-                    created_at = DateTime.UtcNow
-                };
-
-                _context.data_files.Add(dataFile);
-
-                // 2️⃣ Load Custom Fields
-                var customFieldMap = await _context.crm_custom_fields
-                    .Where(f => f.client_id == request.clientId)
-                    .ToDictionaryAsync(f => f.field_name.ToLower(), f => f.id);
-
-                var contacts = new List<Contact>();
-                var customValues = new List<ContactCustomFieldValue>();
-
-                // 3️⃣ Build Contacts
-                foreach (var c in request.contacts)
-                {
-                    var firstName = c.firstName?.Trim();
-                    var lastName = c.lastName?.Trim();
-
-                    if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(c.fullName))
+                    if (request.clientId <= 0)
                     {
-                        var parts = c.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                        firstName = parts.FirstOrDefault();
-                        lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "clientId is required"
+                        });
                     }
 
-                    var fullName = !string.IsNullOrWhiteSpace(c.fullName)
-                        ? c.fullName.Trim()
-                        : $"{firstName} {lastName}".Trim();
-
-                    if (string.IsNullOrWhiteSpace(fullName))
-                        fullName = c.email ?? "Unknown";
-
-                    var contact = new Contact
+                    if (request.contacts == null || !request.contacts.Any())
                     {
-                        DataFileId = dataFile.id,
-                        first_name = firstName,
-                        last_name = lastName,
-                        full_name = fullName,
-                        email = c.email?.Trim(),
-                        website = c.website,
-                        company_name = c.companyName,
-                        job_title = c.jobTitle,
-                        linkedin_url = c.linkedInUrl,
-                        country_or_address = c.countryOrAddress,
-                        email_subject = c.emailSubject,
-                        email_body = c.emailBody,
-                        CompanyTelephone = c.CompanyTelephone,
-                        CompanyEmployeeCount = c.CompanyEmployeeCount,
-                        CompanyIndustry = c.CompanyIndustry,
-                        CompanyLinkedInURL = c.CompanyLinkedInURL,
-                        linkedIninformation = c.linkedIninformation,
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = "No valid contacts found to upload"
+                        });
+                    }
+
+                    var dataFile = new DataFile
+                    {
+                        client_id = request.clientId,
+                        name = request.name,
+                        data_file_name = request.dataFileName,
+                        description = request.description,
                         created_at = DateTime.UtcNow
                     };
 
-                    contacts.Add(contact);
-                }
+                    _context.data_files.Add(dataFile);
+                    await _context.SaveChangesAsync(); // important: creates dataFile.id
 
-                _context.contacts.AddRange(contacts);
+                    var customFieldMap = await _context.crm_custom_fields
+                        .Where(f => f.client_id == request.clientId)
+                        .ToDictionaryAsync(f => f.field_name.ToLower(), f => f.id);
 
-                // 4️⃣ Save once → EF handles transaction
-                await _context.SaveChangesAsync();
+                    var contacts = new List<Contact>();
 
-                // 5️⃣ Map custom fields (after IDs exist)
-                for (int i = 0; i < contacts.Count; i++)
-                {
-                    var contact = contacts[i];
-                    var dto = request.contacts[i];
-
-                    if (dto.customFields == null) continue;
-
-                    foreach (var field in dto.customFields)
+                    foreach (var c in request.contacts)
                     {
-                        if (string.IsNullOrWhiteSpace(field.Value)) continue;
+                        var firstName = c.firstName?.Trim();
+                        var lastName = c.lastName?.Trim();
 
-                        if (!customFieldMap.TryGetValue(field.Key.ToLower(), out var fieldId))
-                            continue;
-
-                        customValues.Add(new ContactCustomFieldValue
+                        if (string.IsNullOrEmpty(firstName) && !string.IsNullOrWhiteSpace(c.fullName))
                         {
-                            client_id = request.clientId,
-                            contact_id = contact.id,
-                            field_id = fieldId,
-                            value = field.Value,
+                            var parts = c.fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                            firstName = parts.FirstOrDefault();
+                            lastName = parts.Length > 1 ? string.Join(" ", parts.Skip(1)) : "";
+                        }
+
+                        var fullName = !string.IsNullOrWhiteSpace(c.fullName)
+                            ? c.fullName.Trim()
+                            : $"{firstName} {lastName}".Trim();
+
+                        if (string.IsNullOrWhiteSpace(fullName))
+                            fullName = c.email?.Trim() ?? "Unknown";
+
+                        contacts.Add(new Contact
+                        {
+                            DataFileId = dataFile.id,
+                            first_name = firstName,
+                            last_name = lastName,
+                            full_name = fullName,
+                            email = c.email?.Trim(),
+                            website = c.website,
+                            company_name = c.companyName,
+                            job_title = c.jobTitle,
+                            linkedin_url = c.linkedInUrl,
+                            country_or_address = c.countryOrAddress,
+                            email_subject = c.emailSubject,
+                            email_body = c.emailBody,
+                            CompanyTelephone = c.CompanyTelephone,
+                            CompanyEmployeeCount = c.CompanyEmployeeCount,
+                            CompanyIndustry = c.CompanyIndustry,
+                            CompanyLinkedInURL = c.CompanyLinkedInURL,
+                            linkedIninformation = c.linkedIninformation,
                             created_at = DateTime.UtcNow
                         });
                     }
-                }
 
-                if (customValues.Any())
-                {
-                    _context.contact_custom_field_values.AddRange(customValues);
-                    await _context.SaveChangesAsync();
-                }
+                    _context.contacts.AddRange(contacts);
+                    await _context.SaveChangesAsync(); // important: creates contact ids
 
-                return Ok(new
+                    var customValues = new List<ContactCustomFieldValue>();
+
+                    for (int i = 0; i < contacts.Count; i++)
+                    {
+                        var contact = contacts[i];
+                        var dto = request.contacts[i];
+
+                        if (dto.customFields == null) continue;
+
+                        foreach (var field in dto.customFields)
+                        {
+                            if (string.IsNullOrWhiteSpace(field.Value)) continue;
+
+                            if (!customFieldMap.TryGetValue(field.Key.ToLower(), out var fieldId))
+                                continue;
+
+                            customValues.Add(new ContactCustomFieldValue
+                            {
+                                client_id = request.clientId,
+                                contact_id = contact.id,
+                                field_id = fieldId,
+                                value = field.Value,
+                                created_at = DateTime.UtcNow
+                            });
+                        }
+                    }
+
+                    if (customValues.Any())
+                    {
+                        _context.contact_custom_field_values.AddRange(customValues);
+                        await _context.SaveChangesAsync();
+                    }
+
+                    await transaction.CommitAsync();
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Contacts uploaded successfully",
+                        dataFileId = dataFile.id,
+                        contactCount = contacts.Count
+                    });
+                }
+                catch (Exception ex)
                 {
-                    success = true,
-                    message = "Contacts uploaded successfully",
-                    dataFileId = dataFile.id,
-                    contactCount = contacts.Count
-                });
-            }
-            catch (Exception ex)
-            {
-                return BadRequest(new
-                {
-                    success = false,
-                    message = "Upload failed",
-                    error = ex.InnerException?.Message ?? ex.Message
-                });
-            }
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Upload failed",
+                        error = ex.InnerException?.Message ?? ex.Message
+                    });
+                }
+            });
         }
+
         [HttpPost("add-single-contact")]
         public async Task<IActionResult> AddSingleContact([FromQuery] int DataFileId, ContactDto request)
         {

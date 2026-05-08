@@ -6,5 +6,7 @@
         public string FieldName { get; set; }
         public string FieldType { get; set; }
         public string OptionsJson { get; set; }
+        public Dictionary<string, string>? OptionRenames { get; set; }
+
     }
 }
