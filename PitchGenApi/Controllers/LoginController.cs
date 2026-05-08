@@ -26,9 +26,11 @@ namespace PitchGenApi.Controllers
         private readonly IStripeRepository _stripe;
         private readonly IRegisterEmailSender _register;
         private readonly ICompanyAlertService _companyAlert;
+        private readonly DefaultCustomFieldSeeder _defaultCustomFieldSeeder;
 
 
-        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert)
+
+        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert, DefaultCustomFieldSeeder defaultCustomFieldSeeder)
         {
             _context = context;
             _userRepository = userRepository;
@@ -37,6 +39,7 @@ namespace PitchGenApi.Controllers
             _stripe = stripe;
             _register = register;
             _companyAlert = companyAlert;
+            _defaultCustomFieldSeeder = defaultCustomFieldSeeder;
         }
 
         [HttpPost("login")]
@@ -260,9 +263,12 @@ namespace PitchGenApi.Controllers
             };
 
             _context.ClientDetails.Add(client);
-            _context.SaveChanges(); // Save client to get generated ID
+            await _context.SaveChangesAsync(); // Save client to get generated ID
+
+            await _defaultCustomFieldSeeder.SeedAsync(client.Id);
 
             var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
+
             var formattedSubNumber = $"SUB-{nextSubNumber:D4}"; // e.g. SUB-0001
             var StartDate = DateTime.UtcNow;
             var EndDate = StartDate.AddMonths(1);
