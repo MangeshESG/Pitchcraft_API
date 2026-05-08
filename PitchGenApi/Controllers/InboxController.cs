@@ -86,6 +86,7 @@ public class InboxController : ControllerBase
         existing.Port = dto.Port;
         existing.UseSSL = dto.UseSSL;
         existing.Username = dto.Username;
+        existing.FullInboxSync = dto.FullInboxSync;
         existing.Password = EncryptPassword(dto.Password);
         //existing.SyncIntervalMinutes = dto.SyncIntervalMinutes;
         existing.UpdatedAt = DateTime.UtcNow;
