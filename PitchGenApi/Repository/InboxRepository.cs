@@ -668,7 +668,7 @@ public class InboxRepository : IInboxRepository
             .Where(x => x.TrackingId == dto.TrackingId && x.ClientId == dto.clientid)
             .ToListAsync();
 
-        if (!logs.Any() && !replies.Any())
+        if (!logs.Any() && !replies.Any() && !Inbox.Any())
             return "Conversation not found";
 
         if (dto.DeleteMode.Equals("Permanent", StringComparison.OrdinalIgnoreCase))
