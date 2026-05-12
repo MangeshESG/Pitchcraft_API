@@ -423,6 +423,10 @@ public class InboxRepository : IInboxRepository
         // =========================
         var threads = sentEmails
             .GroupBy(x => x.TrackingId)
+            .Where(g =>
+                    replies.Any(r => r.TrackingId == g.Key) ||
+                    inboxEmails.Any(i => i.TrackingId == g.Key)
+                     )
             .Select(g =>
             {
                 var threadMessages = new List<EmailConvDto>();
