@@ -14,12 +14,15 @@ public class InboxEmailSyncService : IInboxEmailSyncService
     private readonly AppDbContext _context;
     private readonly EmailSendingHelper _emailSending;
     private readonly IInboxRepository _inboxRepository;
+    private readonly ContactRepository _contact;
 
-    public InboxEmailSyncService(AppDbContext context, EmailSendingHelper emailSending, IInboxRepository inboxRepository)
+
+    public InboxEmailSyncService(AppDbContext context, EmailSendingHelper emailSending, IInboxRepository inboxRepository, ContactRepository contact)
     {
         _context = context;
         _emailSending = emailSending;
         _inboxRepository = inboxRepository;
+        _contact = contact;
     }
 
     private string NormalizeMessageId(string value)
@@ -165,6 +168,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             Console.WriteLine("=================================");
 
             var fromEmail = msg.From.Mailboxes.FirstOrDefault()?.Address;
+            var fromName = msg.From.Mailboxes.FirstOrDefault()?.Name;
             var toEmail = msg.To.Mailboxes.FirstOrDefault()?.Address;
 
             // Skip own mails - current inbox address
@@ -298,28 +302,64 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         continue;
                     }
 
-                    bool inboxExists = await _context.InboxEmails
-                        .AnyAsync(x => x.MessageId == normalizedMessageId);
+                    var inboxExists = await _context.InboxEmails
+                        .FirstOrDefaultAsync(x => x.FromEmail == fromEmail);
 
-                    if (!inboxExists)
+                    if (inboxExists == null || inboxExists.MessageId != normalizedMessageId)
                     {
-                        _context.InboxEmails.Add(new InboxEmails
+                        if (inboxExists != null && inboxExists.MessageId == normalizedInReplyTo)
                         {
-                            InboxId = setting.Id,
-                            ClientId = setting.ClientId,
-                            MessageId = normalizedMessageId,
-                            InReplyTo = normalizedInReplyTo,
-                            FromEmail = fromEmail,
-                            Subject = msg.Subject,
-                            Body = body,
-                            Date = msg.Date.UtcDateTime,
-                            IsRead = false,
-                            Provider = provider,
-                            ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
-                                ? threadIndex
-                                : normalizedMessageId
-                        });
+                            _context.EmailReplies.Add(new EmailReplies
+                            {
+                                ClientId = setting.ClientId,
+                                ContactId = inboxExists.Contactid,
+                                MessageId = normalizedMessageId,
+                                InReplyTo = normalizedInReplyTo,
+                                FromEmail = fromEmail,
+                                Subject = msg.Subject,
+                                Body = body,
+                                TrackingId = inboxExists.TrackingId,
+                                Date = msg.Date.UtcDateTime,
+                                ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                                                      ? threadIndex
+                                                      : (inboxExists.ThreadId ?? inboxExists.MessageId)
+                            });
+                        }
+                        else
+                        {
+                            trackingId = Guid.NewGuid();
 
+                            var contactResult = await _contact.SaveConversationContactAsync(
+                             fromName,
+                             fromEmail,
+                             setting.ClientId);
+
+                            if (!contactResult.Success)
+                            {
+                                Console.WriteLine(contactResult.Message);
+                            }
+
+
+                            _context.InboxEmails.Add(new InboxEmails
+                            {
+                                InboxId = setting.Id,
+                                ClientId = setting.ClientId,
+                                MessageId = normalizedMessageId,
+                                InReplyTo = normalizedInReplyTo,
+                                FromEmail = fromEmail,
+                                FromName = fromName,
+                                Subject = msg.Subject,
+                                Contactid = contactResult.ContactId,
+                                Body = body,
+                                Date = msg.Date.UtcDateTime,
+                                IsRead = false,
+                                Provider = provider,
+                                TrackingId = trackingId,
+                                ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                                    ? threadIndex
+                                    : normalizedMessageId
+                            });
+                        }
                         Console.WriteLine("📥 Normal Inbox Mail Saved");
                     }
                     else
@@ -625,7 +665,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             $"https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages" +
             $"?$filter=receivedDateTime ge {filterTime}" +
             $"&$top=50" +
-            $"&$select=subject,from,body,receivedDateTime,internetMessageHeaders";
+            $"&$select=id,internetMessageId,subject,from,body,receivedDateTime,internetMessageHeaders";
 
         string nextLink = url;
         int processed = 0;
@@ -654,8 +694,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
             foreach (var msg in data.value)
             {
-                string messageId = msg.id;
-
+                string messageId = msg.internetMessageId;
                 // 🔥 Duplicate check
                 bool exists = await _context.EmailReplies
                     .AnyAsync(x => x.MessageId == messageId);
@@ -665,7 +704,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                 string subject = msg.subject;
                 string from = msg.from?.emailAddress?.address;
-
+                string fromName = msg.from?.emailAddress?.name ?? "";
                 // Skip own inbox address
                 if (!string.IsNullOrWhiteSpace(from) &&
                     from.Equals(tokenData.Email, StringComparison.OrdinalIgnoreCase))
@@ -699,7 +738,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 // 🔥 FIXED HEADER PARSE (NO LAMBDA)
                 // =========================
                 string inReplyTo = "";
-
+                string threadIndex = "";
                 if (msg.internetMessageHeaders != null)
                 {
                     foreach (var h in msg.internetMessageHeaders)
@@ -707,7 +746,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         if (h.name == "In-Reply-To")
                         {
                             inReplyTo = h.value;
-                            break;
+                        }
+
+                        if (h.name == "Thread-Index")
+                        {
+                            threadIndex = h.value;
                         }
                     }
                 }
@@ -715,7 +758,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 string body = msg.body?.content ?? "";
 
                 DateTime emailDate = msg.receivedDateTime != null
-                    ? DateTime.Parse(msg.receivedDateTime.ToString()).ToUniversalTime()
+                    ? DateTimeOffset.Parse(msg.receivedDateTime.ToString()).UtcDateTime
                     : DateTime.UtcNow;
 
                 // =========================
@@ -742,6 +785,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     if (sentMail != null)
                         Console.WriteLine("✅ Matched via InReplyTo");
                 }
+                var cleanbody = Regex.Replace(body, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
+                cleanbody = Regex.Replace(cleanbody, @"(?m)^>\s?", "");
+                cleanbody = cleanbody.Trim();
+                cleanbody = ExtractOnlyReply(cleanbody);
 
                 if (sentMail == null)
                 {
@@ -753,34 +800,76 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                         if (!isOurSenderOutlookInbox)
                         {
-                            bool inboxExists = await _context.InboxEmails
-                                .AnyAsync(x => x.MessageId == messageId);
+                            var inboxExists = await _context.InboxEmails
+                         .FirstOrDefaultAsync(x => x.FromEmail == from);
 
-                            if (!inboxExists)
+                            if (inboxExists == null || inboxExists.MessageId != messageId)
                             {
-                                _context.InboxEmails.Add(new InboxEmails
+                                if (inboxExists != null && inboxExists.MessageId == inReplyTo)
                                 {
-                                    InboxId = tokenData.Id,
-                                    ClientId = tokenData.ClientId,
-                                    MessageId = messageId,
-                                    InReplyTo = inReplyTo,
-                                    FromEmail = from,
-                                    Subject = subject,
-                                    Body = body,
-                                    Date = emailDate,
-                                    IsRead = false,
-                                    Provider = "Outlook"
-                                });
+                                    _context.EmailReplies.Add(new EmailReplies
+                                    {
+                                        ClientId = tokenData.ClientId,
+                                        ContactId = inboxExists.Contactid,
+                                        MessageId = messageId,
+                                        InReplyTo = inReplyTo,
+                                        FromEmail = from,
+                                        Subject = subject,
+                                        Body = cleanbody,
+                                        TrackingId = inboxExists.TrackingId,
+                                        Date = emailDate,
+                                        ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                                                              ? threadIndex
+                                                              : (inboxExists.ThreadId ?? inboxExists.MessageId)
+                                    });
+                                }
+                                else
+                                {
+                                    trackingId = Guid.NewGuid();
 
-                                if (latestEmailTime == null || emailDate > latestEmailTime)
-                                    latestEmailTime = emailDate;
+                                    var contactResult = await _contact.SaveConversationContactAsync(
+                                     fromName,
+                                     from,
+                                     tokenData.ClientId);
 
-                                processed++;
-                                Console.WriteLine($"📥 Outlook FullInbox Saved: {subject}");
+                                    if (!contactResult.Success)
+                                    {
+                                        Console.WriteLine(contactResult.Message);
+                                    }
+
+                                    try
+                                    {
+                                        _context.InboxEmails.Add(new InboxEmails
+                                        {
+                                            InboxId = tokenData.Id,
+                                            ClientId = tokenData.ClientId,
+                                            MessageId = messageId,
+                                            InReplyTo = inReplyTo,
+                                            FromEmail = from,
+                                            FromName = fromName,
+                                            Subject = subject,
+                                            Contactid = contactResult.ContactId,
+                                            Body = cleanbody,
+                                            Date = emailDate,
+                                            IsRead = false,
+                                            TrackingId = trackingId,
+                                            ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                                                ? threadIndex
+                                                : messageId
+                                        });
+                                    }
+                                    catch
+                                    (Exception ex)
+                                    {
+
+                                        Console.WriteLine("Error saving inbox email: " + ex.Message);
+                                    }
+                                }
+                                Console.WriteLine("📥 Normal Inbox Mail Saved");
                             }
                             else
                             {
-                                Console.WriteLine("⚠️ Outlook FullInbox Duplicate");
+                                Console.WriteLine("⚠️ Inbox Duplicate");
                             }
                         }
                         else
@@ -798,10 +887,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 // =========================
                 // 🔥 CLEAN BODY (same as Gmail/IMAP)
                 // =========================
-                var cleanbody = Regex.Replace(body, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
-                cleanbody = Regex.Replace(cleanbody, @"(?m)^>\s?", "");
-                cleanbody = cleanbody.Trim();
-                cleanbody = ExtractOnlyReply(cleanbody);
+               
 
 
                 // 🔥 SAVE

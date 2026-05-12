@@ -103,15 +103,14 @@ public class InboxController : ControllerBase
     }
 
     [HttpGet("inbox")]
-    public async Task<IActionResult> GetRepliesByInbox([FromQuery]int inboxId, [FromQuery] string Provider)
+    public async Task<IActionResult> GetRepliesByInbox([FromQuery]int inboxId, [FromQuery] string Provider, [FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
     {
-        var data = await _repo.GetInboxThreads(inboxId, Provider);
+        var data = await _repo.GetInboxThreads(inboxId, Provider, pageNumber, pageSize);
 
         return Ok(new
         {
             success = true,
-            count = data.Count,
-            data = data
+            data
         });
     }
 
@@ -255,17 +254,34 @@ public class InboxController : ControllerBase
     }
 
     [HttpGet("get_unassigned_inbox")]
-    public async Task<IActionResult> GetInboxEmails(int clientId, int inboxId)
+    public async Task<IActionResult> GetInboxEmails(int clientId, int inboxId, string Provider, int pageNumber = 1, int pageSize = 10)
     {
-        var data = await _repo.GetInboxEmails(clientId, inboxId);
+        var data = await _repo.GetInboxEmails(
+            clientId,
+            inboxId,
+            Provider,
+            pageNumber,
+            pageSize);
 
         return Ok(new
         {
             success = true,
-            count = data.Count,
             data
         });
     }
+
+    [HttpGet("get_sent_only")]
+    public async Task<IActionResult> GetSentOnlyThreads([FromQuery] int inboxId, [FromQuery] string Provider, [FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
+    {
+        var data = await _repo.GetSentOnlyThreads(inboxId, Provider, pageNumber, pageSize);
+
+        return Ok(new
+        {
+            success = true,
+            data
+        });
+    }
+
     [HttpPost("mark-unassigned-read")]
     public async Task<IActionResult> MarkAsUnassignedRead([FromQuery] string id)
     {

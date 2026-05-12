@@ -8,6 +8,7 @@
         public DateTime ContactCreatedAt { get; set; }
 
         public List<SentEmailDto> Emails { get; set; }
+        public List<EmailInboxDto> inboxemails { get; set; }
         public List<ContactNoteDto> Notes { get; set; }
         public List<ContactAttachmentDto> Attachments { get; set; }
     }
@@ -31,6 +32,17 @@
         public List<EmailEventDto> Events { get; set; }
         public List<EmailReplyDto> Replies { get; set; }   // ✅ add
 
+    }
+    public class EmailInboxDto
+    {
+        public Guid? TrackingId { get; set; }
+        public DateTime? ReceiveAt { get; set; }
+        public string FromEmail { get; set; }
+        public string Subject { get; set; }
+        public string Body { get; set; }
+        public bool IsRead { get; set; }
+        public List<EmailEventDto> Events { get; set; }
+        public List<EmailReplyDto> Replies { get; set; }   // ✅ add
     }
 
     public class ContactNoteDto

@@ -18,9 +18,10 @@ namespace PitchGenApi.Interfaces
         Task<List<InboxDropdownDto>> GetInboxPickListByClientIdAsync(int clientId);
         Task<bool> MarkEmailAsReadAsync(string replyId);
         Task<bool> MarkEmailAsUnassignedReadAsync(string messageId);
-        Task<List<EmailThreadDto>> GetInboxThreads(int inboxId, string Provider);
+        Task<PagedInboxEmailDto> GetInboxThreads(int inboxId, string Provider, int pageNumber = 1, int pageSize = 10);
         SecureSocketOptions GetSecureOption(string encryption);
         Task<string> DeleteConversationAsync(DeleteConversationDto dto);
-        Task<List<InboxEmailDto>> GetInboxEmails(int clientId, int inboxId);
+        Task<PagedInboxEmailDto> GetInboxEmails(int clientId, int inboxId, string Provider, int pageNumber = 1, int pageSize = 10);
+        Task<PagedInboxEmailDto> GetSentOnlyThreads(int inboxId, string Provider, int pageNumber = 1, int pageSize = 10);
     }
 }

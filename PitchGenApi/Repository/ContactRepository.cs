@@ -213,6 +213,12 @@ public class ContactRepository
             .OrderBy(x => x.SentAt)
             .ToListAsync();
 
+        var Inboxemails = await _context.InboxEmails
+            .AsNoTracking()
+            .Where(x => x.Contactid == contactId && x.TrackingId != null)
+            .OrderBy(x => x.CreatedAt)
+            .ToListAsync();
+
         var trackingIds = emailLogs
             .Where(x => x.TrackingId != null)
             .Select(x => x.TrackingId)
@@ -328,6 +334,47 @@ public class ContactRepository
             .OrderBy(x => x.SentAt)
             .ToList();
 
+        var inbox = Inboxemails
+           .Select(box => new EmailInboxDto
+           {
+               TrackingId = box.TrackingId,
+               ReceiveAt = box.CreatedAt,
+               FromEmail = box.FromEmail,
+               Subject = box.Subject,
+               Body = box.Body,
+
+               Events = trackingEvents
+                   .Where(e => e.TrackingId == box.TrackingId)
+                   .OrderBy(e => e.Timestamp)
+                   .Select(e => new EmailEventDto
+                   {
+                       EventType = e.EventType,
+                       EventAt = e.Timestamp,
+                       TargetUrl = e.TargetUrl
+                   })
+                   .ToList(),
+
+               Replies = replies
+                   .Where(r =>
+                       r.TrackingId == box.TrackingId ||
+                       r.InReplyTo == box.MessageId)
+                   .OrderBy(r => r.Date)
+                   .Select(r => new EmailReplyDto
+                   {
+                       Id = r.Id,
+                       MessageId = r.MessageId,
+                       InReplyTo = r.InReplyTo,
+                       FromEmail = r.FromEmail,
+                       Subject = r.Subject,
+                       Body = r.Body,
+                       Date = r.Date,
+                       IsRead = r.IsRead ?? false
+                   })
+                   .ToList()
+           })
+           .OrderBy(x => x.ReceiveAt)
+           .ToList();
+
         // =========================
         // FINAL RETURN
         // =========================
@@ -338,6 +385,7 @@ public class ContactRepository
             Email = contact.email,
             ContactCreatedAt = contact.created_at,
             Emails = emails,
+            inboxemails = inbox,
             Notes = notes,
             Attachments = attachments
         };
@@ -547,32 +595,6 @@ public class ContactRepository
         }
     }
 
-    //-------------------------------------------------------------------------------------private---------------------------------------------------------------------------------------------------------------
-    private string? GetSourceName(EmailLog log)
-    {
-        if (log.DataFileId != null)
-        {
-            return _context.data_files
-                .Where(x => x.id == log.DataFileId)
-                .Select(x => x.name)
-                .FirstOrDefault();
-        }
-
-        if (log.SegmentId != null)
-        {
-            return _context.segments
-                .Where(x => x.Id == log.SegmentId)
-                .Select(x => x.Name)
-                .FirstOrDefault();
-        }
-
-        return null;
-    }
-
-
-
-    //-----------------------------------------------------------------------------
-
     public async Task<ContactEmailConversationContextDto?> GetEmailConversationContextAsync(int clientId, int contactId)
     {
         Log.Information("Step 1: Fetch contact. ClientId={ClientId}, ContactId={ContactId}", clientId, contactId);
@@ -678,11 +700,109 @@ public class ContactRepository
             PromptContext = BuildPromptContext(contact.full_name, contact.email, contact.created_at, emails)
         };
     }
-    private static string BuildPromptContext(
-    string? fullName,
-    string? email,
-    DateTime? contactCreatedAt,
-    List<ConversationEmailDto> emails)
+
+    public async Task<InboxContactSaveDTO> SaveConversationContactAsync(string fullName, string email, int clientId)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(email))
+            {
+                return new InboxContactSaveDTO
+                {
+                    Success = false,
+                    Message = "Email address required"
+                };
+            }
+
+            email = email.Trim().ToLower();
+
+            var existingContact = await _context.contacts
+                .Include(x => x.data_file)
+                .FirstOrDefaultAsync(x =>
+                    x.email.ToLower() == email &&
+                    x.data_file.client_id == clientId);
+
+            if (existingContact != null)
+            {
+                return new InboxContactSaveDTO
+                {
+                    Success = true,
+                    ContactId = existingContact.id,
+                    Message = "Existing contact found"
+                };
+            }
+
+            var dataFile = await _context.data_files
+                .FirstOrDefaultAsync(x =>
+                    x.client_id == clientId &&
+                    x.name == "Contacts involved in conversations");
+
+            if (dataFile == null)
+            {
+                dataFile = new DataFile
+                {
+                    client_id = clientId,
+                    name = "Contacts involved in conversations",
+                    data_file_name = "Contacts involved in conversations",
+                    description = "Auto created for conversation contacts",
+                    created_at = DateTime.UtcNow
+                };
+
+                _context.data_files.Add(dataFile);
+                await _context.SaveChangesAsync();
+            }
+
+            var contact = new Contact
+            {
+                full_name = fullName,
+                email = email,
+                DataFileId = dataFile.id,
+                created_at = DateTime.UtcNow
+            };
+
+            _context.contacts.Add(contact);
+            await _context.SaveChangesAsync();
+
+            return new InboxContactSaveDTO
+            {
+                Success = true,
+                ContactId = contact.id,
+                Message = "Contact created successfully"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new InboxContactSaveDTO
+            {
+                Success = false,
+                Message = ex.Message
+            };
+        }
+    }
+    //-------------------------------------------------------------------------------------private---------------------------------------------------------------------------------------------------------------
+    private string? GetSourceName(EmailLog log)
+    {
+        if (log.DataFileId != null)
+        {
+            return _context.data_files
+                .Where(x => x.id == log.DataFileId)
+                .Select(x => x.name)
+                .FirstOrDefault();
+        }
+
+        if (log.SegmentId != null)
+        {
+            return _context.segments
+                .Where(x => x.Id == log.SegmentId)
+                .Select(x => x.Name)
+                .FirstOrDefault();
+        }
+
+        return null;
+    }
+
+
+    private static string BuildPromptContext(string? fullName, string? email, DateTime? contactCreatedAt, List<ConversationEmailDto> emails)
     {
         if (emails == null || !emails.Any())
             return string.Empty;
@@ -733,6 +853,10 @@ public class ContactRepository
 
         return sb.ToString();
     }
+
+    //-----------------------------------------------------------------------------
+
+
 
 
 }
