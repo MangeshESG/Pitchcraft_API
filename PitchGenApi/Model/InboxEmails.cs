@@ -4,6 +4,7 @@
     {
         public long Id { get; set; }
         public int ClientId { get; set; }
+        public Guid? TrackingId { get; set; }
         public int InboxId { get; set; }
 
         public string MessageId { get; set; }
@@ -11,10 +12,12 @@
         public string? ThreadId { get; set; }
 
         public string? FromEmail { get; set; }
+        public string? FromName { get; set; }
         public string? Subject { get; set; }
         public string? Body { get; set; }
         public string? Provider { get; set; }
-
+        public int? Contactid { get; set; }
+        
         public DateTime Date { get; set; }
 
         public bool IsRead { get; set; } = false;

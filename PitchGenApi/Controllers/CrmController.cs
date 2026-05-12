@@ -3063,6 +3063,50 @@ namespace PitchGenApi.Controllers
 
 
 
+        [HttpGet("get-contact-by-id")]
+        public async Task<IActionResult> GetContactByContactId([FromQuery] int contactId)
+        {
+            if (contactId <= 0)
+                return BadRequest(new { success = false, message = "Invalid contactId" });
+
+            var contact = await _context.contacts
+                .Where(c => c.id == contactId)
+                .Select(c => new
+                {
+                    c.id,
+                    c.full_name,
+                    c.first_name,
+                    c.last_name,
+                    c.email,
+                    c.company_name,
+                })
+                .FirstOrDefaultAsync();
+
+            if (contact == null)
+                return NotFound(new { success = false, message = $"Contact with ID {contactId} not found" });
+
+            var note = await _context.Notes
+                .Where(n => n.ContactId == contactId)
+                .OrderByDescending(n => n.IsPin)
+                .ThenByDescending(n => n.CreatedAt)
+                .Select(n => new
+                {
+                    n.Id,
+                    n.Note,
+                })
+                .FirstOrDefaultAsync();
+
+            return Ok(new
+            {
+                success = true,
+                data = new
+                {
+                    contact,
+                    note
+                }
+            });
+        }
+
         [HttpGet("email-conversation-context")]
         public async Task<IActionResult> GetEmailConversationContextApi(int clientId, int contactId)
         {
