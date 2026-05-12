@@ -27,23 +27,26 @@ namespace PitchGenApi.Controllers
         private readonly IPitchService _pitchService;
         private readonly ContactRepository _contactRepository;
         private readonly INoteRepository _noteRepository;
+        private readonly DeepSeekPitchService _deepSeekService;
+
 
 
         public CampaignPromptController(
-             CampaignPromptService campaignService,
-             AppDbContext dbContext,
-             IPitchService pitchService,
-             ContactRepository contactRepository,
-            INoteRepository noteRepository)
-
+            CampaignPromptService campaignService,
+            AppDbContext dbContext,
+            IPitchService pitchService,
+            ContactRepository contactRepository,
+            INoteRepository noteRepository,
+            DeepSeekPitchService deepSeekService)
         {
             _campaignService = campaignService;
             _dbContext = dbContext;
             _pitchService = pitchService;
             _contactRepository = contactRepository;
             _noteRepository = noteRepository;
-
+            _deepSeekService = deepSeekService;
         }
+
 
 
 
@@ -609,7 +612,7 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new { Message = "Filled template extraction failed" });
 
             // 7️⃣ Generate EXAMPLE EMAIL using EXISTING PitchService
-            var pitchResult = await _pitchService.GeneratePitchAsync(
+            var pitchResult = await GeneratePitchByProviderAsync(
                 new EnquiryRequest
                 {
                     Prompt = filledTemplate,
@@ -1376,7 +1379,7 @@ namespace PitchGenApi.Controllers
                         ? template.TemplateDefinition.SelectedModel
                         : "gpt-5.1");
 
-                var bodyResult = await _pitchService.GeneratePitchAsync(new EnquiryRequest
+                var bodyResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                 {
                     Prompt = finalPrompt,
                     ScrappedData = systemPrompt,
@@ -1419,7 +1422,7 @@ namespace PitchGenApi.Controllers
                         subjectReplacements
                     );
 
-                    subjectResult = await _pitchService.GeneratePitchAsync(new EnquiryRequest
+                    subjectResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                     {
                         Prompt = bodyResult.Content,
                         ScrappedData = filledSubjectInstruction,
@@ -1525,6 +1528,49 @@ namespace PitchGenApi.Controllers
                 return "";
             }
         }
+
+        private static bool IsDeepSeekModel(string? modelName)
+        {
+            return modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
+        private Task<PitchResult> GeneratePitchByProviderAsync(EnquiryRequest request)
+        {
+            return IsDeepSeekModel(request.ModelName)
+                ? _deepSeekService.GeneratePitchAsync(request)
+                : _pitchService.GeneratePitchAsync(request);
+        }
+
+
+
+        [HttpPost("template/update-model")]
+        public async Task<IActionResult> UpdateCampaignTemplateModel(
+            [FromBody] UpdateCampaignTemplateModelRequest request)
+        {
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
+
+            var template = await _dbContext.CampaignTemplates
+                .FirstOrDefaultAsync(t => t.Id == request.TemplateId);
+
+            if (template == null)
+                return NotFound(new { Message = "Campaign template not found" });
+
+            template.SelectedModel = request.SelectedModel.Trim();
+            template.UpdatedAt = DateTime.UtcNow;
+
+            await _dbContext.SaveChangesAsync();
+
+            return Ok(new
+            {
+                Success = true,
+                Message = "Campaign template model updated successfully",
+                template.Id,
+                template.SelectedModel
+            });
+        }
+
+
 
     }
 

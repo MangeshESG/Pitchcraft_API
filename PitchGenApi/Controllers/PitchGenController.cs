@@ -298,7 +298,7 @@ namespace PitchGenApi.Controllers
                         ModelName = $"{ModelName}"
                     };
 
-                    var pitchResult = await _pitchservice.GeneratePitchAsync(enquiryRequest);
+                    var pitchResult = await GeneratePitchByProviderAsync(enquiryRequest);
 
                     if (!pitchResult.IsSuccess)
                     {
@@ -387,7 +387,7 @@ namespace PitchGenApi.Controllers
 
             try
             {
-                var result = await _pitchservice.GeneratePitchAsync(request);
+                var result = await GeneratePitchByProviderAsync(request);
 
                 if (!result.IsSuccess)
                     return StatusCode(500, new { Message = "Failed to generate pitch", Error = result.Content });
@@ -1380,6 +1380,19 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
+
+        private static bool IsDeepSeekModel(string? modelName)
+        {
+            return modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
+        private Task<PitchResult> GeneratePitchByProviderAsync(EnquiryRequest request)
+        {
+            return IsDeepSeekModel(request.ModelName)
+                ? _deepSeekService.GeneratePitchAsync(request)
+                : _pitchservice.GeneratePitchAsync(request);
+        }
+
 
     }
 
