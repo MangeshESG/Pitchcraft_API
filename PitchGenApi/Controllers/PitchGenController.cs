@@ -1233,82 +1233,41 @@ namespace PitchGenApi.Controllers
                 {
                     return BadRequest(new
                     {
-                        Message = "TavilySearchTerm is required."
-                    });
-                }
-
-                if (!request.Prompt.Contains("{web_searched_data}"))
-                {
-                    return BadRequest(new
-                    {
-                        Message =
-                        "Prompt must contain {web_searched_data} placeholder."
+                        Message = "Web search instructions are required."
                     });
                 }
 
                 // =====================================
-                // TAVILY SEARCH
+                // GPT WEB SEARCH
                 // =====================================
 
-                using var client = new HttpClient();
-
-                var tavilyRequest = new
+                var webSearchRequest = new EnquiryRequest
                 {
-                    api_key = "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",
-                    query = request.TavilySearchTerm,
-                    search_depth = "basic",
-                    max_results = 5
+                    Prompt = request.TavilySearchTerm,
+                    ScrappedData = "",
+                    ModelName = "gpt-4o-mini"
                 };
 
-                var tavilyResponse = await client.PostAsync(
-                    "https://api.tavily.com/search",
-                    new StringContent(
-                        JsonConvert.SerializeObject(tavilyRequest),
-                        Encoding.UTF8,
-                        "application/json"));
+                var webSearchResult = await _pitchservice.GeneratePitchAsync(webSearchRequest);
 
-                var tavilyJson =
-                    await tavilyResponse.Content.ReadAsStringAsync();
-
-                if (!tavilyResponse.IsSuccessStatusCode)
+                if (!webSearchResult.IsSuccess)
                 {
                     return StatusCode(500, new
                     {
-                        Message = "Tavily search failed",
-                        Error = tavilyJson
+                        Message = "GPT web search failed",
+                        Error = webSearchResult.Content
                     });
                 }
 
-                string webSearchData = "";
-
-                dynamic parsed =
-                    JsonConvert.DeserializeObject(tavilyJson);
-
-                if (parsed.results != null)
-                {
-                    foreach (var item in parsed.results)
-                    {
-                        string content =
-                            item.content?.ToString() ?? "";
-
-                        // Prevent huge prompts
-                        if (content.Length > 1500)
-                        {
-                            content = content.Substring(0, 1500);
-                        }
-
-                        webSearchData += content + "\n\n";
-                    }
-                }
+                string webSearchData = webSearchResult.Content ?? "";
 
                 // =====================================
-                // REPLACE PLACEHOLDER
+                // ADD SEARCH DATA TO PROMPT
                 // =====================================
 
-                string finalPrompt =
-                    request.Prompt.Replace(
-                        "{web_searched_data}",
-                        webSearchData);
+                string finalPrompt = request.Prompt.Contains("{web_searched_data}")
+                    ? request.Prompt.Replace("{web_searched_data}", webSearchData)
+                    : $"{request.Prompt}\n\n{webSearchData}";
 
                 // =====================================
                 // DEEPSEEK CALL
@@ -1321,9 +1280,7 @@ namespace PitchGenApi.Controllers
                     ScrappedData = ""
                 };
 
-                var result =
-                    await _deepSeekService.GeneratePitchAsync(
-                        enquiryRequest);
+                var result = await _deepSeekService.GeneratePitchAsync(enquiryRequest);
 
                 if (!result.IsSuccess)
                 {
@@ -1341,11 +1298,9 @@ namespace PitchGenApi.Controllers
                 return Ok(new
                 {
                     Provider = "DeepSeek",
-
                     Model = request.ModelName,
 
-                    TavilySearchTerm = request.TavilySearchTerm,
-
+                    WebSearchInstructions = request.TavilySearchTerm,
                     WebSearchData = webSearchData,
 
                     FinalPrompt = finalPrompt,
@@ -1354,10 +1309,27 @@ namespace PitchGenApi.Controllers
 
                     Usage = new
                     {
-                        result.PromptTokens,
-                        result.CompletionTokens,
-                        result.TotalTokens,
-                        result.CurrentCost
+                        WebSearch = new
+                        {
+                            webSearchResult.PromptTokens,
+                            webSearchResult.CompletionTokens,
+                            webSearchResult.SearchTokens,
+                            webSearchResult.TotalTokens,
+                            webSearchResult.CurrentCost
+                        },
+                        Generation = new
+                        {
+                            result.PromptTokens,
+                            result.CompletionTokens,
+                            result.TotalTokens,
+                            result.CurrentCost
+                        },
+                        TotalTokens =
+                            webSearchResult.TotalTokens +
+                            result.TotalTokens,
+                        TotalCost =
+                            webSearchResult.CurrentCost +
+                            result.CurrentCost
                     }
                 });
             }
