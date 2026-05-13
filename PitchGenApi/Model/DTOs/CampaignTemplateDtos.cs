@@ -15,9 +15,12 @@ namespace PitchGenApi.Model.DTOs
         public string? CreatedBy { get; set; }
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
+
+        // Template-definition level only
+        public string? WebSearchInstructions { get; set; }
+
         public required string SelectedModel { get; set; }
     }
-
 
     // DTO for updating template definition
     public class UpdateTemplateDefinitionRequest
@@ -31,9 +34,12 @@ namespace PitchGenApi.Model.DTOs
         public string? MasterBlueprintUnpopulated { get; set; }
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
+
+        // Template-definition level only
+        public string? WebSearchInstructions { get; set; }
+
         public required string SelectedModel { get; set; }
     }
-
 
     // DTO for saving client's filled campaign
     public class SaveCampaignTemplateRequest
@@ -52,7 +58,6 @@ namespace PitchGenApi.Model.DTOs
         public string? SubjectInstructions { get; set; }
     }
 
-
     // DTO for updating client's campaign
     public class UpdateCampaignTemplateRequest
     {
@@ -63,7 +68,6 @@ namespace PitchGenApi.Model.DTOs
         public string? SelectedModel { get; set; }
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
-
     }
 
     // Response DTO with full details
@@ -81,6 +85,9 @@ namespace PitchGenApi.Model.DTOs
         public string? PlaceholderListExtensive { get; set; }
         public string? MasterBlueprintUnpopulated { get; set; }
 
+        // Template-definition level only
+        public string? WebSearchInstructions { get; set; }
+
         // Client-specific data
         public string? PlaceholderListWithValue { get; set; }
         public string? CampaignBlueprint { get; set; }
@@ -89,7 +96,6 @@ namespace PitchGenApi.Model.DTOs
 
         public DateTime CreatedAt { get; set; }
         public DateTime? UpdatedAt { get; set; }
-
 
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
@@ -116,5 +122,4 @@ namespace PitchGenApi.Model.DTOs
         public int TemplateId { get; set; }
         public Dictionary<string, string> PlaceholderValues { get; set; } = new();
     }
-
 }

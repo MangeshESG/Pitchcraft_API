@@ -1147,8 +1147,6 @@ namespace PitchGenApi.Controllers
 
 
 
-
-
         [HttpPost("update-contact-fields")]
         public async Task<IActionResult> UpdateContactFields([FromBody] ZohoUpdateData request)
         {
@@ -1392,6 +1390,62 @@ namespace PitchGenApi.Controllers
                 ? _deepSeekService.GeneratePitchAsync(request)
                 : _pitchservice.GeneratePitchAsync(request);
         }
+
+
+        [HttpPost("websearch")]
+        public async Task<IActionResult> WebSearch([FromBody] WebSearchRequest request)
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { Message = "Request body is required." });
+
+                if (string.IsNullOrWhiteSpace(request.Instructions))
+                    return BadRequest(new { Message = "Instructions are required." });
+
+                var enquiryRequest = new EnquiryRequest
+                {
+                    Prompt = request.Instructions,
+                    ScrappedData = "",
+                    ModelName = "gpt-4o-mini"
+                };
+
+                var result = await _pitchservice.GeneratePitchAsync(enquiryRequest);
+
+                if (!result.IsSuccess)
+                {
+                    return StatusCode(500, new
+                    {
+                        Message = "Web search failed",
+                        Error = result.Content
+                    });
+                }
+
+                return Ok(new
+                {
+                    Success = true,
+                    WebSearchData = result.Content ?? "",
+                    SearchResults = new List<string>(),
+                    Usage = new
+                    {
+                        result.PromptTokens,
+                        result.CompletionTokens,
+                        result.SearchTokens,
+                        result.TotalTokens,
+                        result.CurrentCost
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Internal server error during web search",
+                    Error = ex.Message
+                });
+            }
+        }
+
 
 
     }

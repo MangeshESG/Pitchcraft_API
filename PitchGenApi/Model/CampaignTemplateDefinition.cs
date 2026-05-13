@@ -34,6 +34,8 @@ namespace PitchGenApi.Models
         public int? SearchURLCount { get; set; }
         public string? SubjectInstructions { get; set; }
         public string SelectedModel { get; set; }
+        public string? WebSearchInstructions { get; set; }
+
 
 
         // Navigation property

@@ -81,10 +81,10 @@ namespace PitchGenApi.Controllers
                     IsActive = true,
                     SearchURLCount = request.SearchURLCount,
                     SubjectInstructions = request.SubjectInstructions,
-                    SelectedModel = request.SelectedModel   // ⭐ ADD THIS
-
-
+                    WebSearchInstructions = request.WebSearchInstructions,
+                    SelectedModel = request.SelectedModel
                 };
+
 
                 _dbContext.CampaignTemplateDefinitions.Add(templateDef);
                 await _dbContext.SaveChangesAsync();
@@ -181,9 +181,15 @@ namespace PitchGenApi.Controllers
                 definition.MasterBlueprintUnpopulated = request.MasterBlueprintUnpopulated;
                 definition.UpdatedAt = DateTime.UtcNow;
                 definition.SearchURLCount = request.SearchURLCount;
+
                 if (!string.IsNullOrWhiteSpace(request.SubjectInstructions))
                     definition.SubjectInstructions = request.SubjectInstructions;
+
+                // Allow clearing the web search instructions
+                definition.WebSearchInstructions = request.WebSearchInstructions;
+
                 definition.SelectedModel = request.SelectedModel;
+
 
 
 
@@ -385,6 +391,8 @@ namespace PitchGenApi.Controllers
                     ClientId = template.ClientId,
                     TemplateDefinitionId = template.TemplateDefinitionId,
                     TemplateName = template.TemplateDefinition.TemplateName,
+                    WebSearchInstructions = template.TemplateDefinition.WebSearchInstructions,
+
 
                     AIInstructions = template.TemplateDefinition.AIInstructions,
                     AIInstructionsForEdit = template.TemplateDefinition.AIInstructionsForEdit,
