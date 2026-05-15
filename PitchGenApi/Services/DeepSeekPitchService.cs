@@ -5,8 +5,6 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
-using Microsoft.EntityFrameworkCore;
-
 
 namespace PitchGenApi.Services
 {
@@ -23,14 +21,13 @@ namespace PitchGenApi.Services
         {
             _httpClient = httpClient;
             _context = context;
-
             _apiKey = options.Value.ApiKey;
 
-            _httpClient.DefaultRequestHeaders.Clear();
+            _httpClient.Timeout = TimeSpan.FromMinutes(3);
 
-            _httpClient.DefaultRequestHeaders.Add(
-                "Authorization",
-                $"Bearer {_apiKey}");
+            _httpClient.DefaultRequestHeaders.Clear();
+            _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
+            _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
         }
 
         public async Task<PitchResult> GeneratePitchAsync(EnquiryRequest request)
@@ -55,8 +52,20 @@ namespace PitchGenApi.Services
                     };
                 }
 
-                var rate = await _context.ModelRates
-                    .FirstOrDefaultAsync(m => m.ModelName == request.ModelName);
+                string requestedModelName = request.ModelName.Trim();
+
+                bool thinkingEnabled = requestedModelName.EndsWith(
+                    "-thinking",
+                    StringComparison.OrdinalIgnoreCase
+                );
+
+                string apiModelName = thinkingEnabled
+                    ? requestedModelName.Replace("-thinking", "", StringComparison.OrdinalIgnoreCase)
+                    : requestedModelName;
+
+                var rate =
+                    await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == requestedModelName)
+                    ?? await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == apiModelName);
 
                 decimal inputPricePerMillion = rate?.InputPrice ?? 0.27m;
                 decimal outputPricePerMillion = rate?.OutputPrice ?? 1.10m;
@@ -80,20 +89,52 @@ namespace PitchGenApi.Services
                     content = request.Prompt
                 });
 
-                var requestBody = new
+                bool isDeepSeekV4 = apiModelName.StartsWith(
+                    "deepseek-v4-",
+                    StringComparison.OrdinalIgnoreCase
+                );
+
+                var requestBody = new Dictionary<string, object>
                 {
-                    model = request.ModelName,
-                    messages,
-                    temperature,
-                    max_tokens = maxTokens,
-                    stream = false
+                    { "model", apiModelName },
+                    { "messages", messages },
+                    { "max_tokens", maxTokens },
+                    { "stream", false }
                 };
+
+                if (isDeepSeekV4)
+                {
+                    requestBody["thinking"] = new
+                    {
+                        type = thinkingEnabled ? "enabled" : "disabled"
+                    };
+
+                    if (thinkingEnabled)
+                    {
+                        requestBody["reasoning_effort"] = "high";
+                    }
+                    else
+                    {
+                        requestBody["temperature"] = temperature;
+                    }
+                }
+                else
+                {
+                    requestBody["temperature"] = temperature;
+                }
 
                 var json = JsonConvert.SerializeObject(requestBody);
 
+                using var httpContent = new StringContent(
+                    json,
+                    Encoding.UTF8,
+                    "application/json"
+                );
+
                 var response = await _httpClient.PostAsync(
                     "https://api.deepseek.com/chat/completions",
-                    new StringContent(json, Encoding.UTF8, "application/json"));
+                    httpContent
+                );
 
                 var responseContent = await response.Content.ReadAsStringAsync();
 
@@ -101,7 +142,7 @@ namespace PitchGenApi.Services
                 {
                     return new PitchResult
                     {
-                        Content = $"DeepSeek API Error: {responseContent}",
+                        Content = $"DeepSeek API Error ({(int)response.StatusCode}): {responseContent}",
                         IsSuccess = false
                     };
                 }
@@ -135,6 +176,14 @@ namespace PitchGenApi.Services
                     IsSuccess = true
                 };
             }
+            catch (TaskCanceledException ex)
+            {
+                return new PitchResult
+                {
+                    Content = $"DeepSeek request timed out after {_httpClient.Timeout.TotalSeconds} seconds: {ex.Message}",
+                    IsSuccess = false
+                };
+            }
             catch (Exception ex)
             {
                 return new PitchResult
@@ -144,6 +193,5 @@ namespace PitchGenApi.Services
                 };
             }
         }
-
     }
 }
