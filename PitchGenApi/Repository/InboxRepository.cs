@@ -881,6 +881,15 @@ public class InboxRepository : IInboxRepository
         var replies = await _context.EmailReplies
             .Where(x => x.ClientId == clientId && allTrackingIds.Contains(x.TrackingId) && x.IsDeleted != true)
             .ToListAsync();
+        var contactIds = replies
+            .Where(x => x.ContactId != null)
+            .Select(x => x.ContactId.Value)
+            .Distinct()
+            .ToList();
+
+        var contactMap = await _context.contacts
+            .Where(x => contactIds.Contains(x.id))
+            .ToDictionaryAsync(x => x.id, x => x.full_name);
 
         // MERGE BY TRACKING ID
         var threads = allTrackingIds.Select(trackingId =>
@@ -934,7 +943,10 @@ public class InboxRepository : IInboxRepository
                     ToEmail = "",
                     Date = r.Date,
                     IsRead = r.IsRead ?? false,
-                    ContactId = r.ContactId
+                    ContactId = r.ContactId,
+                    ContactName = contactMap.ContainsKey(r.ContactId ?? 0)
+                        ? contactMap[r.ContactId ?? 0]
+                        : r.FromEmail
                 }));
 
             messages = messages.OrderBy(x => x.Date).ToList();
