@@ -15,11 +15,13 @@ namespace PitchGenApi.Repositories
     {
         private readonly AppDbContext _db;
         private readonly IRegisterEmailSender _reg;
+        private readonly IInboxRepository _inbox;
 
-        public DomainVerificationRepository(AppDbContext db, IRegisterEmailSender reg)
+        public DomainVerificationRepository(AppDbContext db, IRegisterEmailSender reg, IInboxRepository inbox)
         {
             _db = db;
             _reg = reg;
+            _inbox = inbox;
         }
 
         // ================================
@@ -172,13 +174,12 @@ namespace PitchGenApi.Repositories
                     if (smtpupdate == null)
                         return Fail("SMTP record not found");
 
-                    smtpupdate.Server = dto.Server;
-                    smtpupdate.Port = dto.Port;
+                    smtpupdate.Server = dto.OutgoingServer;
+                    smtpupdate.Port = dto.OutgoingPort;
                     smtpupdate.Username = dto.Username;
                     smtpupdate.Password = dto.Password;
                     smtpupdate.SenderName = dto.SenderName;
-                    smtpupdate.UseSsl = dto.UseSsl;
-                    smtpupdate.SecurityType = dto.SecurityType;
+                    smtpupdate.SecurityType = dto.OutgoingSecurityType;
                 }
 
                 await _db.SaveChangesAsync();
@@ -535,15 +536,14 @@ namespace PitchGenApi.Repositories
                 var smtpEntity = new SmtpCredentials
                 {
                     ClientId = clientId,
-                    Server = smtpDto.Server,
-                    Port = smtpDto.Port,
+                    Server = smtpDto.OutgoingServer,
+                    Port = smtpDto.OutgoingPort,
                     Username = smtpDto.Username,
                     Password = smtpDto.Password,
                     FromEmail = smtpDto.FromEmail,
                     SenderName = smtpDto.SenderName,
-                    UseSsl = smtpDto.UseSsl,
                     DomainId = smtpDto.DomainId,
-                    SecurityType = smtpDto.SecurityType,
+                    SecurityType = smtpDto.OutgoingSecurityType,
                 };
                 
                 var emailRecord = new DomainEmailVerification
@@ -559,6 +559,21 @@ namespace PitchGenApi.Repositories
                 await _db.DomainEmailVerification.AddAsync(emailRecord);
                 await _db.SmtpCredentials.AddAsync(smtpEntity);
                 await _db.SaveChangesAsync();
+
+                var inboxdto = new InboxcredentialsDTO
+                {
+                    ClientId = userId,
+                    EmailAddress = smtpDto.FromEmail,
+                    Host = smtpDto.IncomingServer,
+                    Port = smtpDto.IncomingPort,
+                    Username = smtpDto.Username,
+                    Password = smtpDto.Password,
+                    FullInboxSync = smtpDto.FullInboxSync,
+                    encryption = smtpDto.IncomingSecurityType
+                };
+                var inbox =await _inbox.CreateInboxCredentialsAsync(inboxdto);
+                if (inbox == false)
+                    return Fail("Invalid or imap  details");
 
                 return Success("SMTP configuration verified and saved successfully");
             }

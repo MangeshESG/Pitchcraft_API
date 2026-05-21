@@ -65,8 +65,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
         Console.WriteLine("📂 Inbox opened");
 
-        var uids = await inbox.SearchAsync(SearchQuery.All);
+        var sinceDate = DateTime.UtcNow.AddHours(-24);
 
+        var uids = await inbox.SearchAsync(
+            SearchQuery.DeliveredAfter(sinceDate)
+        );
         Console.WriteLine($"📊 Total UIDs: {uids.Count}");
         Console.WriteLine($"📌 LastUid: {setting.LastUid}");
 
@@ -253,6 +256,14 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                 if (!exists)
                 {
+                    bool alreadyExists = await _context.EmailReplies
+                                .AnyAsync(x => x.MessageId == normalizedMessageId);
+
+                    if (alreadyExists)
+                    {
+                        Console.WriteLine("⚠️ Duplicate MessageId skipped");
+                        continue;
+                    }
                     _context.EmailReplies.Add(new EmailReplies
                     {
                         ClientId = sent.ClientId,
@@ -309,6 +320,14 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     {
                         if (inboxExists != null && inboxExists.MessageId == normalizedInReplyTo)
                         {
+                            bool alreadyExists = await _context.EmailReplies
+                                .AnyAsync(x => x.MessageId == normalizedMessageId);
+
+                            if (alreadyExists)
+                            {
+                                Console.WriteLine("⚠️ Duplicate MessageId skipped");
+                                continue;
+                            }
                             _context.EmailReplies.Add(new EmailReplies
                             {
                                 ClientId = setting.ClientId,
@@ -339,7 +358,14 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 Console.WriteLine(contactResult.Message);
                             }
 
+                            bool alreadyExists = await _context.InboxEmails
+                                .AnyAsync(x => x.MessageId == normalizedMessageId);
 
+                            if (alreadyExists)
+                            {
+                                Console.WriteLine("⚠️ Duplicate MessageId skipped");
+                                continue;
+                            }
                             _context.InboxEmails.Add(new InboxEmails
                             {
                                 InboxId = setting.Id,
@@ -839,6 +865,14 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                     try
                                     {
+                                        bool alreadyExists = await _context.InboxEmails
+                                            .AnyAsync(x => x.MessageId == messageId);
+
+                                        if (alreadyExists)
+                                        {
+                                            Console.WriteLine("⚠️ Duplicate MessageId skipped");
+                                            continue;
+                                        }
                                         _context.InboxEmails.Add(new InboxEmails
                                         {
                                             InboxId = tokenData.Id,

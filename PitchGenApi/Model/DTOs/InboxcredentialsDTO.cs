@@ -10,9 +10,6 @@ namespace PitchGenApi.Model.DTOs
         [Required, EmailAddress]
         public string EmailAddress { get; set; }
 
-        [Required]
-        [RegularExpression("POP3|IMAP", ErrorMessage = "Protocol must be POP3 or IMAP")]
-        public string Protocol { get; set; }
 
         [Required]
         public string Host { get; set; }
@@ -20,7 +17,6 @@ namespace PitchGenApi.Model.DTOs
         [Required]
         public int Port { get; set; }
 
-        public bool UseSSL { get; set; } = true;
         public bool FullInboxSync { get; set; } = true;
 
         [Required]

@@ -15,6 +15,7 @@ using System.Text.Json;
 using Stripe;
 using MailKit.Security;
 using MimeKit;
+using static SequenceCreateDto;
 
 namespace PitchGenApi.Controllers
 {
@@ -141,12 +142,11 @@ namespace PitchGenApi.Controllers
             var smtp = new SmtpCredentials
             {
                 ClientId = ClientId,
-                Server = dto.Server,
-                Port = dto.Port,
+                Server = dto.OutgoingServer,
+                Port = dto.OutgoingPort,
                 Username = dto.Username,
                 Password = dto.Password,
                 FromEmail = dto.FromEmail,
-                UseSsl = dto.UseSsl
             };
 
             _context.SmtpCredentials.Add(smtp);
@@ -165,12 +165,11 @@ namespace PitchGenApi.Controllers
                     return NotFound("SMTP credentials not found.");
 
                 // Update existing values
-                smtp.Server = dto.Server;
-                smtp.Port = dto.Port;
+                smtp.Server = dto.OutgoingServer;
+                smtp.Port = dto.OutgoingPort;
                 smtp.Username = dto.Username;
                 smtp.Password = dto.Password;
                 smtp.FromEmail = dto.FromEmail;
-                smtp.UseSsl = dto.UseSsl;
 
                 _context.SmtpCredentials.Update(smtp);
                 await _context.SaveChangesAsync();
@@ -512,9 +511,9 @@ namespace PitchGenApi.Controllers
             {
                 using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
 
-                var socketOption = _inboxRepository.GetSecureOption(dto.SecurityType);
+                var socketOption = _inboxRepository.GetSecureOption(dto.OutgoingSecurityType);
 
-                await smtpClient.ConnectAsync(dto.Server, dto.Port, socketOption);
+                await smtpClient.ConnectAsync(dto.OutgoingServer, dto.OutgoingPort, socketOption);
                 await smtpClient.AuthenticateAsync(dto.Username, dto.Password);
 
                 var toMessage = new MimeMessage();
@@ -552,11 +551,27 @@ namespace PitchGenApi.Controllers
                 }.ToMessageBody();
 
                 await smtpClient.SendAsync(toMessage);
-
                 if (smtpClient.IsConnected)
                 {
                     await smtpClient.DisconnectAsync(true);
                 }
+
+                var inboxdto  = new InboxcredentialsDTO
+                {
+                    ClientId = int.TryParse(ClientId, out int clientId) ? clientId : 0,
+                    EmailAddress = dto.FromEmail,
+                    Host = dto.IncomingServer,
+                    Port = dto.IncomingPort,
+                    Username = dto.Username,
+                    Password = dto.Password,
+                    FullInboxSync = dto.FullInboxSync,
+                    encryption = dto.IncomingSecurityType
+                };
+
+                var isValid = await _inboxRepository.ValidateAsync(inboxdto);
+
+                if (!isValid)
+                    return BadRequest("Email already exists");
             }
             catch (Exception ex)
             {
@@ -582,13 +597,12 @@ namespace PitchGenApi.Controllers
                     // Update existing record if IsUpdate = true
                     if (dto.IsUpdate && existingRecord != null)
                     {
-                        existingRecord.Server = dto.Server;
-                        existingRecord.Port = dto.Port;
+                        existingRecord.Server = dto.OutgoingServer;
+                        existingRecord.Port = dto.OutgoingPort;
                         existingRecord.Username = dto.Username;
                         existingRecord.Password = dto.Password;
-                        existingRecord.UseSsl = dto.UseSsl;
                         existingRecord.SenderName = dto.SenderName;
-                        existingRecord.SecurityType = dto.SecurityType;
+                        existingRecord.SecurityType = dto.OutgoingSecurityType;
 
                         _context.SmtpCredentials.Update(existingRecord);
                         await _context.SaveChangesAsync();

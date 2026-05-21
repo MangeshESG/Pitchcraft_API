@@ -2,7 +2,7 @@
 {
     public class DeleteConversationDto
     {
-        public Guid TrackingId { get; set; }
+        public List<Guid> TrackingIds { get; set; }
         public string DeleteMode { get; set; }
         public int clientid { get; set; }
     }

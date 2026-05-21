@@ -50,17 +50,16 @@ public class InboxRepository : IInboxRepository
                              .ToListAsync();
     }
     
-    public async Task<Inboxcredentials?> GetByUserNameAsync(int userId, string username, string protocol)
+    public async Task<Inboxcredentials?> GetByUserNameAsync(int userId, string username)
     {
         return await _context.Inboxcredentials
-                             .FirstOrDefaultAsync(x => x.ClientId == userId && x. Username == username && x.Protocol == protocol);
+                             .FirstOrDefaultAsync(x => x.ClientId == userId && x. Username == username);
     }
     public async Task<bool> ValidateAsync(InboxcredentialsDTO dto)
     {
         try
         {
-            if (dto.Protocol.ToUpper() == "IMAP")
-            {
+            
                 using var client = new ImapClient();
 
                 // map UI value to SecureSocketOptions
@@ -72,22 +71,6 @@ public class InboxRepository : IInboxRepository
                 await client.DisconnectAsync(true);
 
                 return true;
-            }
-            else if (dto.Protocol.ToUpper() == "POP3")
-            {
-                using var client = new Pop3Client();
-
-                var option = GetSecureOption(dto.encryption);
-
-                await client.ConnectAsync(dto.Host, dto.Port, option);
-
-                await client.AuthenticateAsync(dto.Username, dto.Password);
-                await client.DisconnectAsync(true);
-
-                return true;
-            }
-
-            return false;
         }
         catch (Exception ex)
         {
@@ -189,7 +172,9 @@ public class InboxRepository : IInboxRepository
     {
         try
         {
-            // 🔥 IMAP
+            // =========================
+            // IMAP Inboxes
+            // =========================
             var inboxData = await _context.Inboxcredentials
                 .Where(x => x.ClientId == clientId)
                 .Select(x => new InboxDropdownDto
@@ -200,7 +185,9 @@ public class InboxRepository : IInboxRepository
                 })
                 .ToListAsync();
 
-            // 🔥 OAuth (ALL providers)
+            // =========================
+            // OAuth Inboxes
+            // =========================
             var oauthData = await _context.EmailOAuthTokens
                 .Where(x => x.ClientId == clientId)
                 .Select(x => new InboxDropdownDto
@@ -211,7 +198,9 @@ public class InboxRepository : IInboxRepository
                 })
                 .ToListAsync();
 
-            // 🔥 Merge + Remove duplicates
+            // =========================
+            // Merge + Remove duplicates
+            // =========================
             var result = inboxData
                 .Concat(oauthData)
                 .Where(x => !string.IsNullOrEmpty(x.EmailAddress))
@@ -220,11 +209,46 @@ public class InboxRepository : IInboxRepository
                 .OrderBy(x => x.EmailAddress)
                 .ToList();
 
+            // =========================
+            // Add unread counts
+            // =========================
+            foreach (var inbox in result)
+            {
+                // InboxEmails unread count
+                // InboxEmails unread count
+                inbox.InboxEmailsUnreadCount = await _context.InboxEmails
+                    .Where(x =>
+                        x.ClientId == clientId &&
+                        x.InboxId == inbox.InboxId &&
+                        x.IsRead == false &&
+                        x.IsDeleted == false)
+                    .CountAsync();
+
+                // EmailReplies unread count
+                // EmailReplies unread count
+                inbox.EmailRepliesUnreadCount = await (
+                    from reply in _context.EmailReplies
+                    join inboxEmail in _context.InboxEmails
+                        on reply.TrackingId equals inboxEmail.TrackingId
+                    where reply.ClientId == clientId
+                          && inboxEmail.InboxId == inbox.InboxId
+                          && reply.IsRead == false
+                          && reply.IsDeleted == false
+                    select reply.Id
+                ).CountAsync();
+
+                // Total unread count
+                inbox.TotalUnreadCount =
+                    inbox.InboxEmailsUnreadCount +
+                    inbox.EmailRepliesUnreadCount;
+            }
+
             return result;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"❌ Error in GetInboxPickListByClientIdAsync: {ex.Message}");
+
             return new List<InboxDropdownDto>();
         }
     }
@@ -661,36 +685,36 @@ public class InboxRepository : IInboxRepository
     public async Task<string> DeleteConversationAsync(DeleteConversationDto dto)
     {
         var logs = await _context.EmailLogs
-            .Where(x => x.TrackingId == dto.TrackingId && x.ClientId == dto.clientid)
+            .Where(x => dto.TrackingIds.Contains(x.TrackingId.Value) && x.ClientId == dto.clientid)
             .ToListAsync();
 
         var replies = await _context.EmailReplies
-            .Where(x => x.TrackingId == dto.TrackingId && x.ClientId == dto.clientid)
+            .Where(x => dto.TrackingIds.Contains(x.TrackingId.Value) && x.ClientId == dto.clientid)
             .ToListAsync();
 
-        var Inbox = await _context.InboxEmails
-            .Where(x => x.TrackingId == dto.TrackingId && x.ClientId == dto.clientid)
+        var inbox = await _context.InboxEmails
+            .Where(x => dto.TrackingIds.Contains(x.TrackingId.Value) && x.ClientId == dto.clientid)
             .ToListAsync();
 
-        if (!logs.Any() && !replies.Any())
+        if (!logs.Any() && !replies.Any() && !inbox.Any())
             return "Conversation not found";
 
         if (dto.DeleteMode.Equals("Permanent", StringComparison.OrdinalIgnoreCase))
         {
             _context.EmailLogs.RemoveRange(logs);
             _context.EmailReplies.RemoveRange(replies);
-            _context.InboxEmails.RemoveRange(Inbox);
+            _context.InboxEmails.RemoveRange(inbox);
         }
         else
         {
             logs.ForEach(x => x.IsDeleted = true);
             replies.ForEach(x => x.IsDeleted = true);
-            Inbox.ForEach(x => x.IsDeleted = true);
+            inbox.ForEach(x => x.IsDeleted = true);
         }
 
         await _context.SaveChangesAsync();
 
-        return $"Deleted successfully (Logs={logs.Count}, Replies={replies.Count})";
+        return $"Deleted successfully (Logs={logs.Count}, Replies={replies.Count}, Inbox={inbox.Count})";
     }
 
 
@@ -796,5 +820,219 @@ public class InboxRepository : IInboxRepository
             PageSize = pageSize,
             Data = threads
         };
+    }
+    public async Task<TotalUnreadCountDto> GetTotalUnreadCountAsync(int clientId)
+    {
+        // InboxEmails unread count
+        var inboxUnreadCount = await _context.InboxEmails
+            .Where(x =>
+                x.ClientId == clientId &&
+                x.IsRead == false &&
+                x.IsDeleted == false)
+            .CountAsync();
+
+        // EmailReplies unread count
+        var repliesUnreadCount = await _context.EmailReplies
+            .Where(x =>
+                x.ClientId == clientId &&
+                x.IsRead == false &&
+                x.IsDeleted == false)
+            .CountAsync();
+
+        return new TotalUnreadCountDto
+        {
+            ClientId = clientId,
+            GrandTotalUnreadCount = inboxUnreadCount + repliesUnreadCount
+        };
+    }
+    public async Task<PagedInboxEmailDto> GetCombinedInboxThreadsAsync(int clientId, int inboxId, string provider, int pageNumber = 1, int pageSize = 10)
+    {
+        int? outboxId = 0;
+
+        if (provider.ToUpper() == "IMAP")
+        {
+            outboxId = await _context.Inboxcredentials
+                .Where(x => x.Id == inboxId)
+                .Select(x => x.Outboxid)
+                .FirstOrDefaultAsync();
+        }
+        else
+        {
+            outboxId = inboxId;
+        }
+
+        if (outboxId == 0)
+            return new PagedInboxEmailDto { Data = new List<EmailThreadDto>() };
+
+        // BATCH FETCH
+        var sentEmails = await _context.EmailLogs
+            .Where(x => x.outboxid == outboxId && x.IsSuccess && !x.IsDeleted)
+            .ToListAsync();
+
+        var inboxEmails = await _context.InboxEmails
+            .Where(x => x.ClientId == clientId && x.InboxId == inboxId && !x.IsDeleted && x.TrackingId != null)
+            .ToListAsync();
+
+        var allTrackingIds = sentEmails.Select(x => x.TrackingId)
+            .Union(inboxEmails.Select(x => x.TrackingId))
+            .Distinct()
+            .ToList();
+
+        var replies = await _context.EmailReplies
+            .Where(x => x.ClientId == clientId && allTrackingIds.Contains(x.TrackingId) && x.IsDeleted != true)
+            .ToListAsync();
+
+        // MERGE BY TRACKING ID
+        var threads = allTrackingIds.Select(trackingId =>
+        {
+            var messages = new List<EmailConvDto>();
+
+            // INBOX
+            messages.AddRange(inboxEmails
+                .Where(i => i.TrackingId == trackingId)
+                .Select(i => new EmailConvDto
+                {
+                    Type = "Inbox",
+                    MessageId = i.MessageId,
+                    Subject = i.Subject,
+                    Body = i.Body,
+                    FromEmail = i.FromEmail,
+                    ToEmail = "",
+                    Date = i.Date,
+                    IsRead = i.IsRead,
+                    ContactId = i.Contactid,
+                    ContactName = i.FromName
+                }));
+
+            // SENT
+            messages.AddRange(sentEmails
+                .Where(s => s.TrackingId == trackingId)
+                .Select(s => new EmailConvDto
+                {
+                    Type = "Sent",
+                    MessageId = s.MessageId,
+                    Subject = s.Subject,
+                    Body = s.Body,
+                    FromEmail = s.SenderEmailId,
+                    ToEmail = s.ToEmail,
+                    Date = s.SentAt,
+                    IsRead = true,
+                    ContactId = s.ContactId,
+                    ContactName = s.EmailSenderName
+                }));
+
+            // REPLIES
+            messages.AddRange(replies
+                .Where(r => r.TrackingId == trackingId)
+                .Select(r => new EmailConvDto
+                {
+                    Type = "Reply",
+                    MessageId = r.MessageId,
+                    Subject = r.Subject,
+                    Body = r.Body,
+                    FromEmail = r.FromEmail,
+                    ToEmail = "",
+                    Date = r.Date,
+                    IsRead = r.IsRead ?? false,
+                    ContactId = r.ContactId
+                }));
+
+            messages = messages.OrderBy(x => x.Date).ToList();
+
+            var inboxFirst = inboxEmails.FirstOrDefault(i => i.TrackingId == trackingId);
+            var sentFirst = sentEmails.FirstOrDefault(s => s.TrackingId == trackingId);
+
+            return new EmailThreadDto
+            {
+                TrackingId = trackingId,
+                Subject = inboxFirst?.Subject ?? sentFirst?.Subject,
+                ContactEmail = inboxFirst?.FromEmail ?? sentFirst?.ToEmail,
+                ContactId = inboxFirst?.Contactid ?? sentFirst?.ContactId,
+                TotalMessages = messages.Count,
+                LastMessageDate = messages.Max(x => x.Date),
+                HasUnread = messages.Any(x => !x.IsRead),
+                Messages = messages
+            };
+        })
+        .OrderByDescending(x => x.LastMessageDate)
+        .ToList();
+
+        var totalCount = threads.Count;
+        var pagedThreads = threads
+            .Skip((pageNumber - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
+
+        return new PagedInboxEmailDto
+        {
+            TotalCount = totalCount,
+            TotalPages = (int)Math.Ceiling(totalCount / (double)pageSize),
+            PageNumber = pageNumber,
+            PageSize = pageSize,
+            Data = pagedThreads
+        };
+    }
+    
+
+    public async Task<bool> CreateInboxCredentialsAsync(InboxcredentialsDTO dto)
+    {
+        try
+        {
+            // =========================
+            // CHECK EXISTING
+            // =========================
+            var existing = await GetByUserNameAsync(
+                dto.ClientId,
+                dto.Username);
+
+            if (existing != null)
+                return false;
+
+            // =========================
+            // CHECK SMTP
+            // =========================
+            var smtp = await _context.SmtpCredentials
+                .FirstOrDefaultAsync(s =>
+                    s.Username == dto.Username &&
+                    s.ClientId == dto.ClientId.ToString());
+
+            if (smtp == null)
+                return false;
+
+            // =========================
+            // VALIDATE IMAP
+            // =========================
+            var isValid = await ValidateAsync(dto);
+
+            if (!isValid)
+                return false;
+
+            // =========================
+            // CREATE ENTITY
+            // =========================
+            var entity = new Inboxcredentials
+            {
+                ClientId = dto.ClientId,
+                EmailAddress = dto.EmailAddress,
+                Protocol = "IMAP",
+                Host = dto.Host,
+                Port = dto.Port,
+                Username = dto.Username,
+                Password = dto.Password,
+                Outboxid = smtp.Id,
+                encryption = dto.encryption,
+                FullInboxSync = dto.FullInboxSync,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            await AddAsync(entity);
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 }

@@ -6,13 +6,11 @@ namespace PitchGenApi.Model.DTOs
     public class SmtpCredentialDto 
     {
         
-        public int Id { get; set; }
+        [Required]
+        public string OutgoingServer { get; set; }
 
         [Required]
-        public string Server { get; set; }
-
-        [Required]
-        public int Port { get; set; }
+        public int OutgoingPort { get; set; }
 
         [Required]
         public int DomainId { get; set; }
@@ -27,15 +25,22 @@ namespace PitchGenApi.Model.DTOs
         public string FromEmail { get; set; }
         [Required]
         public string SenderName { get; set; }
-
-        [Required]
-        public bool UseSsl { get; set; }
         
         [Required]
-        public string SecurityType { get; set; }
+        public string OutgoingSecurityType { get; set; }
 
         [Required]
         public bool IsUpdate { get; set; }
+
+        [Required]
+        public string IncomingServer { get; set; }
+
+        [Required]
+        public int IncomingPort { get; set; }
+
+        public bool FullInboxSync { get; set; } = true;
+
+        public string IncomingSecurityType { get; set; }
     }
 
 }

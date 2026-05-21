@@ -29,44 +29,44 @@ public class InboxController : ControllerBase
         return Ok(setting);
     }
 
-    [HttpPost("Create-Inboxcredentials")]
-    public async Task<IActionResult> Create([FromBody] InboxcredentialsDTO dto)
-    {
-        var existing = await _repo.GetByUserNameAsync(dto.ClientId,dto.Username,dto.Protocol);
+    //[HttpPost("Create-Inboxcredentials")]
+    //public async Task<IActionResult> Create([FromBody] InboxcredentialsDTO dto)
+    //{
+    //    var existing = await _repo.GetByUserNameAsync(dto.ClientId,dto.Username,dto.Protocol);
 
-        if (existing != null)
-            return BadRequest("Email credentials already exist for this user.");
-        var smtp = await _context.SmtpCredentials.FirstOrDefaultAsync(s => s.Username == dto.Username && s.ClientId == dto.ClientId.ToString());
+    //    if (existing != null)
+    //        return BadRequest("Email credentials already exist for this user.");
+    //    var smtp = await _context.SmtpCredentials.FirstOrDefaultAsync(s => s.Username == dto.Username && s.ClientId == dto.ClientId.ToString());
 
-        if (smtp == null)
-            return BadRequest("Please add outbox first.");
+    //    if (smtp == null)
+    //        return BadRequest("Please add outbox first.");
 
-        var isValid = await _repo.ValidateAsync(dto);
+    //    var isValid = await _repo.ValidateAsync(dto);
 
-        if (!isValid)
-            return BadRequest("Invalid email credentials or unable to connect to server.");
+    //    if (!isValid)
+    //        return BadRequest("Invalid email credentials or unable to connect to server.");
 
-        var entity = new Inboxcredentials
-        {
-            ClientId = dto.ClientId,
-            EmailAddress = dto.EmailAddress,
-            Protocol = dto.Protocol,
-            Host = dto.Host,
-            Port = dto.Port,
-            UseSSL = dto.UseSSL,
-            Username = dto.Username,
-            Password = EncryptPassword(dto.Password),
-            Outboxid = smtp.Id,
-            encryption = dto.encryption,
-            FullInboxSync = dto.FullInboxSync,  
-            //SyncIntervalMinutes = dto.SyncIntervalMinutes,
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
+    //    var entity = new Inboxcredentials
+    //    {
+    //        ClientId = dto.ClientId,
+    //        EmailAddress = dto.EmailAddress,
+    //        Protocol = dto.Protocol,
+    //        Host = dto.Host,
+    //        Port = dto.Port,
+    //        UseSSL = dto.UseSSL,
+    //        Username = dto.Username,
+    //        Password = EncryptPassword(dto.Password),
+    //        Outboxid = smtp.Id,
+    //        encryption = dto.encryption,
+    //        FullInboxSync = dto.FullInboxSync,  
+    //        //SyncIntervalMinutes = dto.SyncIntervalMinutes,
+    //        CreatedAt = DateTime.UtcNow,
+    //        UpdatedAt = DateTime.UtcNow
+    //    };
 
-        await _repo.AddAsync(entity);
-        return Ok(entity);
-    }
+    //    await _repo.AddAsync(entity);
+    //    return Ok(entity);
+    //}
 
     [HttpPost("update-Inboxcredentials")]
     public async Task<IActionResult> Update([FromQuery] int id, [FromBody] InboxcredentialsDTO dto)
@@ -81,10 +81,9 @@ public class InboxController : ControllerBase
             return BadRequest("Invalid email credentials or unable to connect to server.");
 
         existing.EmailAddress = dto.EmailAddress;
-        existing.Protocol = dto.Protocol;
+        existing.Protocol = "IMAP";
         existing.Host = dto.Host;
         existing.Port = dto.Port;
-        existing.UseSSL = dto.UseSSL;
         existing.Username = dto.Username;
         existing.FullInboxSync = dto.FullInboxSync;
         existing.Password = EncryptPassword(dto.Password);
@@ -130,7 +129,7 @@ public class InboxController : ControllerBase
     [HttpPost("mark-read")]
     public async Task<IActionResult> MarkAsRead([FromQuery] string id)
     {
-        var result = await _repo.MarkEmailAsReadAsync(id);
+        var result = await _repo.MarkEmailAsUnassignedReadAsync(id);
 
         if (!result)
             return NotFound(new { success = false, message = "Email not found" });
@@ -255,7 +254,7 @@ public class InboxController : ControllerBase
 
     [HttpGet("get_unassigned_inbox")]
     public async Task<IActionResult> GetInboxEmails(int clientId, int inboxId, string Provider, int pageNumber = 1, int pageSize = 10)
-    {
+     {
         var data = await _repo.GetInboxEmails(
             clientId,
             inboxId,
@@ -282,6 +281,17 @@ public class InboxController : ControllerBase
         });
     }
 
+    [HttpGet("get_combined_inbox_threads")]
+    public async Task<IActionResult> GetCombinedInboxThreads([FromQuery] int clientId, [FromQuery] int inboxId, [FromQuery] string provider, [FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
+    {
+        var data = await _repo.GetCombinedInboxThreadsAsync(clientId, inboxId, provider, pageNumber, pageSize);
+        return Ok(new
+        {
+            success = true,
+            data
+        });
+    }
+
     [HttpPost("mark-unassigned-read")]
     public async Task<IActionResult> MarkAsUnassignedRead([FromQuery] string id)
     {
@@ -291,5 +301,12 @@ public class InboxController : ControllerBase
             return NotFound(new { success = false, message = "Email not found" });
 
         return Ok(new { success = true, message = "Marked as read" });
+    }
+    // Controller
+    [HttpGet("unread-count")]
+    public async Task<IActionResult> GetUnreadCounts([FromQuery]int clientId)
+    {
+        var result = await _repo.GetTotalUnreadCountAsync(clientId);
+        return Ok(result);
     }
 }
