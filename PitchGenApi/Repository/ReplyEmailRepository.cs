@@ -44,7 +44,7 @@ namespace PitchGenApi.Repository
                     .FirstOrDefaultAsync(x => x.Id == clientId);
 
                 // =========================
-                // FIRST EMAIL (Inbox vs Sent compare)
+                // FIRST EMAIL (Logs / Inbox / Replies)
                 // =========================
                 var firstLog = await _context.EmailLogs
                     .Where(x => x.TrackingId == trackingid)
@@ -56,13 +56,38 @@ namespace PitchGenApi.Repository
                     .OrderBy(x => x.CreatedAt)
                     .FirstOrDefaultAsync();
 
-                // pick oldest
-                object firstSent = firstLog;
+                var firstReply = await _context.EmailReplies
+                    .Where(x => x.TrackingId == trackingid)
+                    .OrderBy(x => x.Date)
+                    .FirstOrDefaultAsync();
 
-                if (firstInbox != null &&
-                   (firstLog == null || firstInbox.CreatedAt < firstLog.SentAt))
+                DateTime? logDate = firstLog?.SentAt;
+                DateTime? inboxDate = firstInbox?.CreatedAt;
+                DateTime? replyDate = firstReply?.Date;
+
+                // oldest mail
+                var oldestDate = new[]
+                {
+                logDate,
+                inboxDate,
+                replyDate
+                }
+                .Where(x => x != null)
+                .Min();
+
+                object firstSent = null;
+
+                if (oldestDate == logDate)
+                {
+                    firstSent = firstLog;
+                }
+                else if (oldestDate == inboxDate)
                 {
                     firstSent = firstInbox;
+                }
+                else
+                {
+                    firstSent = firstReply;
                 }
 
                 if (firstSent == null)
@@ -97,10 +122,17 @@ namespace PitchGenApi.Repository
                 var replyToEmail =
                     lastReply?.FromEmail ??
                     lastSent?.ToEmail ??
-                    firstInbox?.FromEmail;
+                    firstInbox?.FromEmail ??
+                    firstReply?.FromEmail;
 
                 var threadSubject =
-                    (firstInbox?.Subject ?? lastSent?.Subject ?? lastReply?.Subject ?? "Re:").Trim();
+                    (
+                        firstInbox?.Subject ??
+                        firstReply?.Subject ??
+                        lastSent?.Subject ??
+                        lastReply?.Subject ??
+                        "Re:"
+                    ).Trim();
 
                 if (!threadSubject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase))
                     threadSubject = "Re: " + threadSubject;
@@ -232,7 +264,7 @@ namespace PitchGenApi.Repository
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
-                    ContactId = firstLog?.ContactId ?? firstInbox?.Contactid,
+                    ContactId = firstLog?.ContactId ?? firstInbox?.Contactid ?? firstReply?.ContactId,
                     ToEmail = replyToEmail,
                     Subject = mail.Subject,
                     Body = replyBody,
@@ -458,7 +490,7 @@ namespace PitchGenApi.Repository
             }
 
             // =========================
-            // FIRST EMAIL (Inbox vs Sent compare)
+            // FIRST EMAIL (Logs / Inbox / Replies)
             // =========================
             var firstLog = await _context.EmailLogs
                 .Where(x => x.TrackingId == trackingid)
@@ -470,12 +502,37 @@ namespace PitchGenApi.Repository
                 .OrderBy(x => x.CreatedAt)
                 .FirstOrDefaultAsync();
 
-            object firstSent = firstLog;
+            var firstReply = await _context.EmailReplies
+                .Where(x => x.TrackingId == trackingid)
+                .OrderBy(x => x.Date)
+                .FirstOrDefaultAsync();
 
-            if (firstInbox != null &&
-               (firstLog == null || firstInbox.CreatedAt < firstLog.SentAt))
+            DateTime? logDate = firstLog?.SentAt;
+            DateTime? inboxDate = firstInbox?.CreatedAt;
+            DateTime? replyDate = firstReply?.Date;
+
+            var oldestDate = new[]
+            {
+                logDate,
+                inboxDate,
+                replyDate
+            }
+            .Where(x => x != null)
+            .Min();
+
+            object firstSent = null;
+
+            if (oldestDate == logDate)
+            {
+                firstSent = firstLog;
+            }
+            else if (oldestDate == inboxDate)
             {
                 firstSent = firstInbox;
+            }
+            else
+            {
+                firstSent = firstReply;
             }
 
             if (firstSent == null)
@@ -506,16 +563,24 @@ namespace PitchGenApi.Repository
             var latestMessageId =
                 lastReply?.MessageId ??
                 lastSent?.MessageId ??
+                firstReply?.MessageId ??
                 firstLog?.MessageId ??
                 firstInbox?.MessageId;
 
             var replyToEmail =
                 lastReply?.FromEmail ??
                 lastSent?.ToEmail ??
-                firstInbox?.FromEmail;
+                firstInbox?.FromEmail ??
+                firstReply?.FromEmail;
 
             var threadSubject =
-                (firstInbox?.Subject ?? lastSent?.Subject ?? lastReply?.Subject ?? "Re:").Trim();
+                 (
+                     firstInbox?.Subject ??
+                     firstReply?.Subject ??
+                     lastSent?.Subject ??
+                     lastReply?.Subject ??
+                     "Re:"
+                 ).Trim();
 
             if (!threadSubject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase))
                 threadSubject = "Re: " + threadSubject;
@@ -613,7 +678,7 @@ namespace PitchGenApi.Repository
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
-                    ContactId = firstLog?.ContactId ?? firstInbox?.Contactid,
+                    ContactId = firstLog?.ContactId ?? firstInbox?.Contactid ?? firstReply?.ContactId,
                     ToEmail = replyToEmail,
                     Subject = threadSubject,
                     Body = replyBody,
@@ -625,7 +690,7 @@ namespace PitchGenApi.Repository
                     SentAt = DateTime.UtcNow,
                     TrackingId = trackingid,
                     MessageId = normalizedMsgId,
-                    ThreadId = lastSent?.ThreadId ?? firstInbox?.ThreadId,
+                    ThreadId = lastSent?.ThreadId ?? firstInbox?.ThreadId ?? firstReply?.ThreadId,
                     process_name = "ThreadReply"
                 });
 
