@@ -560,21 +560,6 @@ namespace PitchGenApi.Repositories
                 await _db.SmtpCredentials.AddAsync(smtpEntity);
                 await _db.SaveChangesAsync();
 
-                var inboxdto = new InboxcredentialsDTO
-                {
-                    ClientId = userId,
-                    EmailAddress = smtpDto.FromEmail,
-                    Host = smtpDto.IncomingServer,
-                    Port = smtpDto.IncomingPort,
-                    Username = smtpDto.Username,
-                    Password = smtpDto.Password,
-                    FullInboxSync = smtpDto.FullInboxSync,
-                    encryption = smtpDto.IncomingSecurityType
-                };
-                var inbox =await _inbox.CreateInboxCredentialsAsync(inboxdto);
-                if (inbox == false)
-                    return Fail("Invalid or imap  details");
-
                 return Success("SMTP configuration verified and saved successfully");
             }
             catch (Exception ex)

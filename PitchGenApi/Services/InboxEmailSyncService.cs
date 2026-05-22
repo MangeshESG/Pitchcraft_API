@@ -272,6 +272,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         MessageId = normalizedMessageId,
                         InReplyTo = normalizedInReplyTo,
                         FromEmail = msg.From.ToString(),
+                        Inboxid = setting.Id,
                         Subject = msg.Subject,
                         Body = body,
                         TrackingId = trackingId ?? sent.TrackingId,
@@ -294,108 +295,96 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             // =========================================
             else
             {
-                if (setting.FullInboxSync == true)
-                {
-                    // Skip own sender accounts in full inbox too
-                    bool isOurSenderInbox = await _context.EmailLogs
-                          .AnyAsync(x => x.SenderEmailId == fromEmail && x.ClientId == setting.ClientId && x.outboxid == setting.Outboxid);
+                var existingContact = await (
+                    from c in _context.contacts
+                    join d in _context.data_files
+                        on c.DataFileId equals d.id
+                    where c.email == fromEmail
+                          && d.client_id == setting.ClientId
+                    select c
+                ).FirstOrDefaultAsync();
 
-                    if (isOurSenderInbox)
+                // =========================================
+                // EXISTING CONTACT -> SAVE IN REPLIES
+                // =========================================
+                if (existingContact != null)
+                {
+                    bool alreadyReplyExists = await _context.EmailReplies
+                        .AnyAsync(x => x.MessageId == normalizedMessageId);
+
+                    if (alreadyReplyExists)
                     {
-                        Console.WriteLine("Our sender mail skipped (FullInbox)");
-                        if (uid.Id > maxUid) maxUid = uid.Id;
-                        if (maxUid > setting.LastUid)
-                        {
-                            setting.LastUid = maxUid;
-                            _context.Inboxcredentials.Update(setting);
-                        }
-                        await _context.SaveChangesAsync();
+                        Console.WriteLine("⚠️ Duplicate MessageId skipped");
                         continue;
                     }
 
-                    var inboxExists = await _context.InboxEmails
-                        .FirstOrDefaultAsync(x => x.FromEmail == fromEmail);
-
-                    if (inboxExists == null || inboxExists.MessageId != normalizedMessageId)
+                    _context.EmailReplies.Add(new EmailReplies
                     {
-                        if (inboxExists != null && inboxExists.MessageId == normalizedInReplyTo)
-                        {
-                            bool alreadyExists = await _context.EmailReplies
-                                .AnyAsync(x => x.MessageId == normalizedMessageId);
+                        ClientId = setting.ClientId,
+                        ContactId = existingContact.id,
+                        MessageId = normalizedMessageId,
+                        InReplyTo = normalizedInReplyTo,
+                        FromEmail = fromEmail,
+                        Subject = msg.Subject,
+                        Inboxid = setting.Id,
+                        Body = body,
+                        TrackingId = Guid.NewGuid(),
+                        Date = msg.Date.UtcDateTime,
+                        ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                            ? threadIndex
+                            : normalizedMessageId
+                    });
 
-                            if (alreadyExists)
-                            {
-                                Console.WriteLine("⚠️ Duplicate MessageId skipped");
-                                continue;
-                            }
-                            _context.EmailReplies.Add(new EmailReplies
-                            {
-                                ClientId = setting.ClientId,
-                                ContactId = inboxExists.Contactid,
-                                MessageId = normalizedMessageId,
-                                InReplyTo = normalizedInReplyTo,
-                                FromEmail = fromEmail,
-                                Subject = msg.Subject,
-                                Body = body,
-                                TrackingId = inboxExists.TrackingId,
-                                Date = msg.Date.UtcDateTime,
-                                ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
-                                                      ? threadIndex
-                                                      : (inboxExists.ThreadId ?? inboxExists.MessageId)
-                            });
-                        }
-                        else
-                        {
-                            trackingId = Guid.NewGuid();
-
-                            var contactResult = await _contact.SaveConversationContactAsync(
-                             fromName,
-                             fromEmail,
-                             setting.ClientId);
-
-                            if (!contactResult.Success)
-                            {
-                                Console.WriteLine(contactResult.Message);
-                            }
-
-                            bool alreadyExists = await _context.InboxEmails
-                                .AnyAsync(x => x.MessageId == normalizedMessageId);
-
-                            if (alreadyExists)
-                            {
-                                Console.WriteLine("⚠️ Duplicate MessageId skipped");
-                                continue;
-                            }
-                            _context.InboxEmails.Add(new InboxEmails
-                            {
-                                InboxId = setting.Id,
-                                ClientId = setting.ClientId,
-                                MessageId = normalizedMessageId,
-                                InReplyTo = normalizedInReplyTo,
-                                FromEmail = fromEmail,
-                                FromName = fromName,
-                                Subject = msg.Subject,
-                                Contactid = contactResult.ContactId,
-                                Body = body,
-                                Date = msg.Date.UtcDateTime,
-                                IsRead = false,
-                                Provider = provider,
-                                TrackingId = trackingId,
-                                ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
-                                    ? threadIndex
-                                    : normalizedMessageId
-                            });
-                        }
-                        Console.WriteLine("📥 Normal Inbox Mail Saved");
-                    }
-                    else
-                    {
-                        Console.WriteLine("⚠️ Inbox Duplicate");
-                    }
+                    Console.WriteLine("💾 Existing Contact Mail Saved In Replies");
                 }
+
+                // =========================================
+                // NEW CONTACT -> SAVE IN INBOX
+                // =========================================
                 else
                 {
-                    Console.WriteLine("❌ No PK match → skipped (FullInboxSync OFF)");
+                    trackingId = Guid.NewGuid();
+
+                    var contactResult = await _contact.SaveConversationContactAsync(
+                        fromName,
+                        fromEmail,
+                        setting.ClientId);
+
+                    if (!contactResult.Success)
+                    {
+                        Console.WriteLine(contactResult.Message);
+                    }
+
+                    bool alreadyExists = await _context.InboxEmails
+                        .AnyAsync(x => x.MessageId == normalizedMessageId);
+
+                    if (alreadyExists)
+                    {
+                        Console.WriteLine("⚠️ Duplicate MessageId skipped");
+                        continue;
+                    }
+
+                    _context.InboxEmails.Add(new InboxEmails
+                    {
+                        InboxId = setting.Id,
+                        ClientId = setting.ClientId,
+                        MessageId = normalizedMessageId,
+                        InReplyTo = normalizedInReplyTo,
+                        FromEmail = fromEmail,
+                        FromName = fromName,
+                        Subject = msg.Subject,
+                        Contactid = contactResult.ContactId,
+                        Body = body,
+                        Date = msg.Date.UtcDateTime,
+                        IsRead = false,
+                        Provider = provider,
+                        TrackingId = trackingId,
+                        ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                            ? threadIndex
+                            : normalizedMessageId
+                    });
+
+                    Console.WriteLine("📥 Normal Inbox Mail Saved");
                 }
             }
 
@@ -627,6 +616,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     MessageId = messageId,
                     InReplyTo = inReplyTo,
                     FromEmail = from,
+                    Inboxid = tokenData.Id,
                     Subject = subject,
                     Body = cleanbody,
                     TrackingId = sentMail.TrackingId,
@@ -678,6 +668,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         }
 
         var http = new HttpClient();
+
         http.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
 
@@ -694,6 +685,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             $"&$select=id,internetMessageId,subject,from,body,receivedDateTime,internetMessageHeaders";
 
         string nextLink = url;
+
         int processed = 0;
         int limit = 100;
 
@@ -702,6 +694,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         while (!string.IsNullOrEmpty(nextLink))
         {
             var res = await http.GetAsync(nextLink);
+
             var json = await res.Content.ReadAsStringAsync();
 
             if (!res.IsSuccessStatusCode)
@@ -721,17 +714,29 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             foreach (var msg in data.value)
             {
                 string messageId = msg.internetMessageId;
-                // 🔥 Duplicate check
-                bool exists = await _context.EmailReplies
+
+                // =========================================
+                // DUPLICATE CHECK
+                // =========================================
+                bool replyExists = await _context.EmailReplies
                     .AnyAsync(x => x.MessageId == messageId);
 
-                if (exists)
+                if (replyExists)
+                    continue;
+
+                bool inboxExistsAlready = await _context.InboxEmails
+                    .AnyAsync(x => x.MessageId == messageId);
+
+                if (inboxExistsAlready)
                     continue;
 
                 string subject = msg.subject;
                 string from = msg.from?.emailAddress?.address;
                 string fromName = msg.from?.emailAddress?.name ?? "";
-                // Skip own inbox address
+
+                // =========================================
+                // SKIP OWN MAILS
+                // =========================================
                 if (!string.IsNullOrWhiteSpace(from) &&
                     from.Equals(tokenData.Email, StringComparison.OrdinalIgnoreCase))
                 {
@@ -739,9 +744,12 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     continue;
                 }
 
-                // Skip if from is any of our sender accounts
+                // Skip sender accounts
                 bool isOurSenderOutlook = await _context.EmailLogs
-                    .AnyAsync(x => x.SenderEmailId == from && x.ClientId == tokenData.ClientId && x.outboxid == tokenData.Id);
+                    .AnyAsync(x =>
+                        x.SenderEmailId == from &&
+                        x.ClientId == tokenData.ClientId &&
+                        x.outboxid == tokenData.Id);
 
                 if (isOurSenderOutlook)
                 {
@@ -749,10 +757,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     continue;
                 }
 
-                // Skip if this is our own ThreadReply by MessageId
+                // Skip own sent thread replies
                 bool isOurReply = await _context.EmailLogs
-                    .AnyAsync(x => x.MessageId == messageId ||
-                                   x.MessageId == $"<{messageId.Trim('<', '>')}>");
+                    .AnyAsync(x =>
+                        x.MessageId == messageId ||
+                        x.MessageId == $"<{messageId.Trim('<', '>')}>");
 
                 if (isOurReply)
                 {
@@ -760,11 +769,12 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     continue;
                 }
 
-                // =========================
-                // 🔥 FIXED HEADER PARSE (NO LAMBDA)
-                // =========================
+                // =========================================
+                // HEADERS
+                // =========================================
                 string inReplyTo = "";
                 string threadIndex = "";
+
                 if (msg.internetMessageHeaders != null)
                 {
                     foreach (var h in msg.internetMessageHeaders)
@@ -787,12 +797,27 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     ? DateTimeOffset.Parse(msg.receivedDateTime.ToString()).UtcDateTime
                     : DateTime.UtcNow;
 
-                // =========================
-                // 🔥 MATCHING LOGIC
-                // =========================
+                // =========================================
+                // CLEAN BODY
+                // =========================================
+                var cleanbody = Regex.Replace(
+                    body,
+                    @"TRACKING_ID:[0-9a-fA-F\-]{36}",
+                    "");
+
+                cleanbody = Regex.Replace(cleanbody, @"(?m)^>\s?", "");
+
+                cleanbody = cleanbody.Trim();
+
+                cleanbody = ExtractOnlyReply(cleanbody);
+
+                // =========================================
+                // MATCHING LOGIC
+                // =========================================
                 EmailLog sentMail = null;
 
-                var trackingId = EmailTrackingHelper.ExtractinboxTrackingId(body);
+                var trackingId = EmailTrackingHelper
+                    .ExtractinboxTrackingId(body);
 
                 if (trackingId != null)
                 {
@@ -811,143 +836,167 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     if (sentMail != null)
                         Console.WriteLine("✅ Matched via InReplyTo");
                 }
-                var cleanbody = Regex.Replace(body, @"TRACKING_ID:[0-9a-fA-F\-]{36}", "");
-                cleanbody = Regex.Replace(cleanbody, @"(?m)^>\s?", "");
-                cleanbody = cleanbody.Trim();
-                cleanbody = ExtractOnlyReply(cleanbody);
 
-                if (sentMail == null)
+                // =========================================
+                // PK MAIL FOUND -> SAVE IN REPLIES
+                // =========================================
+                if (sentMail != null)
                 {
-                    if (tokenData.FullInboxSync)
+                    _context.EmailReplies.Add(new EmailReplies
                     {
-                        // Skip own sender accounts
-                        bool isOurSenderOutlookInbox = await _context.EmailLogs
-                            .AnyAsync(x => x.SenderEmailId == from && x.ClientId == tokenData.ClientId && x.outboxid == tokenData.Id);
+                        ClientId = sentMail.ClientId,
+                        ContactId = sentMail.ContactId,
+                        CampaignId = sentMail.CampaignId,
+                        MessageId = messageId,
+                        InReplyTo = inReplyTo,
+                        FromEmail = from,
+                        Subject = subject,
+                        Inboxid = tokenData.Id,
+                        Body = cleanbody,
+                        TrackingId = sentMail.TrackingId,
+                        Date = emailDate,
+                        ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                            ? threadIndex
+                            : (sentMail.ThreadId ?? sentMail.MessageId)
+                    });
 
-                        if (!isOurSenderOutlookInbox)
-                        {
-                            var inboxExists = await _context.InboxEmails
-                         .FirstOrDefaultAsync(x => x.FromEmail == from);
-
-                            if (inboxExists == null || inboxExists.MessageId != messageId)
-                            {
-                                if (inboxExists != null && inboxExists.MessageId == inReplyTo)
-                                {
-                                    _context.EmailReplies.Add(new EmailReplies
-                                    {
-                                        ClientId = tokenData.ClientId,
-                                        ContactId = inboxExists.Contactid,
-                                        MessageId = messageId,
-                                        InReplyTo = inReplyTo,
-                                        FromEmail = from,
-                                        Subject = subject,
-                                        Body = cleanbody,
-                                        TrackingId = inboxExists.TrackingId,
-                                        Date = emailDate,
-                                        ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
-                                                              ? threadIndex
-                                                              : (inboxExists.ThreadId ?? inboxExists.MessageId)
-                                    });
-                                }
-                                else
-                                {
-                                    trackingId = Guid.NewGuid();
-
-                                    var contactResult = await _contact.SaveConversationContactAsync(
-                                     fromName,
-                                     from,
-                                     tokenData.ClientId);
-
-                                    if (!contactResult.Success)
-                                    {
-                                        Console.WriteLine(contactResult.Message);
-                                    }
-
-                                    try
-                                    {
-                                        bool alreadyExists = await _context.InboxEmails
-                                            .AnyAsync(x => x.MessageId == messageId);
-
-                                        if (alreadyExists)
-                                        {
-                                            Console.WriteLine("⚠️ Duplicate MessageId skipped");
-                                            continue;
-                                        }
-                                        _context.InboxEmails.Add(new InboxEmails
-                                        {
-                                            InboxId = tokenData.Id,
-                                            ClientId = tokenData.ClientId,
-                                            MessageId = messageId,
-                                            InReplyTo = inReplyTo,
-                                            FromEmail = from,
-                                            FromName = fromName,
-                                            Subject = subject,
-                                            Contactid = contactResult.ContactId,
-                                            Body = cleanbody,
-                                            Date = emailDate,
-                                            IsRead = false,
-                                            TrackingId = trackingId,
-                                            ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
-                                                ? threadIndex
-                                                : messageId
-                                        });
-                                    }
-                                    catch
-                                    (Exception ex)
-                                    {
-
-                                        Console.WriteLine("Error saving inbox email: " + ex.Message);
-                                    }
-                                }
-                                Console.WriteLine("📥 Normal Inbox Mail Saved");
-                            }
-                            else
-                            {
-                                Console.WriteLine("⚠️ Inbox Duplicate");
-                            }
-                        }
-                        else
-                        {
-                            Console.WriteLine("Our sender mail skipped (Outlook FullInbox)");
-                        }
-                    }
-                    else
-                    {
-                        Console.WriteLine("❌ Not our email → Skipped");
-                    }
-                    continue;
+                    Console.WriteLine($"💾 PK Reply Saved: {subject}");
                 }
 
-                // =========================
-                // 🔥 CLEAN BODY (same as Gmail/IMAP)
-                // =========================
-               
-
-
-                // 🔥 SAVE
-                _context.EmailReplies.Add(new EmailReplies
+                // =========================================
+                // NORMAL MAIL
+                // =========================================
+                else
                 {
-                    ClientId = sentMail.ClientId,
-                    ContactId = sentMail.ContactId,
-                    CampaignId = sentMail.CampaignId,
-                    MessageId = messageId,
-                    InReplyTo = inReplyTo,
-                    FromEmail = from,
-                    Subject = subject,
-                    Body = cleanbody,
-                    TrackingId = sentMail.TrackingId,
-                    Date = emailDate
-                });
+                    if (!tokenData.FullInboxSync)
+                    {
+                        Console.WriteLine("❌ Not our email → Skipped");
+                        continue;
+                    }
 
-                // 🔥 latest time
+                    // =========================================
+                    // EXISTING CONTACT CHECK
+                    // =========================================
+                    var existingContact = await _context.contacts
+                    .Join(
+                        _context.data_files,
+                        c => c.DataFileId,
+                        d => d.id,
+                        (c, d) => new { c, d }
+                    )
+                    .Where(x =>
+                        x.c.email == from &&
+                        x.d.client_id == tokenData.ClientId)
+                    .Select(x => x.c)
+                    .FirstOrDefaultAsync();
+
+                    // =========================================
+                    // CHECK EXISTING INBOX THREAD
+                    // =========================================
+                    var inboxExists = await _context.InboxEmails
+                        .FirstOrDefaultAsync(x => x.FromEmail == from);
+
+                    // =========================================
+                    // REPLY TO EXISTING INBOX THREAD
+                    // =========================================
+                    if (inboxExists != null &&
+                        inboxExists.MessageId == inReplyTo)
+                    {
+                        _context.EmailReplies.Add(new EmailReplies
+                        {
+                            ClientId = tokenData.ClientId,
+                            ContactId = inboxExists.Contactid,
+                            MessageId = messageId,
+                            InReplyTo = inReplyTo,
+                            FromEmail = from,
+                            Subject = subject,
+                            Inboxid = tokenData.Id,
+                            Body = cleanbody,
+                            TrackingId = inboxExists.TrackingId,
+                            Date = emailDate,
+                            ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                                ? threadIndex
+                                : (inboxExists.ThreadId ?? inboxExists.MessageId)
+                        });
+
+                        Console.WriteLine("💾 Inbox Thread Reply Saved");
+                    }
+
+                    // =========================================
+                    // EXISTING CONTACT -> SAVE IN REPLIES
+                    // =========================================
+                    else if (existingContact != null)
+                    {
+                        _context.EmailReplies.Add(new EmailReplies
+                        {
+                            ClientId = tokenData.ClientId,
+                            ContactId = existingContact.id,
+                            MessageId = messageId,
+                            InReplyTo = inReplyTo,
+                            FromEmail = from,
+                            Subject = subject,
+                            Inboxid = tokenData.Id,
+                            Body = cleanbody,
+                            TrackingId = Guid.NewGuid(),
+                            Date = emailDate,
+                            ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                                ? threadIndex
+                                : messageId
+                        });
+
+                        Console.WriteLine("💾 Existing Contact Mail Saved In Replies");
+                    }
+
+                    // =========================================
+                    // NEW CONTACT -> SAVE IN INBOX
+                    // =========================================
+                    else
+                    {
+                        trackingId = Guid.NewGuid();
+
+                        var contactResult =
+                            await _contact.SaveConversationContactAsync(
+                                fromName,
+                                from,
+                                tokenData.ClientId);
+
+                        if (!contactResult.Success)
+                        {
+                            Console.WriteLine(contactResult.Message);
+                        }
+
+                        _context.InboxEmails.Add(new InboxEmails
+                        {
+                            InboxId = tokenData.Id,
+                            ClientId = tokenData.ClientId,
+                            MessageId = messageId,
+                            InReplyTo = inReplyTo,
+                            FromEmail = from,
+                            FromName = fromName,
+                            Subject = subject,
+                            Contactid = contactResult.ContactId,
+                            Body = cleanbody,
+                            Date = emailDate,
+                            IsRead = false,
+                            TrackingId = trackingId,
+                            ThreadId = !string.IsNullOrWhiteSpace(threadIndex)
+                                ? threadIndex
+                                : messageId
+                        });
+
+                        Console.WriteLine("📥 Normal Inbox Mail Saved");
+                    }
+                }
+
+                // =========================================
+                // UPDATE SYNC TIME
+                // =========================================
                 if (latestEmailTime == null || emailDate > latestEmailTime)
                 {
                     latestEmailTime = emailDate;
                 }
 
                 processed++;
-
-                Console.WriteLine($"💾 Saved reply: {subject}");
 
                 if (processed >= limit)
                     break;
@@ -959,15 +1008,18 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             nextLink = data["@odata.nextLink"];
         }
 
-        // 🔥 Update sync time
+        // =========================================
+        // UPDATE LAST SYNC
+        // =========================================
         if (latestEmailTime != null)
         {
-            tokenData.LastInboxSyncAt = latestEmailTime.Value.AddSeconds(-5);
+            tokenData.LastInboxSyncAt =
+                latestEmailTime.Value.AddSeconds(-5);
         }
 
         await _context.SaveChangesAsync();
 
-        Console.WriteLine($"✅ Outlook Sync Done: {processed} replies saved");
+        Console.WriteLine($"✅ Outlook Sync Done: {processed} mails processed");
     }
 
     private string GetHeader(dynamic headers, string name)

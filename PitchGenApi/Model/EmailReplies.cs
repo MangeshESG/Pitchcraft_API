@@ -6,6 +6,7 @@
         public int ClientId { get; set; }
         public int? ContactId { get; set; }
         public int? CampaignId { get; set; }
+        public int? Inboxid { get; set; }
 
         public string? MessageId { get; set; }
         public string? InReplyTo { get; set; }

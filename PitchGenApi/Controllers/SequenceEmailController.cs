@@ -556,22 +556,6 @@ namespace PitchGenApi.Controllers
                     await smtpClient.DisconnectAsync(true);
                 }
 
-                var inboxdto  = new InboxcredentialsDTO
-                {
-                    ClientId = int.TryParse(ClientId, out int clientId) ? clientId : 0,
-                    EmailAddress = dto.FromEmail,
-                    Host = dto.IncomingServer,
-                    Port = dto.IncomingPort,
-                    Username = dto.Username,
-                    Password = dto.Password,
-                    FullInboxSync = dto.FullInboxSync,
-                    encryption = dto.IncomingSecurityType
-                };
-
-                var isValid = await _inboxRepository.ValidateAsync(inboxdto);
-
-                if (!isValid)
-                    return BadRequest("Email already exists");
             }
             catch (Exception ex)
             {

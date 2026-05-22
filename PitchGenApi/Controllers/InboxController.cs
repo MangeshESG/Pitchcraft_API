@@ -29,44 +29,43 @@ public class InboxController : ControllerBase
         return Ok(setting);
     }
 
-    //[HttpPost("Create-Inboxcredentials")]
-    //public async Task<IActionResult> Create([FromBody] InboxcredentialsDTO dto)
-    //{
-    //    var existing = await _repo.GetByUserNameAsync(dto.ClientId,dto.Username,dto.Protocol);
+    [HttpPost("Create-Inboxcredentials")]
+    public async Task<IActionResult> Create([FromBody] InboxcredentialsDTO dto)
+    {
+        var existing = await _repo.GetByUserNameAsync(dto.ClientId, dto.Username);
 
-    //    if (existing != null)
-    //        return BadRequest("Email credentials already exist for this user.");
-    //    var smtp = await _context.SmtpCredentials.FirstOrDefaultAsync(s => s.Username == dto.Username && s.ClientId == dto.ClientId.ToString());
+        if (existing != null)
+            return BadRequest("Email credentials already exist for this user.");
+        var smtp = await _context.SmtpCredentials.FirstOrDefaultAsync(s => s.Username == dto.Username && s.ClientId == dto.ClientId.ToString());
 
-    //    if (smtp == null)
-    //        return BadRequest("Please add outbox first.");
+        if (smtp == null)
+            return BadRequest("Please add outbox first.");
 
-    //    var isValid = await _repo.ValidateAsync(dto);
+        var isValid = await _repo.ValidateAsync(dto);
 
-    //    if (!isValid)
-    //        return BadRequest("Invalid email credentials or unable to connect to server.");
+        if (!isValid)
+            return BadRequest("Invalid email credentials or unable to connect to server.");
 
-    //    var entity = new Inboxcredentials
-    //    {
-    //        ClientId = dto.ClientId,
-    //        EmailAddress = dto.EmailAddress,
-    //        Protocol = dto.Protocol,
-    //        Host = dto.Host,
-    //        Port = dto.Port,
-    //        UseSSL = dto.UseSSL,
-    //        Username = dto.Username,
-    //        Password = EncryptPassword(dto.Password),
-    //        Outboxid = smtp.Id,
-    //        encryption = dto.encryption,
-    //        FullInboxSync = dto.FullInboxSync,  
-    //        //SyncIntervalMinutes = dto.SyncIntervalMinutes,
-    //        CreatedAt = DateTime.UtcNow,
-    //        UpdatedAt = DateTime.UtcNow
-    //    };
+        var entity = new Inboxcredentials
+        {
+            ClientId = dto.ClientId,
+            EmailAddress = dto.EmailAddress,
+            Host = dto.Host,
+            Port = dto.Port,
+            Protocol = "IMAP",
+            Username = dto.Username,
+            Password = EncryptPassword(dto.Password),
+            Outboxid = smtp.Id,
+            encryption = dto.encryption,
+            FullInboxSync = dto.FullInboxSync,
+            //SyncIntervalMinutes = dto.SyncIntervalMinutes,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        };
 
-    //    await _repo.AddAsync(entity);
-    //    return Ok(entity);
-    //}
+        await _repo.AddAsync(entity);
+        return Ok(entity);
+    }
 
     [HttpPost("update-Inboxcredentials")]
     public async Task<IActionResult> Update([FromQuery] int id, [FromBody] InboxcredentialsDTO dto)

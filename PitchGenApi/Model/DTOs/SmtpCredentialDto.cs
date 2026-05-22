@@ -31,16 +31,6 @@ namespace PitchGenApi.Model.DTOs
 
         [Required]
         public bool IsUpdate { get; set; }
-
-        [Required]
-        public string IncomingServer { get; set; }
-
-        [Required]
-        public int IncomingPort { get; set; }
-
-        public bool FullInboxSync { get; set; } = true;
-
-        public string IncomingSecurityType { get; set; }
     }
 
 }
