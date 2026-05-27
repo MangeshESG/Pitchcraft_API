@@ -59,14 +59,37 @@ namespace PitchGenApi.Services
             sbInput.AppendLine($"system: {systemContent}");
             sbInput.AppendLine($"user: {request.Prompt}");
 
+            bool isSearchPreviewModel =
+                request.ModelName.Contains("search-preview");
+
             var requestData = new Dictionary<string, object>
+{
+    { "model", request.ModelName },
+    { "input", new object[]
+        {
+            new
             {
-                { "model", request.ModelName },       // Supports GPT-4 & GPT-5
-                { "input", sbInput.ToString() },
-                { "temperature", rate.Temperature },
-                { "max_output_tokens", rate.MaxTokens },
-                { "tools", new object[] { new { type = "web_search_preview" } } }
-            };
+                role = "system",
+                content = systemContent
+            },
+            new
+            {
+                role = "user",
+                content = request.Prompt
+            }
+        }
+    },
+    { "temperature", rate.Temperature },
+    { "max_output_tokens", rate.MaxTokens }
+};
+
+            if (!isSearchPreviewModel)
+            {
+                requestData["tools"] = new object[]
+                {
+        new { type = "web_search_preview" }
+                };
+            }
 
             var requestBody = JsonConvert.SerializeObject(requestData);
             var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
@@ -108,7 +131,12 @@ namespace PitchGenApi.Services
                     parsed["output"]?
                         .Any(o => o["type"]?.ToString() == "web_search_call") ?? false;
 
-                decimal webSearchCost = usedWebSearch ? 0.025m : 0m;
+                decimal webSearchCost = 0m;
+
+                if (!isSearchPreviewModel)
+                {
+                    webSearchCost = usedWebSearch ? 0.025m : 0m;
+                }
 
                 decimal currentCost =
                     inputCost +
@@ -116,6 +144,123 @@ namespace PitchGenApi.Services
                     webSearchCost;
 
 
+
+                return new PitchResult
+                {
+                    Content = output,
+                    PromptTokens = promptTokens,
+                    CompletionTokens = completionTokens,
+                    TotalTokens = totalTokens,
+                    CurrentCost = currentCost,
+                    IsSuccess = true
+                };
+            }
+            catch (Exception ex)
+            {
+                return new PitchResult
+                {
+                    Content = $"Request failed: {ex.Message}",
+                    IsSuccess = false
+                };
+            }
+        }
+
+        public async Task<PitchResult> GenerateWebSearchAsync(EnquiryRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.Prompt))
+                return new PitchResult
+                {
+                    Content = "Prompt is required.",
+                    IsSuccess = false
+                };
+
+            var rate = await _context.ModelRates
+                .FirstOrDefaultAsync(m => m.ModelName == request.ModelName);
+
+            if (rate == null)
+            {
+                return new PitchResult
+                {
+                    Content = "Model pricing not found.",
+                    IsSuccess = false
+                };
+            }
+
+            var messages = new List<object>();
+
+            if (!string.IsNullOrWhiteSpace(request.ScrappedData))
+            {
+                messages.Add(new
+                {
+                    role = "system",
+                    content = request.ScrappedData
+                });
+            }
+
+            messages.Add(new
+            {
+                role = "user",
+                content = request.Prompt
+            });
+
+            var requestData = new
+            {
+                model = request.ModelName,
+                messages = messages,
+                max_tokens = rate.MaxTokens,
+                web_search_options = new { }
+            };
+
+            var requestBody =
+                JsonConvert.SerializeObject(requestData);
+
+            var content =
+                new StringContent(
+                    requestBody,
+                    Encoding.UTF8,
+                    "application/json");
+
+            try
+            {
+                var response = await _httpClient.PostAsync(
+                    "https://api.openai.com/v1/chat/completions",
+                    content);
+
+                var json = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return new PitchResult
+                    {
+                        Content = $"OpenAI API Error: {json}",
+                        IsSuccess = false
+                    };
+                }
+
+                var parsed = JsonConvert.DeserializeObject<JObject>(json)!;
+
+                string output =
+                    parsed["choices"]?[0]?["message"]?["content"]?.ToString()
+                    ?? "";
+
+                int promptTokens =
+                    parsed["usage"]?["prompt_tokens"]?.Value<int>() ?? 0;
+
+                int completionTokens =
+                    parsed["usage"]?["completion_tokens"]?.Value<int>() ?? 0;
+
+                int totalTokens =
+                    parsed["usage"]?["total_tokens"]?.Value<int>()
+                    ?? (promptTokens + completionTokens);
+
+                decimal inputCost =
+                    promptTokens * rate.InputPrice / 1_000_000m;
+
+                decimal outputCost =
+                    completionTokens * rate.OutputPrice / 1_000_000m;
+
+                decimal currentCost =
+                    inputCost + outputCost;
 
                 return new PitchResult
                 {

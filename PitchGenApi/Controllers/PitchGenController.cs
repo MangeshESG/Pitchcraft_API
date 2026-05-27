@@ -40,6 +40,7 @@ namespace PitchGenApi.Controllers
 
 
 
+
         public AuthController(
             IRegisterEmailSender registeredServices,
             IUserRepository userRepository,
@@ -1379,10 +1380,10 @@ namespace PitchGenApi.Controllers
                 {
                     Prompt = request.Instructions,
                     ScrappedData = "",
-                    ModelName = "gpt-4o-mini"
+                    ModelName = "gpt-4o-mini-search-preview"
                 };
 
-                var result = await _pitchservice.GeneratePitchAsync(enquiryRequest);
+                var result = await _pitchservice.GenerateWebSearchAsync(enquiryRequest);
 
                 if (!result.IsSuccess)
                 {
