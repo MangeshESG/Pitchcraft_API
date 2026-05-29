@@ -1371,10 +1371,39 @@ namespace PitchGenApi.Controllers
             try
             {
                 if (request == null)
-                    return BadRequest(new { Message = "Request body is required." });
+                {
+                    return BadRequest(new
+                    {
+                        Message = "Request body is required."
+                    });
+                }
+
+                if (request.ContactId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Message = "ContactId is required."
+                    });
+                }
 
                 if (string.IsNullOrWhiteSpace(request.Instructions))
-                    return BadRequest(new { Message = "Instructions are required." });
+                {
+                    return BadRequest(new
+                    {
+                        Message = "Instructions are required."
+                    });
+                }
+
+                var contact = await _context.contacts
+                    .FirstOrDefaultAsync(x => x.id == request.ContactId);
+
+                if (contact == null)
+                {
+                    return NotFound(new
+                    {
+                        Message = "Contact not found"
+                    });
+                }
 
                 var enquiryRequest = new EnquiryRequest
                 {
@@ -1394,16 +1423,22 @@ namespace PitchGenApi.Controllers
                     });
                 }
 
+                // Save latest search result (replaces old value)
+                contact.web_search_data = result.Content;
+
+                contact.updated_at = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+
                 return Ok(new
                 {
                     Success = true,
-                    WebSearchData = result.Content ?? "",
-                    SearchResults = new List<string>(),
+                    ContactId = contact.id,
+                    WebSearchData = result.Content,
                     Usage = new
                     {
                         result.PromptTokens,
                         result.CompletionTokens,
-                        result.SearchTokens,
                         result.TotalTokens,
                         result.CurrentCost
                     }
@@ -1414,12 +1449,11 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new
                 {
                     Message = "Internal server error during web search",
-                    Error = ex.Message
+                    Error = ex.Message,
+                    InnerError = ex.InnerException?.Message
                 });
             }
         }
-
-
 
     }
 

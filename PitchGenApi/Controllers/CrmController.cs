@@ -873,7 +873,8 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.linkedIninformation
+                        c.linkedIninformation,
+                        c.web_search_data
                     })
                     .ToListAsync();
 
@@ -946,6 +947,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
+                        c.web_search_data,
                         hasLinkedInInfo = !string.IsNullOrEmpty(c.linkedIninformation),
                         hasNotes = notesSet.Contains(c.id),
                         unsubscribe = !string.IsNullOrWhiteSpace(c.email) && unsubscribedSet.Contains(c.email) ? "Yes" : "No",
@@ -1874,6 +1876,7 @@ namespace PitchGenApi.Controllers
                         Email = c.email,
                         CreatedAt = c.created_at,
                         DataFileId = c.DataFileId,
+                        WebSearchData = c.web_search_data,
 
                         // 🔹 DataFile Info
                         DataFile = _context.data_files
@@ -2050,7 +2053,8 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.linkedIninformation
+                        c.linkedIninformation,
+                        c.web_search_data
                     })
                     .ToListAsync();
 
@@ -2076,6 +2080,7 @@ namespace PitchGenApi.Controllers
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
                     c.linkedIninformation,
+                    c.web_search_data,
                     unsubscribe = unsubscribedSet.Contains(c.email) ? "Yes" : "No"
                 }).ToList();
 
@@ -2191,6 +2196,7 @@ namespace PitchGenApi.Controllers
                     CompanyIndustry = existingContact.CompanyIndustry,
                     CompanyEmployeeCount = existingContact.CompanyEmployeeCount,
                     linkedIninformation = existingContact.linkedIninformation,
+                    web_search_data=existingContact.web_search_data,
 
                     created_at = DateTime.UtcNow,
                     updated_at = DateTime.UtcNow,
@@ -2288,6 +2294,7 @@ namespace PitchGenApi.Controllers
                     contact.linkedIninformation,
                     contact.created_at,
                     contact.updated_at,
+                    contact.web_search_data,
                     customFields
                 };
 
