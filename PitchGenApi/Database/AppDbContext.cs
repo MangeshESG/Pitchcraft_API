@@ -64,7 +64,7 @@ namespace PitchGenApi.Database
         public DbSet<EmailReplies> EmailReplies { get; set; }
         public DbSet<EmailOAuthTokens> EmailOAuthTokens { get; set; }
         public DbSet<InboxEmails> InboxEmails { get; set; }
-
+        public DbSet<EmailAttachment> EmailAttachments { get; set; }
 
 
 

@@ -187,6 +187,7 @@ builder.Services.AddScoped<IInboxEmailService, InboxEmailService>();
 builder.Services.AddScoped<IOAuthRepository, OAuthRepository>();
 builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
 builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
+builder.Services.AddScoped<IForwardRepository, ForwardRepository>();
 builder.Services.AddScoped<DefaultCustomFieldSeeder>();
 
 builder.Services.Configure<DeepSeekSettings>(

@@ -525,14 +525,14 @@ namespace PitchGenApi.Repositories
                 // ✅ Mark OTP verified
                 otpEntry.IsVerified = true;
 
-                // 🔹 Deserialize SMTP
+                // ✅ Deserialize SMTP payload
                 var smtpDto = JsonSerializer.Deserialize<SmtpCredentialDto>(
                     otpEntry.TempSmtpPayload);
 
                 if (smtpDto == null)
                     return Fail("Invalid SMTP payload");
 
-                // 🔹 Save SMTP ONLY AFTER OTP VERIFY
+                // ✅ SMTP Entity
                 var smtpEntity = new SmtpCredentials
                 {
                     ClientId = clientId,
@@ -545,7 +545,33 @@ namespace PitchGenApi.Repositories
                     DomainId = smtpDto.DomainId,
                     SecurityType = smtpDto.OutgoingSecurityType,
                 };
-                
+
+                // ✅ Save SMTP first to generate Id
+                await _db.SmtpCredentials.AddAsync(smtpEntity);
+                await _db.SaveChangesAsync();
+
+                // ✅ IMAP Entity (Optional)
+                if (smtpDto.Inbox != null)
+                {
+                    var imapEntity = new Inboxcredentials
+                    {
+                        ClientId = userId,
+                        EmailAddress = smtpDto.Inbox.EmailAddress,
+                        Protocol = "IMAP",
+                        Host = smtpDto.Inbox.Host,
+                        Port = smtpDto.Inbox.Port,
+                        FullInboxSync = smtpDto.Inbox.FullInboxSync,
+                        Username = smtpDto.Inbox.Username,
+                        Password = smtpDto.Inbox.Password,
+                        Outboxid = smtpEntity.Id,
+                        encryption = smtpDto.Inbox.encryption,
+                        CreatedAt = DateTime.UtcNow,
+                    };
+
+                    await _db.Inboxcredentials.AddAsync(imapEntity);
+                }
+
+                // ✅ Domain Verification Record
                 var emailRecord = new DomainEmailVerification
                 {
                     ClientId = userId,
@@ -557,15 +583,15 @@ namespace PitchGenApi.Repositories
                 };
 
                 await _db.DomainEmailVerification.AddAsync(emailRecord);
-                await _db.SmtpCredentials.AddAsync(smtpEntity);
+
+                // ✅ Final Save
                 await _db.SaveChangesAsync();
 
                 return Success("SMTP configuration verified and saved successfully");
             }
             catch (Exception ex)
             {
-                // log ex if needed
-                return Fail("Failed to verify SMTP OTP");
+                return Fail($"Failed to verify SMTP OTP: {ex.Message}");
             }
         }
 

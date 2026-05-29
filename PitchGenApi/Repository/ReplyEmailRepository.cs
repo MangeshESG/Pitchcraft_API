@@ -9,22 +9,23 @@ using MimeKit;
 using Newtonsoft.Json;
 using System.Net.Http.Headers;
 using System.Text;
+using PitchGenApi.Model;
 
 namespace PitchGenApi.Repository
 {
-    
+
     public class ReplyEmailRepository : IReplyEmailRepository
     {
         private readonly AppDbContext _context;
         private readonly EmailSendingHelper _emailSending;
         private readonly IInboxRepository _inboxRepository;
-        public ReplyEmailRepository(AppDbContext context, EmailSendingHelper emailSending,IInboxRepository inboxRepository)
+        public ReplyEmailRepository(AppDbContext context, EmailSendingHelper emailSending, IInboxRepository inboxRepository)
         {
             _context = context;
             _emailSending = emailSending;
-            _inboxRepository = inboxRepository;      
+            _inboxRepository = inboxRepository;
         }
-        public async Task<EmailSendResult> ReplyEmailUsingSmtp( Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
+        public async Task<EmailSendResult> ReplyEmailUsingSmtp(Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "", List<IFormFile>? attachments = null)
         {
             try
             {
@@ -32,20 +33,29 @@ namespace PitchGenApi.Repository
                     .FirstOrDefaultAsync(x => x.Id == outboxId && x.ClientId == clientId);
 
                 if (inbox == null)
-                    return new EmailSendResult { Success = false, Message = "Inbox not found" };
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = "Inbox not found"
+                    };
 
                 var smtpCredential = await _context.SmtpCredentials
                     .FirstOrDefaultAsync(x => x.Id == inbox.Outboxid);
 
                 if (smtpCredential == null)
-                    return new EmailSendResult { Success = false, Message = "SMTP credential not found" };
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = "SMTP credential not found"
+                    };
 
                 var user = await _context.ClientDetails
                     .FirstOrDefaultAsync(x => x.Id == clientId);
 
                 // =========================
-                // FIRST EMAIL (Logs / Inbox / Replies)
+                // FIRST EMAIL
                 // =========================
+
                 var firstLog = await _context.EmailLogs
                     .Where(x => x.TrackingId == trackingid)
                     .OrderBy(x => x.SentAt)
@@ -65,41 +75,37 @@ namespace PitchGenApi.Repository
                 DateTime? inboxDate = firstInbox?.CreatedAt;
                 DateTime? replyDate = firstReply?.Date;
 
-                // oldest mail
                 var oldestDate = new[]
                 {
-                logDate,
-                inboxDate,
-                replyDate
-                }
+            logDate,
+            inboxDate,
+            replyDate
+        }
                 .Where(x => x != null)
                 .Min();
 
                 object firstSent = null;
 
                 if (oldestDate == logDate)
-                {
                     firstSent = firstLog;
-                }
                 else if (oldestDate == inboxDate)
-                {
                     firstSent = firstInbox;
-                }
                 else
-                {
                     firstSent = firstReply;
-                }
 
                 if (firstSent == null)
+                {
                     return new EmailSendResult
                     {
                         Success = false,
                         Message = "Original email not found"
                     };
+                }
 
                 // =========================
                 // LAST SENT / REPLY
                 // =========================
+
                 var lastSent = await _context.EmailLogs
                     .Where(x => x.TrackingId == trackingid)
                     .OrderByDescending(x => x.SentAt)
@@ -110,9 +116,6 @@ namespace PitchGenApi.Repository
                     .OrderByDescending(x => x.Date)
                     .FirstOrDefaultAsync();
 
-                // =========================
-                // MESSAGE LINKING (SAFE)
-                // =========================
                 var latestMessageId =
                     lastReply?.MessageId ??
                     lastSent?.MessageId ??
@@ -140,6 +143,7 @@ namespace PitchGenApi.Repository
                 // =========================
                 // REFERENCES
                 // =========================
+
                 var references = await _context.EmailLogs
                     .Where(x => x.TrackingId == trackingid && !string.IsNullOrEmpty(x.MessageId))
                     .Select(x => x.MessageId)
@@ -156,31 +160,47 @@ namespace PitchGenApi.Repository
                     .Select(x =>
                     {
                         x = x.Trim();
-                        if (!x.StartsWith("<")) x = "<" + x;
-                        if (!x.EndsWith(">")) x += ">";
+
+                        if (!x.StartsWith("<"))
+                            x = "<" + x;
+
+                        if (!x.EndsWith(">"))
+                            x += ">";
+
                         return x;
                     })
                     .ToList();
 
                 // =========================
-                // BODY + TRACKING
+                // BODY
                 // =========================
+
                 string finalBody = replyBody;
 
                 if (user?.IsTracking == true)
                 {
-                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, trackingid.ToString());
-                    finalBody += EmailTrackingHelper.GetPixelTag(trackingid.ToString());
+                    finalBody = EmailTrackingHelper.InjectClickTracking(
+                        finalBody,
+                        trackingid.ToString());
+
+                    finalBody += EmailTrackingHelper.GetPixelTag(
+                        trackingid.ToString());
                 }
 
-                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, trackingid.ToString());
+                finalBody = EmailTrackingHelper.InjectinboxTracking(
+                    finalBody,
+                    trackingid.ToString());
 
                 // =========================
-                // MAIL SETUP
+                // MAIL
                 // =========================
+
                 var mail = new MimeMessage();
 
-                mail.From.Add(new MailboxAddress(smtpCredential.SenderName, smtpCredential.FromEmail));
+                mail.From.Add(new MailboxAddress(
+                    smtpCredential.SenderName,
+                    smtpCredential.FromEmail));
+
                 mail.To.Add(MailboxAddress.Parse(replyToEmail));
 
                 if (!string.IsNullOrWhiteSpace(BccEmail))
@@ -188,7 +208,8 @@ namespace PitchGenApi.Repository
 
                 mail.Subject = threadSubject;
 
-                var newMessageId = $"<{MimeKit.Utils.MimeUtils.GenerateMessageId().Trim('<', '>')}>";
+                var newMessageId =
+                    $"<{MimeKit.Utils.MimeUtils.GenerateMessageId().Trim('<', '>')}>";
 
                 mail.Headers.Replace(HeaderId.MessageId, newMessageId);
 
@@ -198,28 +219,37 @@ namespace PitchGenApi.Repository
                 {
                     try
                     {
-                        byte[] parentBytes = Convert.FromBase64String(threadIndex.PadRight(
-                            threadIndex.Length + (4 - threadIndex.Length % 4) % 4, '='));
+                        byte[] parentBytes = Convert.FromBase64String(
+                            threadIndex.PadRight(
+                                threadIndex.Length +
+                                (4 - threadIndex.Length % 4) % 4,
+                                '='));
 
                         byte[] childBytes = new byte[parentBytes.Length + 5];
 
                         Array.Copy(parentBytes, childBytes, parentBytes.Length);
 
-                        new Random().NextBytes(new Span<byte>(childBytes, parentBytes.Length, 5));
+                        new Random().NextBytes(
+                            new Span<byte>(childBytes, parentBytes.Length, 5));
 
-                        mail.Headers.Add("Thread-Index", Convert.ToBase64String(childBytes));
+                        mail.Headers.Add(
+                            "Thread-Index",
+                            Convert.ToBase64String(childBytes));
                     }
                     catch
                     {
                         mail.Headers.Add("Thread-Index", threadIndex);
                     }
 
-                    mail.Headers.Add("Thread-Topic", threadSubject.Replace("Re: ", "").Trim());
+                    mail.Headers.Add(
+                        "Thread-Topic",
+                        threadSubject.Replace("Re: ", "").Trim());
                 }
 
                 // =========================
                 // THREAD FIX
                 // =========================
+
                 if (!string.IsNullOrEmpty(latestMessageId))
                 {
                     var normalizedLatest = latestMessageId.Trim();
@@ -233,59 +263,167 @@ namespace PitchGenApi.Repository
                     mail.InReplyTo = normalizedLatest;
 
                     normalizedRefs.RemoveAll(x => x == normalizedLatest);
+
                     normalizedRefs.Add(normalizedLatest);
                 }
 
-                mail.Headers.Replace(HeaderId.References,
-                    string.Join(" ", normalizedRefs.Where(x => !string.IsNullOrEmpty(x))));
-
-                mail.Body = new BodyBuilder { HtmlBody = finalBody }.ToMessageBody();
+                mail.Headers.Replace(
+                    HeaderId.References,
+                    string.Join(
+                        " ",
+                        normalizedRefs.Where(x => !string.IsNullOrEmpty(x))));
 
                 // =========================
-                // SEND MAIL
+                // BODY BUILDER + ATTACHMENTS
                 // =========================
+
+                var bodyBuilder = new BodyBuilder
+                {
+                    HtmlBody = finalBody
+                };
+
+                if (attachments != null && attachments.Any())
+                {
+                    foreach (var file in attachments)
+                    {
+                        if (file.Length > 0)
+                        {
+                            using var ms = new MemoryStream();
+
+                            await file.CopyToAsync(ms);
+
+                            bodyBuilder.Attachments.Add(
+                                file.FileName,
+                                ms.ToArray(),
+                                ContentType.Parse(file.ContentType));
+                        }
+                    }
+                }
+
+                mail.Body = bodyBuilder.ToMessageBody();
+
+                // =========================
+                // SEND
+                // =========================
+
                 using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
 
                 await smtpClient.ConnectAsync(
                     smtpCredential.Server,
                     smtpCredential.Port,
-                    _inboxRepository.GetSecureOption(smtpCredential.SecurityType));
+                    _inboxRepository.GetSecureOption(
+                        smtpCredential.SecurityType));
 
                 await smtpClient.AuthenticateAsync(
                     smtpCredential.Username,
                     smtpCredential.Password);
 
                 await smtpClient.SendAsync(mail);
+
                 await smtpClient.DisconnectAsync(true);
 
                 // =========================
                 // SAVE LOG
                 // =========================
-                _context.EmailLogs.Add(new EmailLog
+
+                var emailLog = new EmailLog
                 {
                     ClientId = clientId,
-                    ContactId = firstLog?.ContactId ?? firstInbox?.Contactid ?? firstReply?.ContactId,
+
+                    ContactId = firstLog?.ContactId ??
+                                firstInbox?.Contactid ??
+                                firstReply?.ContactId,
+
                     ToEmail = replyToEmail,
+
                     Subject = mail.Subject,
+
                     Body = replyBody,
+
                     SenderEmailId = smtpCredential.FromEmail,
+
                     EmailSenderName = smtpCredential.SenderName,
+
                     Provider = "SMTP",
+
                     outboxid = smtpCredential.Id,
+
                     IsSuccess = true,
+
                     SentAt = DateTime.UtcNow,
+
                     TrackingId = trackingid,
+
                     MessageId = newMessageId,
+
                     ThreadId = threadIndex,
+
                     process_name = "ThreadReply"
-                });
+                };
+
+                _context.EmailLogs.Add(emailLog);
 
                 await _context.SaveChangesAsync();
+
+                // =========================
+                // SAVE ATTACHMENTS
+                // =========================
+
+                if (attachments != null && attachments.Any())
+                {
+                    var uploadPath = Path.Combine(
+                        Directory.GetCurrentDirectory(),
+                        "wwwroot",
+                        "email-attachments");
+
+                    if (!Directory.Exists(uploadPath))
+                        Directory.CreateDirectory(uploadPath);
+
+                    foreach (var file in attachments)
+                    {
+                        if (file.Length <= 0)
+                            continue;
+
+                        var uniqueFileName =
+                            $"{Guid.NewGuid()}_{file.FileName}";
+
+                        var fullPath =
+                            Path.Combine(uploadPath, uniqueFileName);
+
+                        using (var stream = new FileStream(
+                            fullPath,
+                            FileMode.Create))
+                        {
+                            await file.CopyToAsync(stream);
+                        }
+
+                        _context.EmailAttachments.Add(new EmailAttachment
+                        {
+                            MessageId = newMessageId,
+
+                            FileName = uniqueFileName,
+
+                            OriginalFileName = file.FileName,
+
+                            ContentType = file.ContentType,
+
+                            FilePath = $"/email-attachments/{uniqueFileName}",
+
+                            FileSize = file.Length,
+
+                            Provider = "SMTP",
+
+                            CreatedAt = DateTime.UtcNow
+                        });
+                    }
+
+                    await _context.SaveChangesAsync();
+                }
 
                 return new EmailSendResult
                 {
                     Success = true,
-                    Message = "Reply sent in SAME thread successfully"
+                    Message = "Reply sent with attachment successfully"
                 };
             }
             catch (Exception ex)
@@ -293,11 +431,10 @@ namespace PitchGenApi.Repository
                 return new EmailSendResult
                 {
                     Success = false,
-                    Message = ex.Message
+                    Message = ex.InnerException?.Message ?? ex.Message
                 };
             }
         }
-
         public async Task<EmailSendResult> ReplyEmailUsingGmailApi(Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
         {
             var user = await _context.ClientDetails
@@ -473,129 +610,150 @@ namespace PitchGenApi.Repository
                 };
             }
         }
-        public async Task<EmailSendResult> ReplyEmailUsingOutlookApi(Guid trackingid, int clientId, string replyBody, int outboxId, string BccEmail = "")
+        public async Task<EmailSendResult> ReplyEmailUsingOutlookApi(
+            Guid trackingid,
+            int clientId,
+            string replyBody,
+            int outboxId,
+            string BccEmail = "",
+            List<IFormFile>? attachments = null)
         {
-            var user = await _context.ClientDetails
-                .FirstOrDefaultAsync(x => x.Id == clientId);
-
-            var tokenData = await _emailSending.GetValidOutlookTokenAsync(outboxId);
-
-            if (tokenData == null)
-            {
-                return new EmailSendResult
-                {
-                    Success = false,
-                    Message = "Outlook not connected"
-                };
-            }
-
-            // =========================
-            // FIRST EMAIL (Logs / Inbox / Replies)
-            // =========================
-            var firstLog = await _context.EmailLogs
-                .Where(x => x.TrackingId == trackingid)
-                .OrderBy(x => x.SentAt)
-                .FirstOrDefaultAsync();
-
-            var firstInbox = await _context.InboxEmails
-                .Where(x => x.TrackingId == trackingid)
-                .OrderBy(x => x.CreatedAt)
-                .FirstOrDefaultAsync();
-
-            var firstReply = await _context.EmailReplies
-                .Where(x => x.TrackingId == trackingid)
-                .OrderBy(x => x.Date)
-                .FirstOrDefaultAsync();
-
-            DateTime? logDate = firstLog?.SentAt;
-            DateTime? inboxDate = firstInbox?.CreatedAt;
-            DateTime? replyDate = firstReply?.Date;
-
-            var oldestDate = new[]
-            {
-                logDate,
-                inboxDate,
-                replyDate
-            }
-            .Where(x => x != null)
-            .Min();
-
-            object firstSent = null;
-
-            if (oldestDate == logDate)
-            {
-                firstSent = firstLog;
-            }
-            else if (oldestDate == inboxDate)
-            {
-                firstSent = firstInbox;
-            }
-            else
-            {
-                firstSent = firstReply;
-            }
-
-            if (firstSent == null)
-            {
-                return new EmailSendResult
-                {
-                    Success = false,
-                    Message = "Original email not found"
-                };
-            }
-
-            // =========================
-            // LAST SENT / REPLY
-            // =========================
-            var lastSent = await _context.EmailLogs
-                .Where(x => x.TrackingId == trackingid)
-                .OrderByDescending(x => x.SentAt)
-                .FirstOrDefaultAsync();
-
-            var lastReply = await _context.EmailReplies
-                .Where(x => x.TrackingId == trackingid)
-                .OrderByDescending(x => x.Date)
-                .FirstOrDefaultAsync();
-
-            // =========================
-            // MESSAGE LINKING
-            // =========================
-            var latestMessageId =
-                lastReply?.MessageId ??
-                lastSent?.MessageId ??
-                firstReply?.MessageId ??
-                firstLog?.MessageId ??
-                firstInbox?.MessageId;
-
-            var replyToEmail =
-                lastReply?.FromEmail ??
-                lastSent?.ToEmail ??
-                firstInbox?.FromEmail ??
-                firstReply?.FromEmail;
-
-            var threadSubject =
-                 (
-                     firstInbox?.Subject ??
-                     firstReply?.Subject ??
-                     lastSent?.Subject ??
-                     lastReply?.Subject ??
-                     "Re:"
-                 ).Trim();
-
-            if (!threadSubject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase))
-                threadSubject = "Re: " + threadSubject;
-
-            if (string.IsNullOrWhiteSpace(latestMessageId))
-            {
-                return new EmailSendResult
-                {
-                    Success = false,
-                    Message = "MessageId missing"
-                };
-            }
-
             try
             {
+                var user = await _context.ClientDetails
+                    .FirstOrDefaultAsync(x => x.Id == clientId);
+
+                var tokenData = await _emailSending
+                    .GetValidOutlookTokenAsync(outboxId);
+
+                if (tokenData == null)
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = "Outlook not connected"
+                    };
+                }
+
+                // =========================================
+                // FIRST EMAIL
+                // =========================================
+
+                var firstLog = await _context.EmailLogs
+                    .Where(x => x.TrackingId == trackingid)
+                    .OrderBy(x => x.SentAt)
+                    .FirstOrDefaultAsync();
+
+                var firstInbox = await _context.InboxEmails
+                    .Where(x => x.TrackingId == trackingid)
+                    .OrderBy(x => x.CreatedAt)
+                    .FirstOrDefaultAsync();
+
+                var firstReply = await _context.EmailReplies
+                    .Where(x => x.TrackingId == trackingid)
+                    .OrderBy(x => x.Date)
+                    .FirstOrDefaultAsync();
+
+                DateTime? logDate = firstLog?.SentAt;
+                DateTime? inboxDate = firstInbox?.CreatedAt;
+                DateTime? replyDate = firstReply?.Date;
+
+                var oldestDate = new[]
+                {
+            logDate,
+            inboxDate,
+            replyDate
+        }
+                .Where(x => x != null)
+                .Min();
+
+                object firstSent = null;
+
+                if (oldestDate == logDate)
+                {
+                    firstSent = firstLog;
+                }
+                else if (oldestDate == inboxDate)
+                {
+                    firstSent = firstInbox;
+                }
+                else
+                {
+                    firstSent = firstReply;
+                }
+
+                if (firstSent == null)
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = "Original email not found"
+                    };
+                }
+
+                // =========================================
+                // LAST SENT / REPLY
+                // =========================================
+
+                var lastSent = await _context.EmailLogs
+                    .Where(x => x.TrackingId == trackingid)
+                    .OrderByDescending(x => x.SentAt)
+                    .FirstOrDefaultAsync();
+
+                var lastReply = await _context.EmailReplies
+                    .Where(x => x.TrackingId == trackingid)
+                    .OrderByDescending(x => x.Date)
+                    .FirstOrDefaultAsync();
+
+                // =========================================
+                // MESSAGE LINKING
+                // =========================================
+
+                var latestMessageId =
+                    lastReply?.MessageId ??
+                    lastSent?.MessageId ??
+                    firstReply?.MessageId ??
+                    firstLog?.MessageId ??
+                    firstInbox?.MessageId;
+
+                var replyToEmail =
+                    lastReply?.FromEmail ??
+                    lastSent?.ToEmail ??
+                    firstInbox?.FromEmail ??
+                    firstReply?.FromEmail;
+
+                var threadSubject =
+                    firstInbox?.Subject ??
+                    firstReply?.Subject ??
+                    lastSent?.Subject ??
+                    lastReply?.Subject ??
+                    "Re:";
+
+                threadSubject = threadSubject.Trim();
+
+                if (!threadSubject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase))
+                {
+                    threadSubject = "Re: " + threadSubject;
+                }
+
+                if (threadSubject.Length > 500)
+                {
+                    threadSubject = threadSubject.Substring(0, 500);
+                }
+
+                if (string.IsNullOrWhiteSpace(latestMessageId))
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = "MessageId missing"
+                    };
+                }
+
+                // =========================================
+                // BODY
+                // =========================================
+
                 string finalBody = replyBody;
 
                 if (user?.IsTracking == true)
@@ -619,7 +777,10 @@ namespace PitchGenApi.Repository
                         "Bearer",
                         tokenData.AccessToken);
 
-                // STEP 1: Find CURRENT Graph Id from internetMessageId
+                // =========================================
+                // NORMALIZE MESSAGE ID
+                // =========================================
+
                 var normalizedMsgId = latestMessageId.Trim();
 
                 if (!normalizedMsgId.StartsWith("<"))
@@ -628,78 +789,340 @@ namespace PitchGenApi.Repository
                 if (!normalizedMsgId.EndsWith(">"))
                     normalizedMsgId += ">";
 
-                var encodedMsgId = normalizedMsgId.Replace("'", "''");
+                // =========================================
+                // FIND OUTLOOK MESSAGE
+                // =========================================
+
+                var encodedMsgId =
+                    Uri.EscapeDataString(normalizedMsgId);
 
                 var findResponse = await client.GetAsync(
-                    $"https://graph.microsoft.com/v1.0/me/messages?$filter=internetMessageId eq '{encodedMsgId}'");
+                    $"https://graph.microsoft.com/v1.0/me/messages?$filter=internetMessageId eq '{normalizedMsgId}'&$top=1");
 
-                var findJson = await findResponse.Content.ReadAsStringAsync();
+                var findJson =
+                    await findResponse.Content.ReadAsStringAsync();
 
                 if (!findResponse.IsSuccessStatusCode)
-                    throw new Exception(findJson);
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = findJson
+                    };
+                }
 
                 dynamic found =
                     Newtonsoft.Json.JsonConvert.DeserializeObject(findJson);
 
-                string graphId = found?.value?[0]?.id?.ToString();
+                string graphId = "";
+
+                if (found?.value != null &&
+                    found.value.Count > 0)
+                {
+                    graphId =
+                        found.value[0]?.id?.ToString();
+                }
 
                 if (string.IsNullOrWhiteSpace(graphId))
-                    throw new Exception("Current Outlook message not found");
-
-                // STEP 2: Reply
-                var payload = new
                 {
-                    message = new
+                    return new EmailSendResult
                     {
-                        toRecipients = new[]
-                        {
-                    new { emailAddress = new { address = replyToEmail } }
-                },
-                        body = new
-                        {
-                            contentType = "HTML",
-                            content = finalBody
-                        }
-                    }
-                };
+                        Success = false,
+                        Message =
+                            $"Outlook message not found for MessageId: {normalizedMsgId}"
+                    };
+                }
+
+                // =========================================
+                // CREATE DRAFT REPLY
+                // =========================================
 
                 var safeId = Uri.EscapeDataString(graphId);
 
-                var response = await client.PostAsJsonAsync(
-                    $"https://graph.microsoft.com/v1.0/me/messages/{safeId}/reply",
-                    payload);
+                var createDraftResponse = await client.PostAsync(
+                    $"https://graph.microsoft.com/v1.0/me/messages/{safeId}/createReply",
+                    null);
 
-                var result = await response.Content.ReadAsStringAsync();
+                var createDraftJson =
+                    await createDraftResponse.Content.ReadAsStringAsync();
 
-                if (!response.IsSuccessStatusCode)
-                    throw new Exception(result);
+                if (!createDraftResponse.IsSuccessStatusCode)
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = createDraftJson
+                    };
+                }
 
+                dynamic draftObj =
+                    Newtonsoft.Json.JsonConvert.DeserializeObject(createDraftJson);
+
+                string draftId =
+                    draftObj?.id?.ToString();
+
+                if (string.IsNullOrWhiteSpace(draftId))
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = "Draft reply creation failed"
+                    };
+                }
+
+                // =========================================
+                // UPDATE BODY
+                // =========================================
+
+                var updatePayload = new
+                {
+                    body = new
+                    {
+                        contentType = "HTML",
+                        content = finalBody
+                    }
+                };
+
+                var patchRequest = new HttpRequestMessage(
+                    new HttpMethod("PATCH"),
+                    $"https://graph.microsoft.com/v1.0/me/messages/{draftId}")
+                {
+                    Content = JsonContent.Create(updatePayload)
+                };
+
+                var updateResponse =
+                    await client.SendAsync(patchRequest);
+
+                var updateResult =
+                    await updateResponse.Content.ReadAsStringAsync();
+
+                if (!updateResponse.IsSuccessStatusCode)
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = updateResult
+                    };
+                }
+
+                // =========================================
+                // BCC
+                // =========================================
+
+                if (!string.IsNullOrWhiteSpace(BccEmail))
+                {
+                    var bccPayload = new
+                    {
+                        bccRecipients = new[]
+                        {
+                    new
+                    {
+                        emailAddress = new
+                        {
+                            address = BccEmail
+                        }
+                    }
+                }
+                    };
+
+                    var bccRequest = new HttpRequestMessage(
+                        new HttpMethod("PATCH"),
+                        $"https://graph.microsoft.com/v1.0/me/messages/{draftId}")
+                    {
+                        Content = JsonContent.Create(bccPayload)
+                    };
+
+                    var bccResponse =
+                        await client.SendAsync(bccRequest);
+
+                    var bccResult =
+                        await bccResponse.Content.ReadAsStringAsync();
+
+                    if (!bccResponse.IsSuccessStatusCode)
+                    {
+                        return new EmailSendResult
+                        {
+                            Success = false,
+                            Message = bccResult
+                        };
+                    }
+                }
+
+                // =========================================
+                // ATTACHMENTS
+                // =========================================
+
+                if (attachments != null && attachments.Any())
+                {
+                    foreach (var file in attachments)
+                    {
+                        if (file == null || file.Length <= 0)
+                            continue;
+
+                        using var ms = new MemoryStream();
+
+                        await file.CopyToAsync(ms);
+
+                        var attachmentPayload =
+                            new Dictionary<string, object>
+                            {
+                        { "@odata.type", "#microsoft.graph.fileAttachment" },
+                        { "name", file.FileName },
+                        { "contentBytes", Convert.ToBase64String(ms.ToArray()) },
+                        { "contentType", file.ContentType ?? "application/octet-stream" }
+                            };
+
+                        var attachmentResponse =
+                            await client.PostAsJsonAsync(
+                                $"https://graph.microsoft.com/v1.0/me/messages/{draftId}/attachments",
+                                attachmentPayload);
+
+                        var attachmentResult =
+                            await attachmentResponse.Content.ReadAsStringAsync();
+
+                        if (!attachmentResponse.IsSuccessStatusCode)
+                        {
+                            return new EmailSendResult
+                            {
+                                Success = false,
+                                Message = attachmentResult
+                            };
+                        }
+                    }
+                }
+
+                // =========================================
+                // SEND
+                // =========================================
+
+                var sendResponse = await client.PostAsync(
+                    $"https://graph.microsoft.com/v1.0/me/messages/{draftId}/send",
+                    null);
+
+                var sendResult =
+                    await sendResponse.Content.ReadAsStringAsync();
+
+                if (!sendResponse.IsSuccessStatusCode)
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = sendResult
+                    };
+                }
+
+                // =========================================
                 // SAVE LOG
+                // =========================================
+
+                string newMessageId =
+                    $"<{MimeKit.Utils.MimeUtils.GenerateMessageId().Trim('<', '>')}>";
+
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
-                    ContactId = firstLog?.ContactId ?? firstInbox?.Contactid ?? firstReply?.ContactId,
+
+                    ContactId =
+                        firstLog?.ContactId ??
+                        firstInbox?.Contactid ??
+                        firstReply?.ContactId,
+
                     ToEmail = replyToEmail,
+
                     Subject = threadSubject,
+
                     Body = replyBody,
+
                     SenderEmailId = tokenData.Email,
+
                     EmailSenderName = tokenData.SenderName,
+
                     Provider = "Outlook",
+
                     outboxid = tokenData.Id,
+
                     IsSuccess = true,
+
                     SentAt = DateTime.UtcNow,
+
                     TrackingId = trackingid,
-                    MessageId = normalizedMsgId,
-                    ThreadId = lastSent?.ThreadId ?? firstInbox?.ThreadId ?? firstReply?.ThreadId,
+
+                    MessageId = newMessageId,
+
+                    ThreadId =
+                        lastSent?.ThreadId ??
+                        firstInbox?.ThreadId ??
+                        firstReply?.ThreadId,
+
                     process_name = "ThreadReply"
                 });
 
                 await _context.SaveChangesAsync();
 
+                // =========================================
+                // SAVE ATTACHMENTS DB
+                // =========================================
+
+                if (attachments != null && attachments.Any())
+                {
+                    var uploadPath = Path.Combine(
+                        Directory.GetCurrentDirectory(),
+                        "wwwroot",
+                        "email-attachments");
+
+                    if (!Directory.Exists(uploadPath))
+                    {
+                        Directory.CreateDirectory(uploadPath);
+                    }
+
+                    foreach (var file in attachments)
+                    {
+                        if (file == null || file.Length <= 0)
+                            continue;
+
+                        var uniqueFileName =
+                            $"{Guid.NewGuid()}_{file.FileName}";
+
+                        var fullPath =
+                            Path.Combine(uploadPath, uniqueFileName);
+
+                        using (var stream = new FileStream(
+                            fullPath,
+                            FileMode.Create))
+                        {
+                            await file.CopyToAsync(stream);
+                        }
+
+                        _context.EmailAttachments.Add(
+                            new EmailAttachment
+                            {
+                                MessageId = newMessageId,
+
+                                FileName = uniqueFileName,
+
+                                OriginalFileName = file.FileName,
+
+                                ContentType = file.ContentType,
+
+                                FilePath =
+                                    $"/email-attachments/{uniqueFileName}",
+
+                                FileSize = file.Length,
+
+                                Provider = "Outlook",
+
+                                CreatedAt = DateTime.UtcNow
+                            });
+                    }
+
+                    await _context.SaveChangesAsync();
+                }
+
                 return new EmailSendResult
                 {
                     Success = true,
-                    Message = "Reply sent in SAME Outlook conversation ✅"
+                    Message =
+                        "Reply sent in SAME Outlook conversation with attachments ✅"
                 };
             }
             catch (Exception ex)
@@ -707,7 +1130,7 @@ namespace PitchGenApi.Repository
                 return new EmailSendResult
                 {
                     Success = false,
-                    Message = ex.Message
+                    Message = ex.ToString()
                 };
             }
         }
