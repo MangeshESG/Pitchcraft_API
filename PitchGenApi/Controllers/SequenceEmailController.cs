@@ -160,29 +160,186 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                var smtp = await _context.SmtpCredentials.FirstOrDefaultAsync(s => s.Id == id && s.ClientId == ClientId);
+                if (!int.TryParse(ClientId, out int userId))
+                    return BadRequest("Invalid ClientId");
+
+                var smtp = await _context.SmtpCredentials
+                    .FirstOrDefaultAsync(s => s.Id == id && s.ClientId == ClientId);
+
                 if (smtp == null)
                     return NotFound("SMTP credentials not found.");
 
-                // Update existing values
+                // Existing inbox
+                var imap = await _context.Inboxcredentials
+                    .FirstOrDefaultAsync(x => x.Outboxid == id && x.ClientId == userId);
+
+                // =========================
+                // SMTP TEST
+                // =========================
+                try
+                {
+                    using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
+
+                    var socketOption = _inboxRepository
+                        .GetSecureOption(dto.OutgoingSecurityType);
+
+                    await smtpClient.ConnectAsync(
+                        dto.OutgoingServer,
+                        dto.OutgoingPort,
+                        socketOption);
+
+                    await smtpClient.AuthenticateAsync(
+                        dto.Username,
+                        dto.Password);
+
+                    var toMessage = new MimeMessage();
+
+                    toMessage.From.Add(
+                        new MailboxAddress(dto.SenderName, dto.FromEmail));
+
+                    toMessage.To.Add(
+                        MailboxAddress.Parse("support@pitchkraft.ai"));
+
+                    toMessage.Subject = "SMTP Configuration Test";
+
+                    toMessage.Body = new BodyBuilder
+                    {
+                        HtmlBody = $@"
+                <html>
+                <body style='font-family: Arial, sans-serif; color:#333; line-height:1.6;'>
+
+                    <p>Hello,</p>
+
+                    <p>
+                        This is a test email sent from 
+                        <b>{dto.SenderName}</b>
+                        ({dto.FromEmail})
+                        to verify outgoing email functionality.
+                    </p>
+
+                    <p>
+                        If you have received this message, 
+                        the SMTP configuration is working correctly.
+                    </p>
+
+                    <br/>
+
+                    <p>
+                        Best regards,<br/>
+                        <b>{dto.SenderName}</b><br/>
+                        {dto.FromEmail}
+                    </p>
+
+                </body>
+                </html>"
+                    }.ToMessageBody();
+
+                    await smtpClient.SendAsync(toMessage);
+
+                    if (smtpClient.IsConnected)
+                        await smtpClient.DisconnectAsync(true);
+                }
+                catch (Exception smtpEx)
+                {
+                    return BadRequest(new
+                    {
+                        message = "SMTP test failed. Please check outgoing details.",
+                        detail = smtpEx.Message
+                    });
+                }
+
+                // =========================
+                // INBOX / IMAP VALIDATION
+                // =========================
+                if (dto.Inbox != null)
+                {
+                    var isValid = await _inboxRepository.ValidateAsync(dto.Inbox);
+
+                    if (!isValid)
+                    {
+                        return BadRequest(new
+                        {
+                            message = "Invalid inbox credentials. Please check inbox details."
+                        });
+                    }
+
+                    // =========================
+                    // UPDATE EXISTING IMAP
+                    // =========================
+                    if (imap != null)
+                    {
+                        imap.EmailAddress = dto.Inbox.EmailAddress;
+                        imap.Username = dto.Inbox.Username;
+                        imap.Password = dto.Inbox.Password;
+                        imap.encryption = dto.Inbox.encryption;
+                        imap.Host = dto.Inbox.Host;
+                        imap.Port = dto.Inbox.Port;
+                        imap.Protocol = "IMAP";
+                        imap.FullInboxSync = dto.Inbox.FullInboxSync;
+                        imap.UpdatedAt = DateTime.UtcNow;
+
+                        _context.Inboxcredentials.Update(imap);
+                    }
+                    else
+                    {
+                        // =========================
+                        // CREATE NEW IMAP
+                        // =========================
+                        var newInbox = new Inboxcredentials
+                        {
+                            ClientId = userId,
+                            EmailAddress = dto.Inbox.EmailAddress,
+                            Username = dto.Inbox.Username,
+                            Password = dto.Inbox.Password,
+                            encryption = dto.Inbox.encryption,
+                            Host = dto.Inbox.Host,
+                            Port = dto.Inbox.Port,
+                            Protocol = "IMAP",
+                            FullInboxSync = dto.Inbox.FullInboxSync,
+                            Outboxid = smtp.Id,
+                            CreatedAt = DateTime.UtcNow,
+                            UpdatedAt = DateTime.UtcNow
+                        };
+
+                        await _context.Inboxcredentials.AddAsync(newInbox);
+                    }
+                }
+
+                // =========================
+                // UPDATE SMTP
+                // =========================
                 smtp.Server = dto.OutgoingServer;
                 smtp.Port = dto.OutgoingPort;
                 smtp.Username = dto.Username;
                 smtp.Password = dto.Password;
                 smtp.FromEmail = dto.FromEmail;
+                smtp.SenderName = dto.SenderName;
+                smtp.SecurityType = dto.OutgoingSecurityType;
 
                 _context.SmtpCredentials.Update(smtp);
+
                 await _context.SaveChangesAsync();
 
-                return Ok(new { message = "SMTP credentials updated successfully." });
+                return Ok(new
+                {
+                    message = "SMTP and inbox credentials updated successfully."
+                });
             }
             catch (DbUpdateException dbEx)
             {
-                return StatusCode(500, new { message = "Database error occurred.", detail = dbEx.Message });
+                return StatusCode(500, new
+                {
+                    message = "Database error occurred.",
+                    detail = dbEx.Message
+                });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "An unexpected error occurred.", detail = ex.Message });
+                return StatusCode(500, new
+                {
+                    message = "An unexpected error occurred.",
+                    detail = ex.Message
+                });
             }
         }
 
@@ -192,11 +349,19 @@ namespace PitchGenApi.Controllers
             if (string.IsNullOrWhiteSpace(ClientId))
                 return BadRequest("ClientId is required.");
 
+            if (!int.TryParse(ClientId, out int userId))
+                return BadRequest("Invalid ClientId");
+
+
             try
             {
                 // Step 1: SMTP record get karo without accessing any properties directly
                 var smtp = await _context.SmtpCredentials
                     .Where(s => s.Id == id && s.ClientId == ClientId)
+                    .FirstOrDefaultAsync();
+
+                var imap = await _context.Inboxcredentials
+                    .Where(s => s.Outboxid == id && s.ClientId == userId)
                     .FirstOrDefaultAsync();
 
                 var emaildomain = await _context.DomainEmailVerification.FirstOrDefaultAsync(x => x.Email == smtp.FromEmail);
@@ -217,6 +382,11 @@ namespace PitchGenApi.Controllers
                 if (emaildomain != null)
                 {
                     _context.DomainEmailVerification.Remove(emaildomain);
+                }
+
+                if (imap != null)
+                {
+                    _context.Inboxcredentials.Remove(imap);
                 }
 
                 // Step 3: Delete SMTP record (even if some columns are null)
@@ -242,9 +412,11 @@ namespace PitchGenApi.Controllers
         {
             try
             {
+                if (!int.TryParse(ClientId, out int clientId))
+                    return BadRequest("Invalid ClientId");
+
                 var smtpList = await _context.SmtpCredentials
                     .Where(s => s.ClientId == ClientId)
-                    // Yahan hum null check kar rahe hain ki koi bhi required column null na ho
                     .Where(s => s.Server != null
                                 && s.Username != null
                                 && s.Password != null
@@ -254,25 +426,55 @@ namespace PitchGenApi.Controllers
                 if (smtpList == null || smtpList.Count == 0)
                     return NotFound("No SMTP credentials found for this client.");
 
-                var result = smtpList.Select(smtp => new
+                // Inbox credentials load karo
+                var inboxList = await _context.Inboxcredentials
+                    .Where(i => i.ClientId == clientId)
+                    .ToListAsync();
+
+                var result = smtpList.Select(smtp =>
                 {
-                    smtp.Id,
-                    smtp.ClientId,
-                    smtp.Server,
-                    smtp.Port,
-                    smtp.Username,
-                    smtp.Password,
-                    smtp.UseSsl,
-                    smtp.FromEmail,
-                    smtp.SenderName,
-                    smtp.SecurityType
+                    // SMTP Id ke basis pe inbox find karo
+                    var inbox = inboxList
+                        .FirstOrDefault(i => i.Outboxid == smtp.Id);
+
+                    return new
+                    {
+                        smtp.Id,
+                        smtp.ClientId,
+                        smtp.Server,
+                        smtp.Port,
+                        smtp.Username,
+                        smtp.Password,
+                        smtp.UseSsl,
+                        smtp.FromEmail,
+                        smtp.SenderName,
+                        smtp.SecurityType,
+
+                        Inbox = inbox == null ? null : new
+                        {
+                            inbox.Id,
+                            inbox.EmailAddress,
+                            inbox.Host,
+                            inbox.Port,
+                            inbox.FullInboxSync,
+                            inbox.Username,
+                            inbox.Password,
+                            inbox.Outboxid,
+                            inbox.encryption,
+                            inbox.UpdatedAt
+                        }
+                    };
                 });
 
                 return Ok(result);
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "An unexpected error occurred.", detail = ex.Message });
+                return StatusCode(500, new
+                {
+                    message = "An unexpected error occurred.",
+                    detail = ex.Message
+                });
             }
         }
 
@@ -376,7 +578,8 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpPost("reply_email")]
-        public async Task<IActionResult> ReplyEmail([FromBody] ReplyEmailRequest request)
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> ReplyEmail([FromForm] ReplyEmailRequest request)
         {
             if (request.TrackingId == Guid.Empty)
                 return BadRequest("TrackingId is required");
@@ -397,7 +600,8 @@ namespace PitchGenApi.Controllers
                         request.ClientId,
                         request.ReplyBody,
                         request.Outboxid,
-                        request.BccEmail
+                        request.BccEmail,
+                        request.Attachments
                     );
                     break;
 
@@ -417,7 +621,8 @@ namespace PitchGenApi.Controllers
                         request.ClientId,
                         request.ReplyBody,
                         request.Outboxid,
-                        request.BccEmail
+                        request.BccEmail,
+                        request.Attachments
                     );
                     break;
 
@@ -555,11 +760,18 @@ namespace PitchGenApi.Controllers
                 {
                     await smtpClient.DisconnectAsync(true);
                 }
+                
+                if (dto.Inbox != null)
+                {
+                    var isValid = await _inboxRepository.ValidateAsync(dto.Inbox);
 
+                    if (!isValid)
+                        return BadRequest("Invalid inbox credentials or unable to connect to server.");
+                }
             }
             catch (Exception ex)
             {
-                return BadRequest("SMTP configuration invalid: " + ex.Message);
+                return BadRequest("Somthing went wronge check IMAP or SMTP details and try again.");
             }
 
             var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
