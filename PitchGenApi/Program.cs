@@ -253,15 +253,24 @@ app.UseHttpsRedirection();
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(
-        Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads")
-    ),
+        Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads")),
     RequestPath = "/uploads"
+});
+
+// ✅ Serve /email-attachments publicly
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(
+        Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "email-attachments")),
+    RequestPath = "/email-attachments"
 });
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.UseDefaultFiles();
+
+// Serve normal wwwroot files
 app.UseStaticFiles();
 
 app.MapControllers();

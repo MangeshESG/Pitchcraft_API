@@ -600,7 +600,8 @@ namespace PitchGenApi.Controllers
                         request.ClientId,
                         request.ReplyBody,
                         request.Outboxid,
-                        request.BccEmail,
+                        request.BCC,
+                        request.CC,
                         request.Attachments
                     );
                     break;
@@ -611,8 +612,9 @@ namespace PitchGenApi.Controllers
                         request.ClientId,
                         request.ReplyBody,
                         request.Outboxid,
-                        request.BccEmail
-                    );
+                        request.BCC,
+                        request.CC,
+                        request.Attachments);
                     break;
 
                 case "OUTLOOK":
@@ -621,7 +623,8 @@ namespace PitchGenApi.Controllers
                         request.ClientId,
                         request.ReplyBody,
                         request.Outboxid,
-                        request.BccEmail,
+                        request.BCC,
+                        request.CC,
                         request.Attachments
                     );
                     break;

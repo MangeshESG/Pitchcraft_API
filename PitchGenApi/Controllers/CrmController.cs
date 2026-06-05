@@ -3133,8 +3133,62 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpPost("create-signature")]
+        public async Task<IActionResult> CreateSignature([FromBody] CreateEmailSignatureDto dto)
+        {
+            var result = await _contactRepository.CreateSignature(dto);
 
+            if (!result.Success)
+                return BadRequest(result);
 
+            return Ok(result);
+        }
+
+        [HttpGet("email-accounts/{clientId}")]
+        public async Task<IActionResult> GetEmailAccounts(int clientId)
+        {
+            var result = await _contactRepository.GetEmailAccounts(clientId);
+
+            return Ok(result);
+        }
+
+        [HttpGet("signatures/{clientId}")]
+        public async Task<IActionResult> GetSignatures(int clientId)
+        {
+            var result = await _contactRepository.GetSignatures(clientId);
+
+            return Ok(result);
+        }
+
+        [HttpGet("Single_signatures/{clientId}")]
+        public async Task<IActionResult> GetSingleSignatures(int clientId, int InboxId, string Provider)
+        {
+            var result = await _contactRepository.GetSingleSignatures(clientId, InboxId, Provider);
+
+            return Ok(result);
+        }
+
+        [HttpPost("update-signature")]
+        public async Task<IActionResult> UpdateSignature([FromBody] UpdateEmailSignatureDto model)
+        {
+            var result = await _contactRepository.UpdateSignature(model);
+
+            if (!result.Success)
+                return BadRequest(result);
+
+            return Ok(result);
+        }
+
+        [HttpPost("delete-signature")]
+        public async Task<IActionResult> DeleteSignature(int id, int clientId)
+        {
+            var result = await _contactRepository.DeleteSignature(id, clientId);
+
+            if (!result.Success)
+                return BadRequest(result);
+
+            return Ok(result);
+        }
     }
 
 }

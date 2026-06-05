@@ -25,22 +25,23 @@ namespace PitchGenApi.Repository
 
             var scopes = new[]
             {
-        "openid",
-        "email",
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/gmail.send"
-    };
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/userinfo.email",
+                "openid"
+            };
 
-            var scope = Uri.EscapeDataString(string.Join(" ", scopes)); // 🔥 FIX
+            var scope = Uri.EscapeDataString(string.Join(" ", scopes));
 
-            var url = $"https://accounts.google.com/o/oauth2/v2/auth?" +
-                      $"client_id={cfg["ClientId"]}" +
-                      $"&redirect_uri={Uri.EscapeDataString(cfg["RedirectUri"])}" + // 🔥 also encode this
-                      $"&response_type=code" +
-                      $"&scope={scope}" +
-                      $"&access_type=offline" +
-                      $"&prompt=consent" +
-                      $"&state={state}";
+            var url =
+                $"https://accounts.google.com/o/oauth2/v2/auth?" +
+                $"client_id={cfg["ClientId"]}" +
+                $"&redirect_uri={Uri.EscapeDataString(cfg["RedirectUri"])}" +
+                $"&response_type=code" +
+                $"&scope={scope}" +
+                $"&access_type=offline" +
+                $"&prompt=consent" +
+                $"&state={state}";
 
             return Task.FromResult(url);
         }
@@ -52,13 +53,13 @@ namespace PitchGenApi.Repository
             var client = new HttpClient();
 
             var values = new Dictionary<string, string>
-    {
-        { "code", code },
-        { "client_id", cfg["ClientId"] },
-        { "client_secret", cfg["ClientSecret"] },
-        { "redirect_uri", cfg["RedirectUri"] },
-        { "grant_type", "authorization_code" }
-    };
+                {
+                    { "code", code },
+                    { "client_id", cfg["ClientId"] },
+                    { "client_secret", cfg["ClientSecret"] },
+                    { "redirect_uri", cfg["RedirectUri"] },
+                    { "grant_type", "authorization_code" }
+                };
 
             var response = await client.PostAsync(
                 "https://oauth2.googleapis.com/token",
