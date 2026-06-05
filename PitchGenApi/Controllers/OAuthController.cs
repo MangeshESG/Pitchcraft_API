@@ -15,7 +15,20 @@ namespace PitchGenApi.Controllers
         {
             _repo = repo;
         }
+        private void WriteOAuthLog(string message)
+        {
+            try
+            {
+                var path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "gmail_oauth_log.txt");
 
+                System.IO.File.AppendAllText(
+                    path,
+                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}");
+            }
+            catch
+            {
+            }
+        }
         [HttpGet("Gmail_login")]
         public async Task<IActionResult> GmailLogin(int clientId, string SenderName, bool FullInboxSync)
         {
@@ -32,10 +45,12 @@ namespace PitchGenApi.Controllers
 
         [HttpGet("Gmail_callback")]
         [AllowAnonymous]
-        public async Task<IActionResult> GmailCallback([FromQuery]string code, [FromQuery] string state)
+        public async Task<IActionResult> GmailCallback()
         {
             try
             {
+                var code = Request.Query["code"].ToString();
+                var state = Request.Query["state"].ToString();
                 // Ensure 'code' is not empty
                 if (string.IsNullOrEmpty(code))
                 {

@@ -5,6 +5,7 @@ using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
 using Serilog;
+using System.Runtime.CompilerServices;
 using System.Text;
 using static ContactRepository;
 
@@ -791,6 +792,246 @@ public class ContactRepository
         catch (Exception ex)
         {
             return new InboxContactSaveDTO
+            {
+                Success = false,
+                Message = ex.Message
+            };
+        }
+    }
+    public async Task<OperationResult> CreateSignature(CreateEmailSignatureDto dto)
+    {
+        try
+        {
+
+            if (string.IsNullOrWhiteSpace(dto.SignatureName))
+                return new OperationResult
+                {
+                    Success = false,
+                    Message = "Signature name is required"
+                };
+
+            if (string.IsNullOrWhiteSpace(dto.SignatureHtml))
+                return new OperationResult
+                {
+                    Success = false,
+                    Message = "Signature content is required"
+                };
+
+            var signiture = await _context.EmailSignatures
+                .FirstOrDefaultAsync(x =>
+                    x.OutboxId == dto.OutboxId &&
+                    x.Provider == dto.Provider &&
+                    x.ClientId == dto.ClientId);
+
+            if (signiture != null)
+
+                return new OperationResult
+                {
+                    Success = false,
+                    Message = "Signature already exist for this account"
+                };
+
+            if (string.Equals(dto.Provider, "SMTP", StringComparison.OrdinalIgnoreCase))
+            {
+                var smtpRecord = await _context.SmtpCredentials
+                    .FirstOrDefaultAsync(x => x.Id == dto.OutboxId);
+
+                if (smtpRecord == null)
+                {
+                    return new OperationResult
+                    {
+                        Success = false,
+                        Message = "SMTP account not found."
+                    };
+                }
+            }
+            else
+            {
+                var oauthRecord = await _context.EmailOAuthTokens
+                    .FirstOrDefaultAsync(x => x.Id == dto.OutboxId);
+
+                if (oauthRecord == null)
+                {
+                    return new OperationResult
+                    {
+                        Success = false,
+                        Message = "Email account not found."
+                    };
+                }
+            }
+
+            if (dto.IsDefault)
+            {
+                var existingDefaults = await _context.EmailSignatures
+                    .Where(x => x.OutboxId == dto.OutboxId)
+                    .ToListAsync();
+
+                foreach (var item in existingDefaults)
+                {
+                    item.IsDefault = false;
+                }
+            }
+
+            var signature = new EmailSignatures
+            {
+                ClientId = dto.ClientId,
+                OutboxId = dto.OutboxId,
+                SignatureName = dto.SignatureName,
+                SignatureHtml = dto.SignatureHtml,
+                Provider = dto.Provider,
+                IsDefault = dto.IsDefault,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.EmailSignatures.Add(signature);
+
+            await _context.SaveChangesAsync();
+
+            return new OperationResult
+            {
+                Success = true,
+                Message = "Signature created successfully"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OperationResult
+            {
+                Success = false,
+                Message = ex.Message
+            };
+        }
+    }
+    public async Task<List<EmailAccountDto>> GetEmailAccounts(int clientId)
+    {
+        var oauthAccounts = await _context.EmailOAuthTokens
+            .Where(x => x.ClientId == clientId)
+            .Select(x => new EmailAccountDto
+            {
+                Id = x.Id,
+                Email = x.Email,
+                Provider = x.Provider
+            })
+            .ToListAsync();
+
+        string clientIdInt = clientId.ToString();
+
+        var smtpAccounts = await _context.SmtpCredentials
+            .Where(x => x.ClientId == clientIdInt)
+            .Select(x => new EmailAccountDto
+            {
+                Id = x.Id,
+                Email = x.FromEmail,
+                Provider = "SMTP"
+            })
+            .ToListAsync();
+
+        return oauthAccounts
+            .Concat(smtpAccounts)
+            .OrderBy(x => x.Email)
+            .ToList();
+    }
+
+    public async Task<List<EmailSignatures>> GetSignatures(int clientId)
+    {
+        return await _context.EmailSignatures
+            .Where(x => x.ClientId == clientId)
+            .OrderByDescending(x => x.CreatedAt)
+            .ToListAsync();
+    }
+
+    public async Task<EmailSignatures> GetSingleSignatures(int clientId, int InboxId, string Provider)
+    {
+        int? outboxId = 0;
+
+        // =========================
+        // OUTBOX RESOLVE
+        // =========================
+
+        if (Provider.ToUpper() == "IMAP")
+        {
+            outboxId = await _context.Inboxcredentials
+                .Where(x => x.Id == InboxId)
+                .Select(x => x.Outboxid)
+                .FirstOrDefaultAsync();
+        }
+        else if (Provider.ToUpper() == "GMAIL" ||
+                 Provider.ToUpper() == "OUTLOOK")
+        {
+            outboxId = InboxId;
+        }
+
+        return await _context.EmailSignatures.FirstOrDefaultAsync(x => x.ClientId == clientId && x.OutboxId == outboxId);
+            
+    }
+    public async Task<OperationResult> UpdateSignature(UpdateEmailSignatureDto model)
+    {
+        try
+        {
+            var signature = await _context.EmailSignatures
+                .FirstOrDefaultAsync(x => x.Id == model.Id);
+
+            if (signature == null)
+            {
+                return new OperationResult
+                {
+                    Success = false,
+                    Message = "Signature not found"
+                };
+            }
+
+            signature.SignatureName = model.SignatureName;
+            signature.SignatureHtml = model.SignatureHtml;
+            signature.IsDefault = model.IsDefault;
+            signature.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return new OperationResult
+            {
+                Success = true,
+                Message = "Signature updated successfully"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OperationResult
+            {
+                Success = false,
+                Message = ex.Message
+            };
+        }
+    }
+
+    public async Task<OperationResult> DeleteSignature(int id, int clientId)
+    {
+        try
+        {
+            var signature = await _context.EmailSignatures
+                .FirstOrDefaultAsync(x => x.Id == id && x.ClientId == clientId);
+
+            if (signature == null)
+            {
+                return new OperationResult
+                {
+                    Success = false,
+                    Message = "Signature not found"
+                };
+            }
+
+            _context.EmailSignatures.Remove(signature);
+
+            await _context.SaveChangesAsync();
+
+            return new OperationResult
+            {
+                Success = true,
+                Message = "Signature deleted successfully"
+            };
+        }
+        catch (Exception ex)
+        {
+            return new OperationResult
             {
                 Success = false,
                 Message = ex.Message

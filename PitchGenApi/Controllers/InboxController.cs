@@ -308,4 +308,34 @@ public class InboxController : ControllerBase
         var result = await _repo.GetTotalUnreadCountAsync(clientId);
         return Ok(result);
     }
+
+    [HttpGet("download/{id:int}")]
+    public async Task<IActionResult> DownloadAttachment(int id)
+    {
+        var attachment = await _context.EmailAttachments
+            .FirstOrDefaultAsync(x => x.Id == id);
+
+        if (attachment == null)
+            return NotFound("Attachment not found");
+
+        var filePath = Path.Combine(
+            Directory.GetCurrentDirectory(),
+            "wwwroot",
+            attachment.FilePath.TrimStart('/')
+                .Replace("/", Path.DirectorySeparatorChar.ToString()));
+
+        if (!System.IO.File.Exists(filePath))
+            return NotFound("File not found");
+
+        var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read);
+
+        return File(
+            stream,
+            attachment.ContentType ?? "application/octet-stream",
+            attachment.OriginalFileName);
+    }
 }

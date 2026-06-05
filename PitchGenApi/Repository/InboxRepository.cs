@@ -389,6 +389,24 @@ public class InboxRepository : IInboxRepository
             };
         }
 
+        string inboxEmail = "";
+
+        if (Provider.ToUpper() == "IMAP")
+        {
+            inboxEmail = await _context.Inboxcredentials
+                .Where(x => x.Id == inboxId)
+                .Select(x => x.Username)
+                .FirstOrDefaultAsync() ?? "";
+        }
+        else if (Provider.ToUpper() == "GMAIL" ||
+                 Provider.ToUpper() == "OUTLOOK")
+        {
+            inboxEmail = await _context.EmailOAuthTokens
+                .Where(x => x.Id == inboxId)
+                .Select(x => x.Email)
+                .FirstOrDefaultAsync() ?? "";
+        }
+
         // =========================
         // SENT EMAILS
         // =========================
@@ -570,7 +588,7 @@ public class InboxRepository : IInboxRepository
 
                         FromEmail = i.FromEmail,
 
-                        ToEmail = "",
+                        ToEmail = inboxEmail,
 
                         Date = i.Date,
 
@@ -656,7 +674,7 @@ public class InboxRepository : IInboxRepository
 
                         FromEmail = r.FromEmail,
 
-                        ToEmail = sentGroup.FirstOrDefault()?.SenderEmailId ?? "",
+                        ToEmail = inboxEmail,
 
                         Date = r.Date,
 
