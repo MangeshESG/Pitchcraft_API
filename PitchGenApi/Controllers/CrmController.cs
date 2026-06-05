@@ -2196,7 +2196,7 @@ namespace PitchGenApi.Controllers
                     CompanyIndustry = existingContact.CompanyIndustry,
                     CompanyEmployeeCount = existingContact.CompanyEmployeeCount,
                     linkedIninformation = existingContact.linkedIninformation,
-                    web_search_data=existingContact.web_search_data,
+                    web_search_data = existingContact.web_search_data,
 
                     created_at = DateTime.UtcNow,
                     updated_at = DateTime.UtcNow,
@@ -3132,6 +3132,20 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, ex.Message);
             }
         }
+
+        [HttpGet("kraft-done")]
+        public async Task<IActionResult> GetKraftDone([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+                return BadRequest("clientId is required.");
+
+            var kraftDone = await _context.contacts
+                .Include(c => c.data_file)
+                .AnyAsync(c => c.data_file.client_id == clientId && c.updated_at != null);
+
+            return Ok(new { kraftDone });
+        }
+
 
 
 

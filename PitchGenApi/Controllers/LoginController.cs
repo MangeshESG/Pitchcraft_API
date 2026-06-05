@@ -45,66 +45,101 @@ namespace PitchGenApi.Controllers
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequestDTO dto)
         {
-            var user = await _userRepository.GetUser(dto.username);
-
-            var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
-            var userAgent = Request.Headers["User-Agent"].ToString();
-            var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
-
-            if (user == null || !VerifyPassword(dto.password, user.PasswordHash))
+            try
             {
-                return Unauthorized(new { Message = "Invalid credentials" });
-            }
+                Console.WriteLine($"Login started for user: {dto?.username}");
 
-            // ✅ Agar trustednumber match karta hai to direct token return karo
-            if (user.TrustDiviceNumber != null && user.TrustDiviceNumber == dto.trustednumber && user.TrustExpiry > DateTime.Now)
-            {
-                var tokenDirect = _jwtService.GeneratenewToken(dto.username, user.Id, user.FirstName.ToString(), user.LastName.ToString());
+                var user = await _userRepository.GetUser(dto.username);
 
-                try
+                Console.WriteLine("User fetched successfully");
+
+                var ipAddress = HttpContext.Connection.RemoteIpAddress?.ToString();
+                var userAgent = Request.Headers["User-Agent"].ToString();
+                var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
+
+                if (user == null)
                 {
-                    await _register.LoginDetect(user, ipAddress, browserName);
+                    return Unauthorized(new { Message = "User not found" });
                 }
-                catch (Exception ex)
+
+                if (!VerifyPassword(dto.password, user.PasswordHash))
                 {
-                    Console.WriteLine("Login alert email failed: " + ex.Message);
+                    return Unauthorized(new { Message = "Invalid credentials" });
                 }
+
+                Console.WriteLine("Password verified");
+
+                if (user.TrustDiviceNumber != null &&
+                    user.TrustDiviceNumber == dto.trustednumber &&
+                    user.TrustExpiry > DateTime.Now)
+                {
+                    Console.WriteLine("Trusted device login");
+
+                    var tokenDirect = _jwtService.GeneratenewToken(
+                        dto.username,
+                        user.Id,
+                        user.FirstName?.ToString(),
+                        user.LastName?.ToString());
+
+                    return Ok(new
+                    {
+                        Token = tokenDirect,
+                        user.IsAdmin
+                    });
+                }
+
+                Console.WriteLine("OTP flow started");
+
+                string otp = OtpGenerator.GenerateSecureOtp();
+
+                if (user.TrustDiviceNumber == null ||
+                    user.TrustDiviceNumber != dto.trustednumber)
+                {
+                    Console.WriteLine("Sending OTP email");
+
+                    await _register.TrustOtpEmail(
+                        user.Email,
+                        otp,
+                        user.FirstName,
+                        ipAddress,
+                        browserName);
+
+                    Console.WriteLine("OTP email sent");
+                }
+
+                var otpEntity = new EmailOtpVerification
+                {
+                    Email = user.Email,
+                    OTP = otp,
+                    username = dto.username,
+                    IsVerified = false,
+                    OtpType = "login verify",
+                    CreatedAt = DateTime.Now,
+                    ExpiresAt = DateTime.Now.AddMinutes(10)
+                };
+
+                Console.WriteLine("Saving OTP");
+
+                _context.EmailOtpVerifications.Add(otpEntity);
+                await _context.SaveChangesAsync();
+
+                Console.WriteLine("OTP saved");
+
                 return Ok(new
-
-
                 {
-                    Token = tokenDirect,
-                    user.IsAdmin
+                    success = true,
+                    message = "OTP sent successfully"
                 });
             }
-
-            // ✅ Yaha se OTP flow chalega
-            string otp = OtpGenerator.GenerateSecureOtp();
-
-            if (user.TrustDiviceNumber == null || user.TrustDiviceNumber != dto.trustednumber)
+            catch (Exception ex)
             {
-                await _register.TrustOtpEmail(user.Email, otp, user.FirstName, ipAddress, browserName);
+                return StatusCode(500, new
+                {
+                    Error = ex.Message,
+                    InnerException = ex.InnerException?.Message,
+                    StackTrace = ex.StackTrace
+                });
             }
-
-            var otpEntity = new EmailOtpVerification
-            {
-                Email = user.Email,
-                OTP = otp,
-                username = dto.username,
-                IsVerified = false,
-                OtpType = "login verify",
-                CreatedAt = DateTime.Now,
-                ExpiresAt = DateTime.Now.AddMinutes(10)
-            };
-
-            _context.EmailOtpVerifications.Add(otpEntity);
-            _context.SaveChanges();
-            return Ok(new
-            {
-                success = true,
-                message = "OTP sent successfully"
-            });
-
         }
 
         private bool VerifyPassword(string password, string storedPasswordHash)
