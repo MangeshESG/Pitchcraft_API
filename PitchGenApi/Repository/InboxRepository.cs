@@ -6,6 +6,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
+using System.Linq;
 using System.Net.Mail;
 using System.Text;
 
@@ -1306,21 +1307,33 @@ public class InboxRepository : IInboxRepository
     }
     public async Task<TotalUnreadCountDto> GetTotalUnreadCountAsync(int clientId)
     {
-        // InboxEmails unread count
+        var inboxCredentialIds = await _context.Inboxcredentials
+            .Where(x => x.ClientId == clientId)
+            .Select(x => x.Id)
+            .ToListAsync();
+
+        var oauthIds = await _context.EmailOAuthTokens
+            .Where(x => x.ClientId == clientId)
+            .Select(x => x.Id)
+            .ToListAsync();
+
+        var allInboxIds = inboxCredentialIds
+            .Union(oauthIds)
+            .ToList();
+
         var inboxUnreadCount = await _context.InboxEmails
             .Where(x =>
-                x.ClientId == clientId &&
-                x.IsRead == false &&
-                x.IsDeleted == false)
+                !x.IsRead &&
+                !x.IsDeleted &&
+                allInboxIds.Contains(x.InboxId))
             .CountAsync();
 
-        // EmailReplies unread count
         var repliesUnreadCount = await _context.EmailReplies
-            .Where(x =>
-                x.ClientId == clientId &&
-                x.IsRead == false &&
-                x.IsDeleted == false)
-            .CountAsync();
+             .Where(x =>
+                 x.IsRead == false &&
+                 x.IsDeleted == false &&
+                 allInboxIds.Contains(x.Inboxid ?? 0))
+             .CountAsync();
 
         return new TotalUnreadCountDto
         {
@@ -1382,7 +1395,8 @@ public class InboxRepository : IInboxRepository
         var replies = await _context.EmailReplies
             .Where(x =>
                 x.ClientId == clientId &&
-                x.IsDeleted != true)
+                x.IsDeleted != true &&
+                x.Inboxid == inboxId)
             .ToListAsync();
 
         // =========================================
