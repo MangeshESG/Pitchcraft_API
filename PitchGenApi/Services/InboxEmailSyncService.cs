@@ -164,12 +164,15 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                 Console.WriteLine($"🎯 TrackingId: {trackingId}");
 
+                Console.WriteLine($"RAW BODY LENGTH = {rawBody?.Length}");
+
                 var body = ExtractOnlyReply(rawBody);
 
-                body ??= "";
+                Console.WriteLine($"EXTRACTED BODY LENGTH = {body?.Length}");
+                //body ??= "";
 
-                if (body.Length > 4000)
-                    body = body.Substring(0, 4000);
+                //if (body.Length > 4000)
+                //    body = body.Substring(0, 4000);
 
                 // =========================================
                 // HEADERS
