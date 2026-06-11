@@ -164,8 +164,8 @@ namespace PitchGenApi.Controllers
             var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
 
             var otpDetails = await _userRepository.GetOtpDetails(otp, username);
-            
-                await _register.TrustOtpEmail(user.Email, otp, user.FirstName, ipAddress, browserName);
+
+            await _register.TrustOtpEmail(user.Email, otp, user.FirstName, ipAddress, browserName);
 
             if (string.IsNullOrEmpty(otp) ||
                 user == null ||
@@ -254,7 +254,7 @@ namespace PitchGenApi.Controllers
             var userAgent = Request.Headers["User-Agent"].ToString();
             var browserName = EmailTrackingHelper.GetBrowserName(userAgent);
 
-           await _register.SendOtpEmail(request.Email, otp, request.FirstName, ipAddress, browserName);
+            await _register.SendOtpEmail(request.Email, otp, request.FirstName, ipAddress, browserName);
 
             return Ok("OTP sent to your email.");
         }
@@ -308,7 +308,7 @@ namespace PitchGenApi.Controllers
             var StartDate = DateTime.UtcNow;
             var EndDate = StartDate.AddMonths(1);
 
-            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default", formattedSubNumber, StartDate, EndDate, "Monthly",0,null);
+            await _stripe.SaveUserCreditsAsync(client.Id, "Basic", "Basic Default", formattedSubNumber, StartDate, EndDate, "Monthly", 0, null);
 
             // Cleanup temp data
             _context.TempRegisterData.Remove(tempData);
@@ -378,7 +378,7 @@ namespace PitchGenApi.Controllers
 
             _context.EmailOtpVerifications.Add(otpEntry);
             await _context.SaveChangesAsync();
-            await _register.SendResetPasswordEmailAsync(email,otp, user.FirstName, ipAddress, browserName);
+            await _register.SendResetPasswordEmailAsync(email, otp, user.FirstName, ipAddress, browserName);
 
             return Ok(new
             {
@@ -405,5 +405,78 @@ namespace PitchGenApi.Controllers
             return Ok(new { message = "Password reset successful." });
         }
 
+
+        [HttpPost("admin/create-user")]
+        public async Task<IActionResult> CreateUserByAdmin(
+    [FromBody] AdminCreateUserRequest request)
+        {
+            try
+            {
+                // Check duplicate email/username
+                if (await _context.ClientDetails.AnyAsync(x =>
+                    x.Email == request.Email ||
+                    x.Username == request.Username))
+                {
+                    return BadRequest(new
+                    {
+                        message = "Email or Username already exists."
+                    });
+                }
+
+                var client = new ClientDetails
+                {
+                    FirstName = request.FirstName,
+                    LastName = request.LastName,
+                    Email = request.Email,
+                    Username = request.Username,
+                    PasswordHash = PasswordHasher.HashPassword(request.Password),
+                    CompanyName = request.CompanyName,
+                    JobTitle = request.JobTitle,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.ClientDetails.Add(client);
+                await _context.SaveChangesAsync();
+
+                // Default custom fields
+                await _defaultCustomFieldSeeder.SeedAsync(client.Id);
+
+                // Create default subscription
+                var nextSubNumber =
+                    await _context.UserCredits.CountAsync() + 1;
+
+                var formattedSubNumber =
+                    $"SUB-{nextSubNumber:D4}";
+
+                var startDate = DateTime.UtcNow;
+                var endDate = startDate.AddMonths(1);
+
+                await _stripe.SaveUserCreditsAsync(
+                    client.Id,
+                    "Basic",
+                    "Basic Default",
+                    formattedSubNumber,
+                    startDate,
+                    endDate,
+                    "Monthly",
+                    0,
+                    null);
+
+              
+                return Ok(new
+                {
+                    success = true,
+                    message = "User created successfully.",
+                    userId = client.Id
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    message = ex.Message
+                });
+            }
+        }
     }
 }
