@@ -361,7 +361,7 @@ public class InboxRepository : IInboxRepository
 
         return sb.ToString();
     }
-    public async Task<PagedInboxEmailDto> GetInboxThreads(int inboxId, string Provider, int pageNumber = 1, int pageSize = 10)
+    public async Task<PagedInboxEmailDto> GetInboxThreads(int inboxId, int clientId, string Provider, int pageNumber = 1, int pageSize = 10)
     {
         int? outboxId = 0;
 
@@ -416,6 +416,7 @@ public class InboxRepository : IInboxRepository
             .Where(x =>
                 x.outboxid == outboxId &&
                 x.IsSuccess &&
+                x.ClientId == clientId &&
                 x.IsDeleted == false)
             .ToListAsync();
 
@@ -434,6 +435,10 @@ public class InboxRepository : IInboxRepository
         // =========================
         // REPLIES
         // =========================
+        var pinnedTrackingIds = await _context.PinnedEmails
+          .Where(x => x.ClientId == clientId)
+          .Select(x => x.TrackingId)
+          .ToListAsync();
 
         var replies = await _context.EmailReplies
             .Where(er =>
@@ -483,6 +488,12 @@ public class InboxRepository : IInboxRepository
                 x.IsDeleted == false)
             .ToListAsync();
 
+        allTrackingIds = allTrackingIds
+            .Where(trackingId =>
+                replies.Any(r => r.TrackingId == trackingId)
+                ||
+                inboxEmails.Any(i => i.TrackingId == trackingId))
+            .ToList();
         // =========================
         // ATTACHMENTS
         // =========================
@@ -712,6 +723,9 @@ public class InboxRepository : IInboxRepository
                 {
                     TrackingId = trackingId,
 
+                    IsPinned = trackingId.HasValue &&
+                        pinnedTrackingIds.Contains(trackingId.Value),
+
                     Subject =
                         sentGroup.FirstOrDefault()?.Subject
                         ??
@@ -766,11 +780,7 @@ public class InboxRepository : IInboxRepository
             Data = pagedThreads
         };
     }
-    public async Task<PagedInboxEmailDto> GetSentOnlyThreads(
-    int inboxId,
-    string Provider,
-    int pageNumber = 1,
-    int pageSize = 10)
+    public async Task<PagedInboxEmailDto> GetSentOnlyThreads(int inboxId, string Provider, int pageNumber = 1, int pageSize = 10)
     {
         int? outboxId = 0;
 
@@ -1031,6 +1041,10 @@ public class InboxRepository : IInboxRepository
             .Where(x => dto.TrackingIds.Contains(x.TrackingId.Value) && x.ClientId == dto.clientid)
             .ToListAsync();
 
+        var Pin = await _context.PinnedEmails
+           .Where(x => dto.TrackingIds.Contains(x.TrackingId) && x.ClientId == dto.clientid)
+           .ToListAsync();
+
         if (!logs.Any() && !replies.Any() && !inbox.Any())
             return "Conversation not found";
 
@@ -1039,6 +1053,7 @@ public class InboxRepository : IInboxRepository
             _context.EmailLogs.RemoveRange(logs);
             _context.EmailReplies.RemoveRange(replies);
             _context.InboxEmails.RemoveRange(inbox);
+            _context.PinnedEmails.RemoveRange(Pin);
         }
         else
         {
@@ -1134,6 +1149,10 @@ public class InboxRepository : IInboxRepository
             .OrderBy(x => x.Date)
             .ToListAsync();
 
+        var pinnedTrackingIds = await _context.PinnedEmails
+          .Where(x => x.ClientId == clientId)
+          .Select(x => x.TrackingId)
+          .ToListAsync();
         // =========================================
         // ALL MESSAGE IDS
         // =========================================
@@ -1274,6 +1293,9 @@ public class InboxRepository : IInboxRepository
             {
                 TrackingId = trackingId,
 
+                IsPinned = trackingId.HasValue &&
+                        pinnedTrackingIds.Contains(trackingId.Value),
+
                 Subject = inbox.Subject,
 
                 ContactEmail = inbox.FromEmail,
@@ -1397,6 +1419,11 @@ public class InboxRepository : IInboxRepository
                 x.ClientId == clientId &&
                 x.IsDeleted != true &&
                 x.Inboxid == inboxId)
+            .ToListAsync();
+
+        var pinnedTrackingIds = await _context.PinnedEmails
+            .Where(x => x.ClientId == clientId)
+            .Select(x => x.TrackingId)
             .ToListAsync();
 
         // =========================================
@@ -1607,6 +1634,15 @@ public class InboxRepository : IInboxRepository
                     })
                 );
 
+                var hasInbox = inboxEmails.Any(i => i.TrackingId == trackingId);
+
+                var hasReply = replies.Any(r => r.TrackingId == trackingId);
+
+                if (!hasInbox && !hasReply)
+                {
+                    return null;
+                }
+
                 messages = messages
                     .OrderBy(x => x.Date)
                     .ToList();
@@ -1640,6 +1676,9 @@ public class InboxRepository : IInboxRepository
                 return new EmailThreadDto
                 {
                     TrackingId = trackingId,
+
+                    IsPinned = trackingId.HasValue &&
+                            pinnedTrackingIds.Contains(trackingId.Value),
 
                     Subject =
                         inboxFirst?.Subject ??
@@ -1757,5 +1796,211 @@ public class InboxRepository : IInboxRepository
             return false;
         }
     }
+    public async Task<string> TogglePinAsync(int clientId, Guid trackingId)
+    {
+        var existingPin = await _context.PinnedEmails
+            .FirstOrDefaultAsync(x =>
+                x.ClientId == clientId &&
+                x.TrackingId == trackingId);
 
+        if (existingPin != null)
+        {
+            _context.PinnedEmails.Remove(existingPin);
+            await _context.SaveChangesAsync();
+
+            return "Email unpinned successfully.";
+        }
+
+        var pin = new PinnedEmails
+        {
+            ClientId = clientId,
+            TrackingId = trackingId,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _context.PinnedEmails.Add(pin);
+        await _context.SaveChangesAsync();
+
+        return "Email pinned successfully.";
+    }
+    public async Task<List<EmailThreadDto>> GetPinnedEmails(int clientId, int contactId)
+    {
+        var pinnedTrackingIds = await _context.PinnedEmails
+            .Where(x => x.ClientId == clientId)
+            .Select(x => x.TrackingId)
+            .ToListAsync();
+
+        var inboxEmails = await _context.InboxEmails
+            .Where(x =>
+                x.Contactid == contactId &&
+                x.TrackingId != null &&
+                pinnedTrackingIds.Contains(x.TrackingId.Value) &&
+                !x.IsDeleted)
+            .ToListAsync();
+
+        var replies = await _context.EmailReplies
+            .Where(x =>
+                x.ContactId == contactId &&
+                x.TrackingId != null &&
+                pinnedTrackingIds.Contains(x.TrackingId.Value) &&
+                x.IsDeleted != true)
+            .ToListAsync();
+
+        var sentEmails = await _context.EmailLogs
+            .Where(x =>
+                x.ContactId == contactId &&
+                x.TrackingId != null &&
+                pinnedTrackingIds.Contains(x.TrackingId.Value) &&
+                !x.IsDeleted)
+            .ToListAsync();
+
+        var trackingIds = pinnedTrackingIds
+            .Distinct()
+            .ToList();
+
+        var allMessageIds = inboxEmails
+            .Select(x => x.MessageId)
+
+            .Union(sentEmails.Select(x => x.MessageId))
+
+            .Union(replies.Select(x => x.MessageId))
+
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct()
+            .ToList();
+
+        var attachments = await _context.EmailAttachments
+            .Where(x => allMessageIds.Contains(x.MessageId))
+            .ToListAsync();
+
+        var contact = await _context.contacts
+            .FirstOrDefaultAsync(x => x.id == contactId);
+
+        var threads = trackingIds
+            .Select(trackingId =>
+            {
+                var messages = new List<EmailConvDto>();
+
+                messages.AddRange(
+                    inboxEmails
+                    .Where(x => x.TrackingId == trackingId)
+                    .Select(i => new EmailConvDto
+                    {
+                        Type = "Inbox",
+                        MessageId = i.MessageId,
+                        Subject = i.Subject,
+                        Body = i.Body,
+                        FromEmail = i.FromEmail,
+                        ToEmail = "",
+                        Date = i.Date,
+                        IsRead = i.IsRead,
+                        ContactId = i.Contactid,
+                        ContactName = i.FromName,
+                        Attachments = attachments
+                            .Where(a => a.MessageId == i.MessageId)
+                            .Select(a => new EmailAttachmentDto
+                            {
+                                Id = a.Id,
+                                MessageId = a.MessageId,
+                                FileName = a.FileName,
+                                OriginalFileName = a.OriginalFileName,
+                                ContentType = a.ContentType,
+                                FilePath = a.FilePath,
+                                FileSize = a.FileSize
+                            })
+                            .ToList()
+                    })
+                );
+
+                messages.AddRange(
+                    sentEmails
+                    .Where(x => x.TrackingId == trackingId)
+                    .Select(s => new EmailConvDto
+                    {
+                        Type = "Sent",
+                        MessageId = s.MessageId,
+                        Subject = s.Subject,
+                        Body = s.Body,
+                        FromEmail = s.SenderEmailId,
+                        ToEmail = s.ToEmail,
+                        Date = s.SentAt,
+                        IsRead = true,
+                        ContactId = s.ContactId,
+                        ContactName = s.EmailSenderName,
+                        Attachments = attachments
+                            .Where(a => a.MessageId == s.MessageId)
+                            .Select(a => new EmailAttachmentDto
+                            {
+                                Id = a.Id,
+                                MessageId = a.MessageId,
+                                FileName = a.FileName,
+                                OriginalFileName = a.OriginalFileName,
+                                ContentType = a.ContentType,
+                                FilePath = a.FilePath,
+                                FileSize = a.FileSize
+                            })
+                            .ToList()
+                    })
+                );
+
+                messages.AddRange(
+                    replies
+                    .Where(x => x.TrackingId == trackingId)
+                    .Select(r => new EmailConvDto
+                    {
+                        Type = "Reply",
+                        MessageId = r.MessageId,
+                        Subject = r.Subject,
+                        Body = r.Body,
+                        FromEmail = r.FromEmail,
+                        ToEmail = "",
+                        Date = r.Date,
+                        IsRead = r.IsRead ?? false,
+                        ContactId = r.ContactId,
+                        ContactName = contact?.full_name ?? r.FromEmail,
+                        Attachments = attachments
+                            .Where(a => a.MessageId == r.MessageId)
+                            .Select(a => new EmailAttachmentDto
+                            {
+                                Id = a.Id,
+                                MessageId = a.MessageId,
+                                FileName = a.FileName,
+                                OriginalFileName = a.OriginalFileName,
+                                ContentType = a.ContentType,
+                                FilePath = a.FilePath,
+                                FileSize = a.FileSize
+                            })
+                            .ToList()
+                    })
+                );
+
+                messages = messages
+                    .OrderBy(x => x.Date)
+                    .ToList();
+
+                if (!messages.Any())
+                    return null;
+
+                return new EmailThreadDto
+                {
+                    TrackingId = trackingId,
+                    IsPinned = true,
+                    Subject = messages.FirstOrDefault()?.Subject,
+                    ContactEmail =
+                        inboxEmails.FirstOrDefault(x => x.TrackingId == trackingId)?.FromEmail
+                        ??
+                        sentEmails.FirstOrDefault(x => x.TrackingId == trackingId)?.ToEmail,
+                    ContactId = contactId,
+                    TotalMessages = messages.Count,
+                    LastMessageDate = messages.Max(x => x.Date),
+                    HasUnread = messages.Any(x => !x.IsRead),
+                    Messages = messages
+                };
+            })
+            .Where(x => x != null)
+            .OrderByDescending(x => x.LastMessageDate)
+            .ToList();
+
+        return threads;
+    }
 }

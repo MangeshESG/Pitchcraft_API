@@ -231,7 +231,11 @@ public class ContactRepository
             .Select(x => x.MessageId)
             .Distinct()
             .ToList();
-
+        var inboxTrackingIds = Inboxemails
+            .Where(x => x.TrackingId != null)
+            .Select(x => x.TrackingId)
+            .Distinct()
+            .ToList();
         // =========================
         // TRACKING EVENTS
         // =========================
@@ -246,16 +250,11 @@ public class ContactRepository
         // REPLIES
         // =========================
         var replies = await _context.EmailReplies
-            .AsNoTracking()
-            .Where(x =>
-                x.ContactId == contactId &&
-                (
-                    (x.TrackingId != null && trackingIds.Contains(x.TrackingId))
-                    ||
-                    (x.InReplyTo != null && messageIds.Contains(x.InReplyTo))
-                ))
-            .OrderBy(x => x.Date)
-            .ToListAsync();
+             .AsNoTracking()
+             .Where(x =>
+                 x.ContactId == contactId)
+             .OrderBy(x => x.Date)
+             .ToListAsync();
 
         // =========================
         // NOTES
@@ -289,93 +288,195 @@ public class ContactRepository
                 CreatedDate = x.CreatedDate
             })
             .ToListAsync();
-
         // =========================
         // BUILD EMAIL TIMELINE
         // =========================
-        var emails = emailLogs
-            .Select(log => new SentEmailDto
-            {
-                TrackingId = log.TrackingId?.ToString(),
-                SentAt = log.SentAt,
-                SenderEmailId = log.SenderEmailId,
-                Subject = log.Subject,
-                Body = log.Body,
-                Source = GetSourceName(log),
+        var emailMessageIds = emailLogs
+            .Select(x => x.MessageId)
 
-                Events = trackingEvents
-                    .Where(e => e.TrackingId == log.TrackingId)
-                    .OrderBy(e => e.Timestamp)
-                    .Select(e => new EmailEventDto
-                    {
-                        EventType = e.EventType,
-                        EventAt = e.Timestamp,
-                        TargetUrl = e.TargetUrl
-                    })
-                    .ToList(),
+            .Union(Inboxemails.Select(x => x.MessageId))
 
-                Replies = replies
-                    .Where(r =>
-                        r.TrackingId == log.TrackingId ||
-                        r.InReplyTo == log.MessageId)
-                    .OrderBy(r => r.Date)
-                    .Select(r => new EmailReplyDto
-                    {
-                        Id = r.Id,
-                        MessageId = r.MessageId,
-                        InReplyTo = r.InReplyTo,
-                        FromEmail = r.FromEmail,
-                        Subject = r.Subject,
-                        Body = r.Body,
-                        Date = r.Date,
-                        IsRead = r.IsRead ?? false
-                    })
-                    .ToList()
-            })
-            .OrderBy(x => x.SentAt)
+            .Union(replies.Select(x => x.MessageId))
+
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+
+            .Distinct()
             .ToList();
 
-        var inbox = Inboxemails
-           .Select(box => new EmailInboxDto
-           {
-               TrackingId = box.TrackingId,
-               ReceiveAt = box.CreatedAt,
-               FromEmail = box.FromEmail,
-               Subject = box.Subject,
-               Body = box.Body,
+        var allTrackingIds = emailLogs
+             .Where(x => x.TrackingId != null)
+             .Select(x => x.TrackingId)
 
-               Events = trackingEvents
-                   .Where(e => e.TrackingId == box.TrackingId)
-                   .OrderBy(e => e.Timestamp)
-                   .Select(e => new EmailEventDto
-                   {
-                       EventType = e.EventType,
-                       EventAt = e.Timestamp,
-                       TargetUrl = e.TargetUrl
-                   })
-                   .ToList(),
+             .Union(
+                 Inboxemails
+                     .Where(x => x.TrackingId != null)
+                     .Select(x => x.TrackingId)
+             )
 
-               Replies = replies
-                   .Where(r =>
-                       r.TrackingId == box.TrackingId ||
-                       r.InReplyTo == box.MessageId)
-                   .OrderBy(r => r.Date)
-                   .Select(r => new EmailReplyDto
-                   {
-                       Id = r.Id,
-                       MessageId = r.MessageId,
-                       InReplyTo = r.InReplyTo,
-                       FromEmail = r.FromEmail,
-                       Subject = r.Subject,
-                       Body = r.Body,
-                       Date = r.Date,
-                       IsRead = r.IsRead ?? false
-                   })
-                   .ToList()
-           })
-           .OrderBy(x => x.ReceiveAt)
-           .ToList();
+             .Union(
+                 replies
+                     .Where(x => x.TrackingId != null)
+                     .Select(x => x.TrackingId)
+             )
 
+             .Distinct()
+             .ToList();
+
+        var repliesWithoutTracking = replies
+            .Where(x => x.TrackingId == null)
+            .ToList();
+
+        var emailAttachments = await _context.EmailAttachments
+            .AsNoTracking()
+            .Where(x => emailMessageIds.Contains(x.MessageId))
+            .ToListAsync();
+
+        var conversations = allTrackingIds
+            .Select(trackingId =>
+            {
+                var sentGroup = emailLogs
+                    .Where(x => x.TrackingId == trackingId)
+                    .ToList();
+
+                var replyGroup = replies
+                    .Where(x => x.TrackingId == trackingId)
+                    .ToList();
+
+                var inboxGroup = Inboxemails
+                    .Where(x => x.TrackingId == trackingId)
+                    .ToList();
+
+                var messages = new List<EmailConvDto>();
+
+                messages.AddRange(
+                inboxGroup
+                    .Where(i =>
+                        !replyGroup.Any(r => r.MessageId == i.MessageId)
+                    )
+                    .Select(i => new EmailConvDto
+                    {
+                        Type = "Inbox",
+                        MessageId = i.MessageId,
+                        Subject = i.Subject,
+                        Body = i.Body,
+                        FromEmail = i.FromEmail,
+                        ToEmail = contact.email,
+                        Date = i.Date,
+                        IsRead = i.IsRead,
+                        ContactId = i.Contactid,
+                        ContactName = i.FromName,
+                        Attachments = emailAttachments
+                            .Where(a => a.MessageId == i.MessageId)
+                            .Select(a => new EmailAttachmentDto
+                            {
+                                Id = a.Id,
+                                MessageId = a.MessageId,
+                                FileName = a.FileName,
+                                OriginalFileName = a.OriginalFileName,
+                                ContentType = a.ContentType,
+                                FilePath = a.FilePath,
+                                FileSize = a.FileSize
+                            })
+                            .ToList()
+                    })
+                );
+
+                messages.AddRange(
+                    sentGroup.Select(s => new EmailConvDto
+                    {
+                        Type = "Sent",
+                        MessageId = s.MessageId,
+                        Subject = s.Subject,
+                        Body = s.Body,
+                        FromEmail = s.SenderEmailId,
+                        ToEmail = s.ToEmail,
+                        Date = s.SentAt,
+                        IsRead = true,
+                        ContactId = s.ContactId,
+                        ContactName = s.EmailSenderName,
+                        Attachments = emailAttachments
+                            .Where(a => a.MessageId == s.MessageId)
+                            .Select(a => new EmailAttachmentDto
+                            {
+                                Id = a.Id,
+                                MessageId = a.MessageId,
+                                FileName = a.FileName,
+                                OriginalFileName = a.OriginalFileName,
+                                ContentType = a.ContentType,
+                                FilePath = a.FilePath,
+                                FileSize = a.FileSize
+                            })
+                            .ToList()
+                    })
+                );
+
+                messages.AddRange(
+                    replyGroup.Select(r => new EmailConvDto
+                    {
+                        Type = "Reply",
+                        MessageId = r.MessageId,
+                        Subject = r.Subject,
+                        Body = r.Body,
+                        FromEmail = r.FromEmail,
+                        ToEmail = contact.email,
+                        Date = r.Date,
+                        IsRead = r.IsRead ?? false,
+                        ContactId = r.ContactId,
+                        ContactName = r.FromEmail,
+                        Attachments = emailAttachments
+                            .Where(a => a.MessageId == r.MessageId)
+                            .Select(a => new EmailAttachmentDto
+                            {
+                                Id = a.Id,
+                                MessageId = a.MessageId,
+                                FileName = a.FileName,
+                                OriginalFileName = a.OriginalFileName,
+                                ContentType = a.ContentType,
+                                FilePath = a.FilePath,
+                                FileSize = a.FileSize
+                            })
+                            .ToList()
+                    })
+                );
+
+                messages = messages
+                    .OrderBy(x => x.Date)
+                    .ToList();
+
+                if (!messages.Any())
+                    return null;
+
+                return new EmailThreadDto
+                {
+                    TrackingId = trackingId,
+
+                    Subject =
+                        inboxGroup.FirstOrDefault()?.Subject
+                        ??
+                        sentGroup.FirstOrDefault()?.Subject
+                        ??
+                        replyGroup.FirstOrDefault()?.Subject,
+
+                    ContactEmail = contact.email,
+
+                    ContactId = contactId,
+
+                    TotalMessages = messages.Count,
+
+                    LastMessageDate = messages.Max(x => x.Date),
+
+                    HasUnread = messages.Any(x =>
+                        (x.Type == "Inbox" || x.Type == "Reply")
+                        && !x.IsRead),
+
+                    IsPinned = false,
+
+                    Messages = messages
+                };
+            })
+            .Where(x => x != null)
+            .OrderByDescending(x => x.LastMessageDate)
+            .ToList();
         // =========================
         // FINAL RETURN
         // =========================
@@ -385,8 +486,7 @@ public class ContactRepository
             FullName = contact.full_name,
             Email = contact.email,
             ContactCreatedAt = contact.created_at,
-            Emails = emails,
-            inboxemails = inbox,
+            Conversations = conversations,
             Notes = notes,
             Attachments = attachments
         };

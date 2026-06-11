@@ -11,6 +11,7 @@
         public List<EmailInboxDto> inboxemails { get; set; }
         public List<ContactNoteDto> Notes { get; set; }
         public List<ContactAttachmentDto> Attachments { get; set; }
+        public List<EmailThreadDto> Conversations { get; set; }
     }
 
     public class EmailEventDto
