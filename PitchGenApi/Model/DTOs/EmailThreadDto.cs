@@ -9,7 +9,7 @@
         public DateTime? LastMessageDate { get; set; }
         public bool HasUnread { get; set; }
         public int? ContactId { get; set; }
-
+        public bool IsPinned { get; set; }
         public List<EmailConvDto> Messages { get; set; }
     }
 

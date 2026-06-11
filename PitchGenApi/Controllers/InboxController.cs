@@ -101,9 +101,9 @@ public class InboxController : ControllerBase
     }
 
     [HttpGet("inbox")]
-    public async Task<IActionResult> GetRepliesByInbox([FromQuery]int inboxId, [FromQuery] string Provider, [FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
+    public async Task<IActionResult> GetRepliesByInbox([FromQuery]int inboxId, [FromQuery] int clientId ,[FromQuery] string Provider, [FromQuery] int pageNumber = 1, [FromQuery] int pageSize = 10)
     {
-        var data = await _repo.GetInboxThreads(inboxId, Provider, pageNumber, pageSize);
+    var data = await _repo.GetInboxThreads(inboxId,clientId, Provider, pageNumber, pageSize);
 
         return Ok(new
         {
@@ -337,5 +337,27 @@ public class InboxController : ControllerBase
             stream,
             attachment.ContentType ?? "application/octet-stream",
             attachment.OriginalFileName);
+    }
+
+    [HttpPost("pin_email")]
+    public async Task<IActionResult> TogglePin([FromQuery] int ClientId, [FromQuery] Guid TrackingId)
+    {
+        var result = await _repo.TogglePinAsync(ClientId,TrackingId);
+
+        return Ok(new
+        {
+            Success = true,
+            Message = result
+        });
+    }
+
+    [HttpGet("pinned-emails")]
+    public async Task<IActionResult> GetPinnedEmails(
+    int clientId,
+    int contactId)
+    {
+        var result = await _repo.GetPinnedEmails(clientId, contactId);
+
+        return Ok(result);
     }
 }

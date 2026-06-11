@@ -1,0 +1,70 @@
+BEGIN:VCALENDAR
+PRODID:-//Google Inc//Google Calendar 70.9054//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:REQUEST
+BEGIN:VTIMEZONE
+TZID:Europe/London
+X-LIC-LOCATION:Europe/London
+BEGIN:DAYLIGHT
+TZOFFSETFROM:+0000
+TZOFFSETTO:+0100
+TZNAME:GMT+1
+DTSTART:19700329T010000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+END:DAYLIGHT
+BEGIN:STANDARD
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0000
+TZNAME:GMT
+DTSTART:19701025T020000
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+DTSTART;TZID=Europe/London:20260616T140000
+DTEND;TZID=Europe/London:20260616T144500
+DTSTAMP:20260609T140848Z
+ORGANIZER;CN=Ethan Williams:mailto:ethan.williams@bsmexpo.com
+UID:92mfosn5p84nvdo1r9e8hffsgc@google.com
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=
+ TRUE;CN=michaelr@pitchkraft.ai;X-NUM-GUESTS=0:mailto:michaelr@pitchkraft.ai
+ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=ACCEPTED;RSVP=TRUE
+ ;CN=Ethan Williams;X-NUM-GUESTS=0:mailto:ethan.williams@bsmexpo.com
+X-GOOGLE-CONFERENCE:https://meet.google.com/xpd-xerh-mme
+X-MICROSOFT-CDO-OWNERAPPTID:-467678199
+CREATED:20260609T140840Z
+DESCRIPTION:Event Name\nTBS 2026 - 30min Meeting\n\nLocation: This is a Goo
+ gle Meet web conference.\nYou can join this meeting from your computer\, ta
+ blet\, or smartphone.\nhttps://calendly.com/events/453362ef-3d30-4ace-9329-
+ 45211a0742a1/google_meet\n\nPlease share anything that will help prepare fo
+ r our meeting.: Hi Michael\, I run the Business Show in London. Over 25\,00
+ 0 SME owners &amp\; decision makers attend all looking for ways to grow. Si
+ nce AI is a key focus for our attendees\, I'm keen to discuss PitchKraft ex
+ hibiting at the 2026 edition in November. Can we have a quick call? Ethan W
+ illiams The Business Show London 020 4530 5341 https://calendly.com/ethan-w
+ illiams-bsmexpo/30min\n\nPhone Number: +44 (0) 207 660 2229\n\nNeed to make
+  changes to this event?\nCancel: https://calendly.com/cancellations/f5e1dbb
+ 3-d382-429f-aeda-64c97045837a\nReschedule: https://calendly.com/reschedulin
+ gs/f5e1dbb3-d382-429f-aeda-64c97045837a\n\nPowered by Calendly.com\n\n\n-::
+ ~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:
+ ~::~:~::-\nJoin with Google Meet: https://meet.google.com/xpd-xerh-mme\nOr 
+ dial: (GB) +44 20 3956 3230 PIN: 253688414#\nMore phone numbers: https://te
+ l.meet/xpd-xerh-mme?pin=1585088375685&hs=7\n\nLearn more about Meet at: htt
+ ps://support.google.com/a/users/answer/9282720\n\nPlease do not edit this s
+ ection.\n-::~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:
+ ~:~:~:~:~:~:~::~:~::-
+LAST-MODIFIED:20260609T140841Z
+LOCATION:Google Meet (instructions in description)\; https://meet.google.co
+ m/xpd-xerh-mme
+SEQUENCE:0
+STATUS:CONFIRMED
+SUMMARY:Michael Robinson and Ethan Williams
+TRANSP:OPAQUE
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:This is an event reminder
+TRIGGER:-P0DT0H10M0S
+END:VALARM
+END:VEVENT
+END:VCALENDAR
