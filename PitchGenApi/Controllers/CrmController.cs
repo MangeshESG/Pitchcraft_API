@@ -3202,6 +3202,43 @@ namespace PitchGenApi.Controllers
 
             return Ok(result);
         }
+
+
+        [HttpGet("contact-engagement/{contactId}")]
+        public async Task<IActionResult> GetContactEngagement(int contactId)
+        {
+            var result = await (
+                from el in _context.EmailLogs
+                where el.ContactId == contactId
+                      && !el.IsDeleted
+                join etl in _context.EmailTrackingLogs
+                    on el.TrackingId equals etl.TrackingId into tracking
+                from etl in tracking.DefaultIfEmpty()
+                group new { el, etl } by el.ContactId into g
+                select new
+                {
+                    ContactId = g.Key,
+
+                    SentCount = g.Select(x => x.el.TrackingId)
+                                 .Distinct()
+                                 .Count(),
+
+                    OpenCount = g.Where(x => x.etl != null &&
+                                             x.etl.EventType == "Open")
+                                 .Select(x => x.etl.TrackingId)
+                                 .Distinct()
+                                 .Count(),
+
+                    ClickCount = g.Where(x => x.etl != null &&
+                                             x.etl.EventType == "Click")
+                                 .Select(x => x.etl.TrackingId)
+                                 .Distinct()
+                                 .Count()
+                }
+            ).FirstOrDefaultAsync();
+
+            return Ok(result);
+        }
     }
 
 }

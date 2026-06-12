@@ -224,7 +224,8 @@ public class InboxRepository : IInboxRepository
                         x.ClientId == clientId &&
                         x.InboxId == inbox.InboxId &&
                         x.IsRead == false &&
-                        x.IsDeleted == false)
+                        x.IsDeleted == false &&
+                        x.TrackingId != null)
                     .CountAsync();
 
                 // EmailReplies unread count
@@ -233,7 +234,8 @@ public class InboxRepository : IInboxRepository
                         x.ClientId == clientId &&
                         x.Inboxid == inbox.InboxId &&
                         x.IsRead == false &&
-                        x.IsDeleted == false)
+                        x.IsDeleted == false &&
+                        x.TrackingId != null)
                     .CountAsync();
 
                 // Total unread count
@@ -1347,6 +1349,7 @@ public class InboxRepository : IInboxRepository
             .Where(x =>
                 !x.IsRead &&
                 !x.IsDeleted &&
+                x.TrackingId != null &&
                 allInboxIds.Contains(x.InboxId))
             .CountAsync();
 
@@ -1354,6 +1357,7 @@ public class InboxRepository : IInboxRepository
              .Where(x =>
                  x.IsRead == false &&
                  x.IsDeleted == false &&
+                 x.TrackingId != null &&
                  allInboxIds.Contains(x.Inboxid ?? 0))
              .CountAsync();
 
