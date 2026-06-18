@@ -728,22 +728,26 @@ namespace PitchGenApi.Controllers
             // =====================================================
             // ⭐ Create in-memory session for live chat
             // =====================================================
+            // Remove any previous in-memory session for this user
+            CampaignPromptService._sessions.Remove(req.ClientId);
+
+            // Create a fresh session
             CampaignPromptService._sessions[req.ClientId] = new CampaignPromptService.CampaignSession
             {
                 UserId = req.ClientId,
                 CampaignTemplateId = campaign.Id,
                 Messages = new List<Dictionary<string, string>>
+            {
+                new()
                 {
-                    new()
-                    {
-                        { "role", "system" },
-                        { "content", templateDef.AIInstructions
-                                     ?? templateDef.PlaceholderListExtensive
-                                     ?? templateDef.PlaceholderList
-                                     ?? "" }
-                    }
+                    { "role", "system" },
+                    { "content", templateDef.AIInstructions
+                                 ?? templateDef.PlaceholderListExtensive
+                                 ?? templateDef.PlaceholderList
+                                 ?? "" }
                 }
-            };
+            }
+                    };
 
 
 
