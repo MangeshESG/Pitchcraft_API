@@ -1072,20 +1072,25 @@ namespace PitchGenApi.Controllers
         [HttpGet("getlogs")]
         public async Task<IActionResult> GetLogs(
             [FromQuery] int clientId,
-            [FromQuery] int? campaignId = null
+            [FromQuery] int? campaignId = null,
+            [FromQuery] DateTime? startDate = null,
+            [FromQuery] DateTime? endDate = null,
+            [FromQuery] int? pageNumber = null,
+            [FromQuery] int pageSize = 10,
+            [FromQuery] string? search = null
         )
         {
-            if (!campaignId.HasValue)
-                return BadRequest("campaignId is required");
+            var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
 
-            var logs = await (
+            var logsQuery = (
                 from log in _context.EmailLogs
                 join contact in _context.contacts
                 on log.ContactId equals contact.id into contactGroup
                 from contact in contactGroup.DefaultIfEmpty()
                 where log.ClientId == clientId
-                   && log.CampaignId == campaignId.Value   // ✅ ONLY FILTER
-                orderby log.SentAt descending
+                   && (!campaignId.HasValue || log.CampaignId == campaignId.Value)
+                   && (!startDate.HasValue || log.SentAt >= startDate.Value.Date)
+                   && (!endDateInclusive.HasValue || log.SentAt <= endDateInclusive.Value)
                 select new
                 {
                     log.Id,
@@ -1111,27 +1116,120 @@ namespace PitchGenApi.Controllers
                     JobTitle = contact.job_title,
                     LinkedIn = contact.linkedin_url
                 }
-            ).ToListAsync();
+            );
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var q = search.Trim().ToLower();
+                logsQuery = logsQuery.Where(log =>
+                    (log.Name != null && log.Name.ToLower().Contains(q)) ||
+                    (log.ToEmail != null && log.ToEmail.ToLower().Contains(q)) ||
+                    (log.Company != null && log.Company.ToLower().Contains(q)) ||
+                    (log.JobTitle != null && log.JobTitle.ToLower().Contains(q)) ||
+                    (log.Subject != null && log.Subject.ToLower().Contains(q)) ||
+                    (log.process_name != null && log.process_name.ToLower().Contains(q)) ||
+                    (log.address != null && log.address.ToLower().Contains(q))
+                );
+            }
+
+            logsQuery = logsQuery.OrderByDescending(log => log.SentAt);
+
+            if (pageNumber.HasValue)
+            {
+                var safePage = Math.Max(1, pageNumber.Value);
+                var safePageSize = Math.Clamp(pageSize, 1, 100);
+                var totalCount = await logsQuery.CountAsync();
+                var successCount = await logsQuery.CountAsync(log => log.IsSuccess);
+                var data = await logsQuery
+                    .Skip((safePage - 1) * safePageSize)
+                    .Take(safePageSize)
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    data,
+                    totalCount,
+                    pageNumber = safePage,
+                    pageSize = safePageSize,
+                    totalPages = (int)Math.Ceiling(totalCount / (double)safePageSize),
+                    successCount,
+                    failedCount = totalCount - successCount
+                });
+            }
+
+            var logs = await logsQuery.ToListAsync();
 
             return Ok(logs);
         }
         [HttpGet("gettrackinglogs")]
         public async Task<IActionResult> GettrackingLogs(
             [FromQuery] int clientId,
-            [FromQuery] int? campaignId = null
+            [FromQuery] int? campaignId = null,
+            [FromQuery] DateTime? startDate = null,
+            [FromQuery] DateTime? endDate = null,
+            [FromQuery] int? pageNumber = null,
+            [FromQuery] int pageSize = 10,
+            [FromQuery] string? detailFilter = null,
+            [FromQuery] bool excludeBots = false,
+            [FromQuery] string? search = null
         )
         {
-            if (!campaignId.HasValue)
-                return BadRequest("campaignId is required");
+            var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
 
-            var logs = await (
+            var trackingBase = _context.EmailTrackingLogs
+                .Where(t => t.ClientId == clientId
+                    && (!campaignId.HasValue || t.CampaignId == campaignId.Value)
+                    && (!startDate.HasValue || t.Timestamp >= startDate.Value.Date)
+                    && (!endDateInclusive.HasValue || t.Timestamp <= endDateInclusive.Value)
+                    && (!excludeBots || !t.IsBot.HasValue || !t.IsBot.Value));
+
+            switch (detailFilter)
+            {
+                case "opens":
+                    trackingBase = trackingBase.Where(t => t.EventType == "Open");
+                    break;
+                case "clicks":
+                    trackingBase = trackingBase.Where(t => t.EventType == "Click");
+                    break;
+                case "opens-no-clicks":
+                    trackingBase = trackingBase.Where(t =>
+                        t.EventType == "Open" &&
+                        !_context.EmailTrackingLogs.Any(c =>
+                            c.ClientId == t.ClientId &&
+                            c.Email == t.Email &&
+                            c.EventType == "Click" &&
+                            (!campaignId.HasValue || c.CampaignId == campaignId.Value) &&
+                            (!startDate.HasValue || c.Timestamp >= startDate.Value.Date) &&
+                            (!endDateInclusive.HasValue || c.Timestamp <= endDateInclusive.Value) &&
+                            (!excludeBots || !c.IsBot.HasValue || !c.IsBot.Value)));
+                    break;
+                case "opens-and-clicks":
+                    trackingBase = trackingBase.Where(t =>
+                        _context.EmailTrackingLogs.Any(o =>
+                            o.ClientId == t.ClientId &&
+                            o.Email == t.Email &&
+                            o.EventType == "Open" &&
+                            (!campaignId.HasValue || o.CampaignId == campaignId.Value) &&
+                            (!startDate.HasValue || o.Timestamp >= startDate.Value.Date) &&
+                            (!endDateInclusive.HasValue || o.Timestamp <= endDateInclusive.Value) &&
+                            (!excludeBots || !o.IsBot.HasValue || !o.IsBot.Value)) &&
+                        _context.EmailTrackingLogs.Any(c =>
+                            c.ClientId == t.ClientId &&
+                            c.Email == t.Email &&
+                            c.EventType == "Click" &&
+                            (!campaignId.HasValue || c.CampaignId == campaignId.Value) &&
+                            (!startDate.HasValue || c.Timestamp >= startDate.Value.Date) &&
+                            (!endDateInclusive.HasValue || c.Timestamp <= endDateInclusive.Value) &&
+                            (!excludeBots || !c.IsBot.HasValue || !c.IsBot.Value)));
+                    break;
+            }
+
+            var logsQuery = (
                 from t in _context.EmailTrackingLogs
                 join e in _context.EmailLogs
                     on t.TrackingId equals e.TrackingId into emailGroup
                 from e in emailGroup.DefaultIfEmpty()
-                where t.ClientId == clientId
-                   && t.CampaignId == campaignId.Value   // ✅ ONLY FILTER
-                orderby t.Timestamp descending
+                where trackingBase.Select(x => x.Id).Contains(t.Id)
                 select new
                 {
                     t.Id,
@@ -1155,7 +1253,44 @@ namespace PitchGenApi.Controllers
                     t.CampaignId,
                     SentAt = e != null ? e.SentAt : null
                 }
-            ).ToListAsync();
+            );
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var q = search.Trim().ToLower();
+                logsQuery = logsQuery.Where(log =>
+                    (log.Full_Name != null && log.Full_Name.ToLower().Contains(q)) ||
+                    (log.Email != null && log.Email.ToLower().Contains(q)) ||
+                    (log.Company != null && log.Company.ToLower().Contains(q)) ||
+                    (log.JobTitle != null && log.JobTitle.ToLower().Contains(q)) ||
+                    (log.Location != null && log.Location.ToLower().Contains(q)) ||
+                    (log.IPAddress != null && log.IPAddress.ToLower().Contains(q))
+                );
+            }
+
+            logsQuery = logsQuery.OrderByDescending(log => log.Timestamp);
+
+            if (pageNumber.HasValue)
+            {
+                var safePage = Math.Max(1, pageNumber.Value);
+                var safePageSize = Math.Clamp(pageSize, 1, 100);
+                var totalCount = await logsQuery.CountAsync();
+                var data = await logsQuery
+                    .Skip((safePage - 1) * safePageSize)
+                    .Take(safePageSize)
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    data,
+                    totalCount,
+                    pageNumber = safePage,
+                    pageSize = safePageSize,
+                    totalPages = (int)Math.Ceiling(totalCount / (double)safePageSize)
+                });
+            }
+
+            var logs = await logsQuery.ToListAsync();
 
             return Ok(logs);
         }

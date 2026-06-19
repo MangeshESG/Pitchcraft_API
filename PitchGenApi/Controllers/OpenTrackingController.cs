@@ -714,21 +714,34 @@ public class OpenTrackingController : ControllerBase
     public async Task<IActionResult> GetMissingLogContacts(
         [FromQuery] DateTime startDate,
         [FromQuery] DateTime endDate,
-        [FromQuery] int dataFileId,
-        [FromQuery] int? campaignId = null   // ✅ ADD THIS
+        [FromQuery] int clientId,
+        [FromQuery] int? dataFileId = null,
+        [FromQuery] int? campaignId = null,
+        [FromQuery] int? pageNumber = null,
+        [FromQuery] int pageSize = 10,
+        [FromQuery] string? search = null
     )
     {
-        if (dataFileId <= 0)
-            return BadRequest("dataFileId is required");
+        if (clientId <= 0)
+            return BadRequest("clientId is required");
 
         endDate = endDate.Date.AddDays(1).AddTicks(-1);
 
+        var dataFileIds = dataFileId.HasValue && dataFileId.Value > 0
+            ? new List<int> { dataFileId.Value }
+            : await _context.data_files
+                .Where(df => df.client_id == clientId)
+                .Select(df => df.id)
+                .ToListAsync();
+
         var contacts = await _context.contacts
-            .Where(c => c.DataFileId == dataFileId)
+            .Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value))
             .ToListAsync();
 
         var loggedContactIds = await _context.EmailLogs
-            .Where(l => l.DataFileId == dataFileId
+            .Where(l => l.ClientId == clientId
+                     && l.DataFileId.HasValue
+                     && dataFileIds.Contains(l.DataFileId.Value)
                      && l.SentAt >= startDate
                      && l.SentAt <= endDate
                      && (!campaignId.HasValue || l.CampaignId == campaignId.Value)) // ✅ ADD THIS
@@ -750,11 +763,38 @@ public class OpenTrackingController : ControllerBase
                 c.linkedin_url,
                 c.website
             })
-            .ToList();
+            .AsQueryable();
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var q = search.Trim().ToLower();
+            missingContacts = missingContacts.Where(c =>
+                (c.full_name != null && c.full_name.ToLower().Contains(q)) ||
+                (c.email != null && c.email.ToLower().Contains(q)) ||
+                (c.company_name != null && c.company_name.ToLower().Contains(q)) ||
+                (c.job_title != null && c.job_title.ToLower().Contains(q)) ||
+                (c.country_or_address != null && c.country_or_address.ToLower().Contains(q)) ||
+                (c.email_subject != null && c.email_subject.ToLower().Contains(q))
+            );
+        }
+
+        var totalCount = missingContacts.Count();
+        var safePage = Math.Max(1, pageNumber ?? 1);
+        var safePageSize = Math.Clamp(pageSize, 1, 100);
+        var pagedMissingContacts = pageNumber.HasValue
+            ? missingContacts
+                .Skip((safePage - 1) * safePageSize)
+                .Take(safePageSize)
+                .ToList()
+            : missingContacts.ToList();
 
         return Ok(new
         {
-            missingContacts = missingContacts
+            missingContacts = pagedMissingContacts,
+            totalCount,
+            pageNumber = safePage,
+            pageSize = safePageSize,
+            totalPages = (int)Math.Ceiling(totalCount / (double)safePageSize)
         });
     }
     [HttpPost("delete-tracking-contact")]
