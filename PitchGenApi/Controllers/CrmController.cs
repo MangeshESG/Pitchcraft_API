@@ -1077,7 +1077,8 @@ namespace PitchGenApi.Controllers
             [FromQuery] DateTime? endDate = null,
             [FromQuery] int? pageNumber = null,
             [FromQuery] int pageSize = 10,
-            [FromQuery] string? search = null
+            [FromQuery] string? search = null,
+            [FromQuery] int? outboxId = null
         )
         {
             var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
@@ -1089,6 +1090,7 @@ namespace PitchGenApi.Controllers
                 from contact in contactGroup.DefaultIfEmpty()
                 where log.ClientId == clientId
                    && (!campaignId.HasValue || log.CampaignId == campaignId.Value)
+                   && (!outboxId.HasValue || log.outboxid == outboxId.Value)
                    && (!startDate.HasValue || log.SentAt >= startDate.Value.Date)
                    && (!endDateInclusive.HasValue || log.SentAt <= endDateInclusive.Value)
                 select new
@@ -1161,6 +1163,34 @@ namespace PitchGenApi.Controllers
 
             return Ok(logs);
         }
+
+        [HttpGet("campaign-email-counts")]
+        public async Task<IActionResult> GetCampaignEmailCounts(
+            [FromQuery] int clientId,
+            [FromQuery] DateTime? startDate = null,
+            [FromQuery] DateTime? endDate = null,
+            [FromQuery] int? outboxId = null
+        )
+        {
+            var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
+
+            var counts = await _context.EmailLogs
+                .Where(log => log.ClientId == clientId
+                    && log.CampaignId.HasValue
+                    && (!outboxId.HasValue || log.outboxid == outboxId.Value)
+                    && (!startDate.HasValue || log.SentAt >= startDate.Value.Date)
+                    && (!endDateInclusive.HasValue || log.SentAt <= endDateInclusive.Value))
+                .GroupBy(log => log.CampaignId!.Value)
+                .Select(group => new
+                {
+                    campaignId = group.Key,
+                    sentCount = group.Count()
+                })
+                .ToListAsync();
+
+            return Ok(counts);
+        }
+
         [HttpGet("gettrackinglogs")]
         public async Task<IActionResult> GettrackingLogs(
             [FromQuery] int clientId,
@@ -1171,7 +1201,8 @@ namespace PitchGenApi.Controllers
             [FromQuery] int pageSize = 10,
             [FromQuery] string? detailFilter = null,
             [FromQuery] bool excludeBots = false,
-            [FromQuery] string? search = null
+            [FromQuery] string? search = null,
+            [FromQuery] int? outboxId = null
         )
         {
             var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
@@ -1179,6 +1210,7 @@ namespace PitchGenApi.Controllers
             var trackingBase = _context.EmailTrackingLogs
                 .Where(t => t.ClientId == clientId
                     && (!campaignId.HasValue || t.CampaignId == campaignId.Value)
+                    && (!outboxId.HasValue || _context.EmailLogs.Any(e => e.TrackingId == t.TrackingId && e.outboxid == outboxId.Value))
                     && (!startDate.HasValue || t.Timestamp >= startDate.Value.Date)
                     && (!endDateInclusive.HasValue || t.Timestamp <= endDateInclusive.Value)
                     && (!excludeBots || !t.IsBot.HasValue || !t.IsBot.Value));
@@ -1199,6 +1231,7 @@ namespace PitchGenApi.Controllers
                             c.Email == t.Email &&
                             c.EventType == "Click" &&
                             (!campaignId.HasValue || c.CampaignId == campaignId.Value) &&
+                            (!outboxId.HasValue || _context.EmailLogs.Any(e => e.TrackingId == c.TrackingId && e.outboxid == outboxId.Value)) &&
                             (!startDate.HasValue || c.Timestamp >= startDate.Value.Date) &&
                             (!endDateInclusive.HasValue || c.Timestamp <= endDateInclusive.Value) &&
                             (!excludeBots || !c.IsBot.HasValue || !c.IsBot.Value)));
@@ -1210,6 +1243,7 @@ namespace PitchGenApi.Controllers
                             o.Email == t.Email &&
                             o.EventType == "Open" &&
                             (!campaignId.HasValue || o.CampaignId == campaignId.Value) &&
+                            (!outboxId.HasValue || _context.EmailLogs.Any(e => e.TrackingId == o.TrackingId && e.outboxid == outboxId.Value)) &&
                             (!startDate.HasValue || o.Timestamp >= startDate.Value.Date) &&
                             (!endDateInclusive.HasValue || o.Timestamp <= endDateInclusive.Value) &&
                             (!excludeBots || !o.IsBot.HasValue || !o.IsBot.Value)) &&
@@ -1218,6 +1252,7 @@ namespace PitchGenApi.Controllers
                             c.Email == t.Email &&
                             c.EventType == "Click" &&
                             (!campaignId.HasValue || c.CampaignId == campaignId.Value) &&
+                            (!outboxId.HasValue || _context.EmailLogs.Any(e => e.TrackingId == c.TrackingId && e.outboxid == outboxId.Value)) &&
                             (!startDate.HasValue || c.Timestamp >= startDate.Value.Date) &&
                             (!endDateInclusive.HasValue || c.Timestamp <= endDateInclusive.Value) &&
                             (!excludeBots || !c.IsBot.HasValue || !c.IsBot.Value)));

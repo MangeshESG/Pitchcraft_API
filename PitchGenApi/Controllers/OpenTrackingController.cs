@@ -719,7 +719,8 @@ public class OpenTrackingController : ControllerBase
         [FromQuery] int? campaignId = null,
         [FromQuery] int? pageNumber = null,
         [FromQuery] int pageSize = 10,
-        [FromQuery] string? search = null
+        [FromQuery] string? search = null,
+        [FromQuery] int? outboxId = null
     )
     {
         if (clientId <= 0)
@@ -744,6 +745,7 @@ public class OpenTrackingController : ControllerBase
                      && dataFileIds.Contains(l.DataFileId.Value)
                      && l.SentAt >= startDate
                      && l.SentAt <= endDate
+                     && (!outboxId.HasValue || l.outboxid == outboxId.Value)
                      && (!campaignId.HasValue || l.CampaignId == campaignId.Value)) // ✅ ADD THIS
             .Select(l => l.ContactId)
             .Distinct()
