@@ -697,7 +697,7 @@ namespace PitchGenApi.Controllers
                 PlaceholderValues = "{}",
                 PlaceholderListWithValue = "",
 
-                SelectedModel = templateDef.SelectedModel,
+                SelectedModel = "deepseek-v4-flash",
                 SearchURLCount = templateDef.SearchURLCount,
                 SubjectInstructions = templateDef.SubjectInstructions,
 
@@ -728,22 +728,26 @@ namespace PitchGenApi.Controllers
             // =====================================================
             // ⭐ Create in-memory session for live chat
             // =====================================================
+            // Remove any previous in-memory session for this user
+            CampaignPromptService._sessions.Remove(req.ClientId);
+
+            // Create a fresh session
             CampaignPromptService._sessions[req.ClientId] = new CampaignPromptService.CampaignSession
             {
                 UserId = req.ClientId,
                 CampaignTemplateId = campaign.Id,
                 Messages = new List<Dictionary<string, string>>
+            {
+                new()
                 {
-                    new()
-                    {
-                        { "role", "system" },
-                        { "content", templateDef.AIInstructions
-                                     ?? templateDef.PlaceholderListExtensive
-                                     ?? templateDef.PlaceholderList
-                                     ?? "" }
-                    }
+                    { "role", "system" },
+                    { "content", templateDef.AIInstructions
+                                 ?? templateDef.PlaceholderListExtensive
+                                 ?? templateDef.PlaceholderList
+                                 ?? "" }
                 }
-            };
+            }
+                    };
 
 
 
@@ -1578,6 +1582,8 @@ namespace PitchGenApi.Controllers
             });
         }
 
+        // Resolve the AI model from the base TemplateDefinition (always GPT).
+        // CampaignTemplates.SelectedModel is deepseek-v4-flash and must NOT be sent to OpenAI.
 
 
     }
