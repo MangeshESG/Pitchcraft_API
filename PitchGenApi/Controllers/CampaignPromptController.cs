@@ -697,7 +697,7 @@ namespace PitchGenApi.Controllers
                 PlaceholderValues = "{}",
                 PlaceholderListWithValue = "",
 
-                SelectedModel = templateDef.SelectedModel,
+                SelectedModel = "deepseek-v4-flash",
                 SearchURLCount = templateDef.SearchURLCount,
                 SubjectInstructions = templateDef.SubjectInstructions,
 
@@ -1582,6 +1582,8 @@ namespace PitchGenApi.Controllers
             });
         }
 
+        // Resolve the AI model from the base TemplateDefinition (always GPT).
+        // CampaignTemplates.SelectedModel is deepseek-v4-flash and must NOT be sent to OpenAI.
 
 
     }
