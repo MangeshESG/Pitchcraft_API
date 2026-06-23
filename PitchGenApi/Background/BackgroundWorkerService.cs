@@ -7,14 +7,27 @@ using Stripe.Terminal;
 public class BackgroundWorkerService : BackgroundService
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly IConfiguration _configuration;
 
-    public BackgroundWorkerService(IServiceProvider serviceProvider)
+    public BackgroundWorkerService(IServiceProvider serviceProvider, IConfiguration configuration)
     {
         _serviceProvider = serviceProvider;
+        _configuration = configuration;
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var backgroundJobsEnabled =
+            _configuration.GetValue<bool>("BackgroundJobs:Enabled");
+
+        if (!backgroundJobsEnabled)
+        {
+            Console.WriteLine("⚠️ Background jobs are disabled from appsettings.json");
+            return Task.CompletedTask;
+        }
+
+        Console.WriteLine("✅ Background jobs enabled.");
+
         return Task.WhenAll(
             RunEmailScheduler(stoppingToken),
             RunMonthlyCreditReset(stoppingToken),
