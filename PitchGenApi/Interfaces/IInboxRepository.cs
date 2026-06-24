@@ -29,5 +29,6 @@ namespace PitchGenApi.Interfaces
         Task<bool> CreateInboxCredentialsAsync(InboxcredentialsDTO dto);
         Task<string> TogglePinAsync(int clientId, Guid trackingId);
         Task<List<EmailThreadDto>> GetPinnedEmails(int clientId, int contactId);
+        Task<string?> GetLatestEmailTrailAsync(Guid trackingId);
     }
 }

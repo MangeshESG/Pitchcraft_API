@@ -328,6 +328,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                         FromEmail = msg.From.ToString(),
 
+                        FromName = fromName,
+
+                        ToEmail = msg.To.ToString(),
+
                         Inboxid = setting.Id,
 
                         Subject = (msg.Subject ?? "")
@@ -477,6 +481,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                             FromEmail = fromEmail,
 
+                            FromName = fromName,
+
+                            ToEmail = msg.To.ToString(),
+
                             Subject = (msg.Subject ?? "")
                                 .Substring(0,
                                     Math.Min(
@@ -542,6 +550,8 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             FromEmail = fromEmail,
 
                             FromName = fromName,
+
+                            ToEmail = msg.To.ToString(),
 
                             Subject = (msg.Subject ?? "")
                                 .Substring(0,
@@ -791,6 +801,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                     string subject = GetHeader(headers, "Subject");
                     string fromHeader = GetHeader(headers, "From");
+                    string toHeader = GetHeader(headers, "To");
 
                     string fromName = "";
                     string fromAddress = fromHeader;
@@ -936,6 +947,9 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             MessageId = messageId,
                             InReplyTo = inReplyTo,
                             FromEmail = fromAddress,
+                            FromName = fromName,
+                            ToEmail = toHeader,
+
                             Subject = subject,
                             Inboxid = tokenData.Id,
                             Body = cleanbody,
@@ -993,6 +1007,8 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 MessageId = messageId,
                                 InReplyTo = inReplyTo,
                                 FromEmail = fromAddress,
+                                FromName = fromName,
+                                ToEmail = toHeader,
                                 Subject = subject,
                                 Inboxid = tokenData.Id,
                                 Body = cleanbody,
@@ -1019,6 +1035,8 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 MessageId = messageId,
                                 InReplyTo = inReplyTo,
                                 FromEmail = fromAddress,
+                                FromName = fromName,
+                                ToEmail = toHeader,
                                 Subject = subject,
                                 Inboxid = tokenData.Id,
                                 Body = cleanbody,
@@ -1059,6 +1077,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 InReplyTo = inReplyTo,
                                 FromEmail = fromAddress,
                                 FromName = fromName,
+                                ToEmail = toHeader,
                                 Subject = subject,
                                 Contactid = contactResult.ContactId,
                                 Body = cleanbody,
@@ -1159,7 +1178,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             $"https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages" +
             $"?$filter=receivedDateTime ge {filterTime}" +
             $"&$top=50" +
-            $"&$select=id,internetMessageId,subject,from,body,receivedDateTime,hasAttachments,internetMessageHeaders";
+            $"&$select=id,internetMessageId,subject,from,toRecipients,body,receivedDateTime,hasAttachments,internetMessageHeaders";
 
         string nextLink = url;
 
@@ -1226,6 +1245,22 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     string fromName =
                         msg.from?.emailAddress?.name ?? "";
 
+                    string toEmail = "";
+
+                    if (msg.toRecipients != null)
+                    {
+                        var recipients = new List<string>();
+
+                        foreach (var r in msg.toRecipients)
+                        {
+                            var email = r.emailAddress?.address?.ToString();
+
+                            if (!string.IsNullOrWhiteSpace(email))
+                                recipients.Add(email);
+                        }
+
+                        toEmail = string.Join(";", recipients);
+                    }
                     // =========================================
                     // SKIP OWN MAILS
                     // =========================================
@@ -1383,6 +1418,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                             FromEmail = from,
 
+                            ToEmail = toEmail,
+
+                            FromName = fromName,
+
                             Subject = subject,
 
                             Inboxid = tokenData.Id,
@@ -1459,6 +1498,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                 FromEmail = from,
 
+                                ToEmail = toEmail,
+
+                                FromName = fromName,
+
                                 Subject = subject,
 
                                 Inboxid = tokenData.Id,
@@ -1497,6 +1540,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 InReplyTo = inReplyTo,
 
                                 FromEmail = from,
+
+                                ToEmail = toEmail,
+
+                                FromName = fromName,
 
                                 Subject = subject,
 
@@ -1551,6 +1598,8 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 FromEmail = from,
 
                                 FromName = fromName,
+
+                                ToEmail = toEmail,
 
                                 Subject = subject,
 
@@ -2072,18 +2121,18 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         // =========================
         if (body.Contains("<"))
         {
-            var quoteMatch = Regex.Match(
-                body,
-                @"<div[^>]*class=""[^""]*(gmail_quote|gmail_attr)[^""]*""[^>]*>" +
-                @"|<blockquote[^>]*>" +
-                @"|<div[^>]*id=""appendonsend""[^>]*>" +
-                @"|<div[^>]*border-top:\s*solid[^>]*>" +
-                @"|<div[^>]*id=""divRplyFwdMsg""[^>]*>" +
-                @"|<b>\s*From:\s*</b>",
-                RegexOptions.IgnoreCase);
+            //var quoteMatch = Regex.Match(
+            //    body,
+            //    @"<div[^>]*class=""[^""]*(gmail_quote|gmail_attr)[^""]*""[^>]*>" +
+            //    @"|<blockquote[^>]*>" +
+            //    @"|<div[^>]*id=""appendonsend""[^>]*>" +
+            //    @"|<div[^>]*border-top:\s*solid[^>]*>" +
+            //    @"|<div[^>]*id=""divRplyFwdMsg""[^>]*>" +
+            //    @"|<b>\s*From:\s*</b>",
+            //    RegexOptions.IgnoreCase);
 
-            if (quoteMatch.Success)
-                body = body.Substring(0, quoteMatch.Index);
+            //if (quoteMatch.Success)
+            //    body = body.Substring(0, quoteMatch.Index);
 
             // hidden div remove
             body = Regex.Replace(
@@ -2105,36 +2154,36 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         // =========================
         // plain text case
         // =========================
-        var textPatterns = new[]
-        {
-        @"^On\s.+?wrote:",
-        @"^-----Original Message-----",
-        @"^\s*From:\s.*$",
-        @"^\s*Sent:\s.*$",
-        @"^\s*To:\s.*$",
-        @"^\s*Subject:\s.*$",
-        @"^\s*_{5,}\s*$",
-        @"^\s*>.*$"
-    };
+    //    var textPatterns = new[]
+    //    {
+    //    @"^On\s.+?wrote:",
+    //    @"^-----Original Message-----",
+    //    @"^\s*From:\s.*$",
+    //    @"^\s*Sent:\s.*$",
+    //    @"^\s*To:\s.*$",
+    //    @"^\s*Subject:\s.*$",
+    //    @"^\s*_{5,}\s*$",
+    //    @"^\s*>.*$"
+    //};
 
-        int cutIndex = -1;
+    //    int cutIndex = -1;
 
-        foreach (var pattern in textPatterns)
-        {
-            var match = Regex.Match(
-                body,
-                pattern,
-                RegexOptions.IgnoreCase | RegexOptions.Multiline);
+    //    foreach (var pattern in textPatterns)
+    //    {
+    //        var match = Regex.Match(
+    //            body,
+    //            pattern,
+    //            RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
-            if (match.Success)
-            {
-                if (cutIndex == -1 || match.Index < cutIndex)
-                    cutIndex = match.Index;
-            }
-        }
+    //        if (match.Success)
+    //        {
+    //            if (cutIndex == -1 || match.Index < cutIndex)
+    //                cutIndex = match.Index;
+    //        }
+    //    }
 
-        if (cutIndex > 0)
-            body = body.Substring(0, cutIndex);
+    //    if (cutIndex > 0)
+    //        body = body.Substring(0, cutIndex);
 
         // cleanup extra blank lines
         body = Regex.Replace(

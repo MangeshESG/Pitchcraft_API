@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
@@ -489,14 +489,14 @@ namespace PitchGenApi.Controllers
 
                 var nowUtc = DateTime.UtcNow;
 
-                // ✅ Correct type use
+                // ? Correct type use
                 EmailSendResult success = new EmailSendResult
                 {
                     Success = false,
                     Message = "Invalid Type"
                 };
 
-                // ✅ Switch case
+                // ? Switch case
                 switch (dto.Type?.ToUpper())
                 {
                     case "SMTP":
@@ -539,7 +539,7 @@ namespace PitchGenApi.Controllers
                         });
                 }
 
-                // ❌ Fail case
+                // ? Fail case
                 if (!success.Success)
                 {
                     return StatusCode(500, new
@@ -560,7 +560,7 @@ namespace PitchGenApi.Controllers
                     }
                 }
 
-                // ✅ Final response
+                // ? Final response
                 return Ok(new
                 {
                     message = success.Message,
@@ -714,7 +714,7 @@ namespace PitchGenApi.Controllers
                 return BadRequest("Email already exists");
             }
 
-            // 🔥 STEP 1: SMTP FAST FAIL (NO DB TOUCH)
+            // ?? STEP 1: SMTP FAST FAIL (NO DB TOUCH)
             try
             {
                 using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
@@ -783,12 +783,12 @@ namespace PitchGenApi.Controllers
 
             int userId = int.Parse(ClientId);
 
-            // 🔥 FIX: execution strategy wrap
+            // ?? FIX: execution strategy wrap
             var strategy = _context.Database.CreateExecutionStrategy();
 
             return await strategy.ExecuteAsync(async () =>
             {
-                // 🔥 STEP 2: ATOMIC DB TRANSACTION
+                // ?? STEP 2: ATOMIC DB TRANSACTION
                 using var transaction = await _context.Database.BeginTransactionAsync();
 
                 try
@@ -846,7 +846,7 @@ namespace PitchGenApi.Controllers
             {
                 int.TryParse(clientId, out int clientIdInt);
 
-                // 🔥 SMTP DATA
+                // ?? SMTP DATA
                 var smtpList = await _context.SmtpCredentials
                     .Where(s => s.ClientId == clientId)
                     .Select(s => new
@@ -857,7 +857,7 @@ namespace PitchGenApi.Controllers
                     })
                     .ToListAsync();
 
-                // 🔥 OAUTH DATA
+                // ?? OAUTH DATA
                 var oauthList = await _context.EmailOAuthTokens
                     .Where(o => o.ClientId == clientIdInt)
                     .Select(o => new
@@ -868,7 +868,7 @@ namespace PitchGenApi.Controllers
                     })
                     .ToListAsync();
 
-                // 🔥 MERGE BOTH
+                // ?? MERGE BOTH
                 var combinedList = smtpList.Concat(oauthList).ToList();
 
                 if (!combinedList.Any())
@@ -898,7 +898,94 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        [HttpGet("get-sequence")]
+
+        [HttpGet("campaign-outboxs")]
+        public async Task<IActionResult> GetCampaignOutboxDropdown([FromQuery] string clientId, [FromQuery] int? campaignId = null)
+        {
+            try
+            {
+                int.TryParse(clientId, out int clientIdInt);
+
+                List<int>? usedOutboxIds = null;
+
+                if (campaignId.HasValue)
+                {
+                    usedOutboxIds = await _context.EmailLogs
+                        .Where(log => log.ClientId == clientIdInt
+                            && log.CampaignId == campaignId.Value
+                            && log.outboxid != null
+                            && log.process_name != "ThreadReply")
+                        .Select(log => log.outboxid!.Value)
+                        .Distinct()
+                        .ToListAsync();
+                }
+
+                var smtpQuery = _context.SmtpCredentials
+                    .Where(s => s.ClientId == clientId);
+
+                if (usedOutboxIds != null)
+                {
+                    smtpQuery = smtpQuery.Where(s => usedOutboxIds.Contains(s.Id));
+                }
+
+                var smtpList = await smtpQuery
+                    .Select(s => new
+                    {
+                        s.Id,
+                        Email = s.Username,
+                        Type = "SMTP"
+                    })
+                    .ToListAsync();
+
+                var oauthQuery = _context.EmailOAuthTokens
+                    .Where(o => o.ClientId == clientIdInt);
+
+                if (usedOutboxIds != null)
+                {
+                    oauthQuery = oauthQuery.Where(o => usedOutboxIds.Contains(o.Id));
+                }
+
+                var oauthList = await oauthQuery
+                    .Select(o => new
+                    {
+                        o.Id,
+                        o.Email,
+                        Type = o.Provider
+                    })
+                    .ToListAsync();
+
+                var combinedList = smtpList.Concat(oauthList).ToList();
+
+                if (!combinedList.Any())
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = campaignId.HasValue
+                            ? "No sender configurations found for this campaign."
+                            : "No email configurations found for this client."
+                    });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = campaignId.HasValue
+                        ? "Campaign sender configurations fetched successfully."
+                        : "Email configurations fetched successfully.",
+                    data = combinedList
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "An unexpected error occurred.",
+                    detail = ex.Message
+                });
+            }
+        }        [HttpGet("get-sequence")]
         public async Task<IActionResult> GetSequenceSteps([FromQuery] string ClientId)
         {
             if (string.IsNullOrWhiteSpace(ClientId))

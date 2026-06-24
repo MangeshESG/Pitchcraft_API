@@ -352,12 +352,23 @@ public class InboxController : ControllerBase
     }
 
     [HttpGet("pinned-emails")]
-    public async Task<IActionResult> GetPinnedEmails(
-    int clientId,
-    int contactId)
+    public async Task<IActionResult> GetPinnedEmails(int clientId,int contactId)
     {
         var result = await _repo.GetPinnedEmails(clientId, contactId);
 
         return Ok(result);
+    }
+    [HttpGet("email-trail")]
+    public async Task<IActionResult> GetEmailTrail(Guid trackingId)
+    {
+        var trail = await _repo.GetLatestEmailTrailAsync(trackingId);
+
+        if (trail == null)
+            return NotFound();
+
+        return Ok(new
+        {
+            emailTrail = trail
+        });
     }
 }

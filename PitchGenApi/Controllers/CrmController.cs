@@ -1093,6 +1093,7 @@ namespace PitchGenApi.Controllers
                    && (!outboxId.HasValue || log.outboxid == outboxId.Value)
                    && (!startDate.HasValue || log.SentAt >= startDate.Value.Date)
                    && (!endDateInclusive.HasValue || log.SentAt <= endDateInclusive.Value)
+                   && (log.process_name != "ThreadReply")
                 select new
                 {
                     log.Id,

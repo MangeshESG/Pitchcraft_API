@@ -1838,24 +1838,21 @@ public class InboxRepository : IInboxRepository
             .Where(x =>
                 x.Contactid == contactId &&
                 x.TrackingId != null &&
-                pinnedTrackingIds.Contains(x.TrackingId.Value) &&
-                !x.IsDeleted)
+                pinnedTrackingIds.Contains(x.TrackingId.Value))
             .ToListAsync();
 
         var replies = await _context.EmailReplies
             .Where(x =>
                 x.ContactId == contactId &&
                 x.TrackingId != null &&
-                pinnedTrackingIds.Contains(x.TrackingId.Value) &&
-                x.IsDeleted != true)
+                pinnedTrackingIds.Contains(x.TrackingId.Value))
             .ToListAsync();
 
         var sentEmails = await _context.EmailLogs
             .Where(x =>
                 x.ContactId == contactId &&
                 x.TrackingId != null &&
-                pinnedTrackingIds.Contains(x.TrackingId.Value) &&
-                !x.IsDeleted)
+                pinnedTrackingIds.Contains(x.TrackingId.Value))
             .ToListAsync();
 
         var trackingIds = pinnedTrackingIds
@@ -2006,5 +2003,69 @@ public class InboxRepository : IInboxRepository
             .ToList();
 
         return threads;
+    }
+
+    public async Task<string?> GetLatestEmailTrailAsync(Guid trackingId)
+    {
+        var latestSent = await _context.EmailLogs
+            .Where(x => x.TrackingId == trackingId)
+            .OrderByDescending(x => x.SentAt)
+            .Select(x => new
+            {
+                Date = (DateTime?)x.SentAt,
+                Subject = x.Subject,
+                Body = x.Body,
+                From = x.EmailSenderName ?? x.SenderEmailId,
+                To = x.ToEmail
+            })
+            .FirstOrDefaultAsync();
+
+        var latestInbox = await _context.InboxEmails
+            .Where(x => x.TrackingId == trackingId)
+            .OrderByDescending(x => x.Date)
+            .Select(x => new
+            {
+                Date = (DateTime?)x.Date,
+                Subject = x.Subject,
+                Body = x.Body,
+                From = x.FromName ?? x.FromEmail,
+                To = x.ToEmail
+            })
+            .FirstOrDefaultAsync();
+
+        var latestReply = await _context.EmailReplies
+            .Where(x => x.TrackingId == trackingId)
+            .OrderByDescending(x => x.Date)
+            .Select(x => new
+            {
+                Date = (DateTime?)x.Date,
+                Subject = x.Subject,
+                Body = x.Body,
+                From = x.FromEmail,
+                To = x.ToEmail
+            })
+            .FirstOrDefaultAsync();
+
+        var emails = new List<dynamic>();
+
+        if (latestSent != null) emails.Add(latestSent);
+        if (latestInbox != null) emails.Add(latestInbox);
+        if (latestReply != null) emails.Add(latestReply);
+
+        var latest = emails
+            .OrderByDescending(x => x.Date)
+            .FirstOrDefault();
+
+        if (latest == null)
+            return null;
+
+        return
+            $"From: {latest.From}\r\n" +
+            $"Sent: {latest.Date:dddd, MMMM dd, yyyy h:mm tt}\r\n" +
+            (!string.IsNullOrWhiteSpace(latest.To)
+                ? $"To: {latest.To}\r\n"
+                : "") +
+            $"Subject: {latest.Subject}\r\n\r\n" +
+            latest.Body;
     }
 }
