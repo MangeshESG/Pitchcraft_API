@@ -1138,6 +1138,21 @@ public class ContactRepository
             };
         }
     }
+    public async Task SaveKraftHistoryAsync(int contactId, int clientId, int? campaignId, int? blueprintId,string Process)
+    {
+        var history = new KraftHistory
+        {
+            ContactId = contactId,
+            ClientId = clientId,
+            CampaignId = campaignId,
+            BlueprintId = blueprintId,
+            Process = Process,
+            KraftedDate = DateTime.UtcNow
+        };
+
+        _context.KraftHistory.Add(history);
+        await _context.SaveChangesAsync();
+    }
     //-------------------------------------------------------------------------------------private---------------------------------------------------------------------------------------------------------------
     private string? GetSourceName(EmailLog log)
     {
