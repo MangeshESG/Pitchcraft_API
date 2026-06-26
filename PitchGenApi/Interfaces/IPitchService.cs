@@ -5,7 +5,7 @@ namespace PitchGenApi.Interfaces
     public interface IPitchService
     {
         Task<PitchResult> GeneratePitchAsync(EnquiryRequest request);
-        Task<PitchResult> GenerateWebSearchAsync(EnquiryRequest request);
+        Task<PitchResult> GenerateWebSearchAsync(EnquiryRequest request, int clientid);
 
     }
 }

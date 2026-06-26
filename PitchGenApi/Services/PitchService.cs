@@ -16,16 +16,17 @@ namespace PitchGenApi.Services
         private readonly HttpClient _httpClient;
         private readonly AppDbContext _context;
         private readonly string _apiKey;
+        private readonly ContactRepository _contactRepository;
 
         public PitchService(
             HttpClient httpClient,
             AppDbContext context,
-            IOptions<OpenAISettings> openAIOptions)
+            IOptions<OpenAISettings> openAIOptions, ContactRepository contactRepository)
         {
             _httpClient = httpClient;
             _context = context;
             _apiKey = openAIOptions.Value.ApiKey;
-
+            _contactRepository = contactRepository;
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
             _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
@@ -165,7 +166,7 @@ namespace PitchGenApi.Services
             }
         }
 
-        public async Task<PitchResult> GenerateWebSearchAsync(EnquiryRequest request)
+        public async Task<PitchResult> GenerateWebSearchAsync(EnquiryRequest request, int clientid)
         {
             if (string.IsNullOrWhiteSpace(request.Prompt))
                 return new PitchResult
@@ -261,6 +262,8 @@ namespace PitchGenApi.Services
 
                 decimal currentCost =
                     inputCost + outputCost;
+
+                await _contactRepository.CreditDeduction(clientid);
 
                 return new PitchResult
                 {
