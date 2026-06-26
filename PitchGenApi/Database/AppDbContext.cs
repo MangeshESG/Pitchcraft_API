@@ -67,8 +67,7 @@ namespace PitchGenApi.Database
         public DbSet<EmailAttachment> EmailAttachments { get; set; }
         public DbSet<EmailSignatures> EmailSignatures { get; set; }
         public DbSet<PinnedEmails> PinnedEmails { get; set; }
-
-
+        public DbSet<KraftHistory> KraftHistory { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

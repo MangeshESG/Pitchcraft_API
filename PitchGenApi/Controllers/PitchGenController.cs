@@ -1412,7 +1412,8 @@ namespace PitchGenApi.Controllers
                     ModelName = "gpt-4o-mini-search-preview"
                 };
 
-                var result = await _pitchservice.GenerateWebSearchAsync(enquiryRequest);
+                var result = await _pitchservice.GenerateWebSearchAsync(enquiryRequest, request.Clientid);
+                
 
                 if (!result.IsSuccess)
                 {

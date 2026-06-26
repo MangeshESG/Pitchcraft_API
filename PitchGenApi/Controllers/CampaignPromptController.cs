@@ -1454,6 +1454,10 @@ namespace PitchGenApi.Controllers
                 contact.updated_at = DateTime.UtcNow;
 
                 await _dbContext.SaveChangesAsync();
+                int clientId = int.Parse(request.ClientId);
+
+                await _contactRepository.CreditDeduction(clientId);
+                await _contactRepository.SaveKraftHistoryAsync(request.ContactId, clientId, null, request.BlueprintId,"Reply");
 
                 return Ok(new
                 {

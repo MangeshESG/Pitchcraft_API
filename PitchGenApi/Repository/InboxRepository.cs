@@ -441,27 +441,37 @@ public class InboxRepository : IInboxRepository
           .Where(x => x.ClientId == clientId)
           .Select(x => x.TrackingId)
           .ToListAsync();
+        List<EmailReplies> replies = new();
 
-        var replies = await _context.EmailReplies
-            .Where(er =>
-                (
-                    (er.TrackingId != null &&
-                     trackingIds.Contains(er.TrackingId))
+        try
+        {
+            replies = await _context.EmailReplies
+                .Where(er =>
+                    (
+                        (er.TrackingId != null &&
+                         trackingIds.Contains(er.TrackingId))
 
-                    ||
+                        ||
 
-                    (er.InReplyTo != null &&
-                     messageIds.Contains(er.InReplyTo))
+                        (er.InReplyTo != null &&
+                         messageIds.Contains(er.InReplyTo))
 
-                    ||
+                        ||
 
-                    (er.Inboxid == inboxId)
+                        (er.Inboxid == inboxId)
+                    )
+                    &&
+                    er.IsDeleted == false
                 )
-                &&
-                er.IsDeleted == false
-            )
-            .ToListAsync();
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error fetching replies: {ex.Message}");
 
+            // replies empty rahega
+            replies = new List<EmailReplies>();
+        }
         // =========================
         // INCLUDE TRACKING IDS
         // =========================

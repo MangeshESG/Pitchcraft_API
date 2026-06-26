@@ -395,7 +395,6 @@ namespace PitchGenApi.Services
                 {
                     Console.WriteLine($"Invalid userId for credit deduction: {userId}");
                 }
-                await _contactRepository.CreditDeduction(clientId);
 
                 if (!httpResponse.IsSuccessStatusCode)
                 {

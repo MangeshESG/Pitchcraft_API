@@ -1026,6 +1026,7 @@ namespace PitchGenApi.Controllers
             if (request.GPTGenerate == true)
             {
                 await _contactRepository.CreditDeduction(request.ClientId);
+                await _contactRepository.SaveKraftHistoryAsync(request.ContactId, request.ClientId, request.campaignId, request.blueprintId,"Kraft");
             }
 
             await _context.SaveChangesAsync();
