@@ -1231,7 +1231,7 @@ public class InboxRepository : IInboxRepository
 
                 FromEmail = inbox.FromEmail,
 
-                ToEmail = senderemail,
+                ToEmail = inbox.ToEmail,
 
                 Date = inbox.Date,
 
@@ -1273,7 +1273,7 @@ public class InboxRepository : IInboxRepository
 
                     FromEmail = r.FromEmail,
 
-                    ToEmail = senderemail,
+                    ToEmail = r.ToEmail,
 
                     Date = r.Date,
 
@@ -1530,7 +1530,7 @@ public class InboxRepository : IInboxRepository
 
                         FromEmail = i.FromEmail,
 
-                        ToEmail = "",
+                        ToEmail = i.ToEmail,
 
                         Date = i.Date,
 
@@ -1620,7 +1620,7 @@ public class InboxRepository : IInboxRepository
 
                         FromEmail = r.FromEmail,
 
-                        ToEmail = "",
+                        ToEmail = r.ToEmail,
 
                         Date = r.Date,
 
@@ -1902,7 +1902,7 @@ public class InboxRepository : IInboxRepository
                         Subject = i.Subject,
                         Body = i.Body,
                         FromEmail = i.FromEmail,
-                        ToEmail = "",
+                        ToEmail = i.ToEmail,
                         Date = i.Date,
                         IsRead = i.IsRead,
                         ContactId = i.Contactid,
@@ -1964,7 +1964,7 @@ public class InboxRepository : IInboxRepository
                         Subject = r.Subject,
                         Body = r.Body,
                         FromEmail = r.FromEmail,
-                        ToEmail = "",
+                        ToEmail = r.ToEmail,
                         Date = r.Date,
                         IsRead = r.IsRead ?? false,
                         ContactId = r.ContactId,
