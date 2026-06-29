@@ -325,12 +325,12 @@ namespace PitchGenApi.Controllers
                     {
                         t.Id,
                         t.TemplateDefinitionId,
-                        TemplateName = t.TemplateName, // ✅ instance name
+                        TemplateName = t.TemplateName,
                         TemplateDefinitionName = t.TemplateDefinition != null ? t.TemplateDefinition.TemplateName : "",
                         t.CreatedAt,
                         t.UpdatedAt,
                         t.SelectedModel,
-                        HasConversation = t.Conversation != null
+                        HasConversation = _dbContext.CampaignConversations.Any(c => c.CampaignTemplateId == t.Id)
                     })
                     .ToListAsync();
 
@@ -477,15 +477,18 @@ namespace PitchGenApi.Controllers
             try
             {
                 var template = await _dbContext.CampaignTemplates
-                    .Include(t => t.Conversation)
                     .FirstOrDefaultAsync(t => t.Id == templateId);
 
                 if (template == null)
                     return NotFound(new { Message = "Template not found" });
 
-                // Delete conversation if exists
-                if (template.Conversation != null)
-                    _dbContext.CampaignConversations.Remove(template.Conversation);
+                // Remove ALL related conversations
+                var conversations = await _dbContext.CampaignConversations
+                    .Where(c => c.CampaignTemplateId == templateId)
+                    .ToListAsync();
+
+                if (conversations.Count > 0)
+                    _dbContext.CampaignConversations.RemoveRange(conversations);
 
                 _dbContext.CampaignTemplates.Remove(template);
                 await _dbContext.SaveChangesAsync();
@@ -497,6 +500,7 @@ namespace PitchGenApi.Controllers
                 return StatusCode(500, new { Error = ex.Message });
             }
         }
+
 
         #endregion
 
