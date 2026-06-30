@@ -202,6 +202,7 @@ builder.Services.AddSingleton<JwtService>();
 // ✅ Background Jobs
 // ===============================
 builder.Services.AddHostedService<BackgroundWorkerService>();
+builder.Services.AddScoped<IInboxRefreshJob, InboxRefreshJob>();
 
 builder.Services.AddControllers();
 

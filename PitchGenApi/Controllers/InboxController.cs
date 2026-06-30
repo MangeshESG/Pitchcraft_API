@@ -13,12 +13,15 @@ public class InboxController : ControllerBase
     private readonly IInboxRepository _repo;
     private readonly AppDbContext _context;
     private readonly IInboxEmailSyncService _inbox;
-
-    public InboxController(IInboxRepository repo, AppDbContext context, IInboxEmailSyncService inbox)
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IInboxRefreshJob _inboxRefreshJob;
+    public InboxController(IInboxRepository repo, AppDbContext context, IInboxEmailSyncService inbox, IServiceScopeFactory scopeFactory, IInboxRefreshJob inboxRefreshJob)
     {
         _repo = repo;
         _context = context;
         _inbox = inbox;
+        _scopeFactory = scopeFactory;
+        _inboxRefreshJob = inboxRefreshJob;
     }
 
     [HttpGet("Get-Inboxcredentials")]
@@ -143,10 +146,18 @@ public class InboxController : ControllerBase
 
 
     [HttpPost("RefreshInbox")]
-    public async Task<IActionResult> RefreshInbox([FromQuery] int inboxId, [FromQuery] string provider)
+    public async Task<IActionResult> RefreshInbox([FromQuery] int clientId,[FromQuery] int inboxId,[FromQuery] string provider)
     {
         try
         {
+            if (clientId <= 0)
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid clientId"
+                });
+            }
+
             if (inboxId <= 0)
             {
                 return BadRequest(new
@@ -165,67 +176,66 @@ public class InboxController : ControllerBase
 
             provider = provider.ToUpper();
 
-            EmailOAuthTokens? oauth = null;
+            bool selectedExists;
 
-            // OAuth provider check
-            if (provider == "OUTLOOK" || provider == "GMAIL")
+            if (provider == "GMAIL" || provider == "OUTLOOK")
             {
-                oauth = await _context.EmailOAuthTokens
-                    .FirstOrDefaultAsync(x =>
+                selectedExists = await _context.EmailOAuthTokens
+                    .AnyAsync(x =>
                         x.Id == inboxId &&
+                        x.ClientId == clientId &&
                         x.Provider.ToUpper() == provider);
-
-                if (oauth == null)
-                {
-                    return BadRequest(new
-                    {
-                        message = $"OAuth token not found for {provider}"
-                    });
-                }
             }
-
-            switch (provider)
+            else if (provider == "IMAP" || provider == "SMTP")
             {
-                case "IMAP":
-                case "SMTP":
-                    {
-                        var imap = await _context.Inboxcredentials
-                            .FirstOrDefaultAsync(x => x.Id == inboxId);
-
-                        if (imap == null)
-                        {
-                            return NotFound(new
-                            {
-                                message = "Inbox credential not found"
-                            });
-                        }
-
-                        await _inbox.SyncEmailsAsync(imap);
-                        break;
-                    }
-
-                case "OUTLOOK":
-                    {
-                        await _inbox.SyncOutlookInboxAsync(oauth);
-                        break;
-                    }
-
-                case "GMAIL":
-                    {
-                        await _inbox.SyncGmailInboxAsync(oauth);
-                        break;
-                    }
-
-                default:
-                    return BadRequest(new
-                    {
-                        message = "Invalid provider. Use IMAP, OUTLOOK, or GMAIL."
-                    });
+                selectedExists = await _context.Inboxcredentials
+                    .AnyAsync(x =>
+                        x.Id == inboxId &&
+                        x.ClientId == clientId);
             }
+            else
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid provider. Use IMAP, OUTLOOK, or GMAIL."
+                });
+            }
+
+            if (!selectedExists)
+            {
+                return NotFound(new
+                {
+                    message = "Selected inbox not found for this client"
+                });
+            }
+
+            var selectedResult = await _inboxRefreshJob.RunSelectedAsync(inboxId, provider);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var scope = _scopeFactory.CreateScope();
+
+                    var job = scope.ServiceProvider.GetRequiredService<IInboxRefreshJob>();
+
+                    await job.RunOtherClientInboxesAsync(clientId, inboxId, provider);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("❌ Background refresh failed: " + ex.Message);
+
+                    if (ex.InnerException != null)
+                    {
+                        Console.WriteLine("❌ Inner error: " + ex.InnerException.Message);
+                    }
+                }
+            });
 
             return Ok(new
             {
-                message = "Inbox refreshed successfully"
+                message = selectedResult,
+                backgroundMessage = "Other inboxes refresh started in background"
             });
         }
         catch (Exception ex)
@@ -233,7 +243,8 @@ public class InboxController : ControllerBase
             return StatusCode(500, new
             {
                 message = "Unexpected error",
-                error = ex.Message
+                error = ex.Message,
+                innerError = ex.InnerException?.Message
             });
         }
     }
