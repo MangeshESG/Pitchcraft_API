@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
@@ -65,15 +65,13 @@ namespace PitchGenApi.Controllers
                 return BadRequest(new { message = $"Invalid TimeZone ID: {dto.TimeZone}" });
             }
 
-            // Check if the provided SmtpID is valid for this ClientId
-            var smtpExists = await _context.SmtpCredentials
-                .AnyAsync(s => s.Id == dto.SmtpID && s.ClientId == ClientId);
+            var outboxExists = await SequenceOutboxExistsAsync(dto.Provider, dto.SmtpID, ClientId);
 
-            if (!smtpExists)
+            if (!outboxExists)
             {
                 return BadRequest(new
                 {
-                    message = $"Invalid SMTP ID: {dto.SmtpID}. No SMTP configuration found for this client."
+                    message = $"Invalid {dto.Provider} outbox ID: {dto.SmtpID}. No {dto.Provider} configuration found for this client."
                 });
             }
 
@@ -100,9 +98,10 @@ namespace PitchGenApi.Controllers
                         DataFileId = dto.SegmentId.HasValue ? null : dto.DataFileId, 
                         SegmentId = dto.DataFileId.HasValue ? null : dto.SegmentId,
                         CampaignId = dto.CampaignId,
-                        TestIsSent = true,
+                        TestIsSent = false,
                         SmtpID = dto.SmtpID,
-                        IsSent = false,
+                        Provider = dto.Provider,
+                        IsSent = true,
                         IsFollowUp = dto.IsFollowUp
                     };
 
@@ -1046,6 +1045,7 @@ namespace PitchGenApi.Controllers
                         ScheduledTime = displayTime,
                         s.TimeZone,
                         s.SmtpID,
+                        s.Provider,
                         s.zohoviewName,
                         s.IsSent,
                         s.TestIsSent,
@@ -1153,12 +1153,10 @@ namespace PitchGenApi.Controllers
                     return BadRequest(new { message = $"Invalid TimeZone ID: {dto.TimeZone}" });
                 }
 
-                // Validate SMTP ID
-                var smtpExists = await _context.SmtpCredentials
-                    .AnyAsync(s => s.Id == dto.SmtpID && s.ClientId == ClientId);
+                var outboxExists = await SequenceOutboxExistsAsync(dto.Provider, dto.SmtpID, ClientId);
 
-                if (!smtpExists)
-                    return BadRequest(new { message = $"Invalid SMTP ID: {dto.SmtpID} for this client." });
+                if (!outboxExists)
+                    return BadRequest(new { message = $"Invalid {dto.Provider} outbox ID: {dto.SmtpID} for this client." });
 
                 // Convert and update date & time
                 var localDateTime = dto.Steps[0].ScheduledDate.Date + dto.Steps[0].ScheduledTime;
@@ -1173,6 +1171,7 @@ namespace PitchGenApi.Controllers
                 step.DataFileId = dto.DataFileId ?? step.DataFileId; // Keep existing if null
                 step.BccEmail = dto.BccEmail;
                 step.SmtpID = dto.SmtpID;
+                step.Provider = dto.Provider;
                 step.DataFileId = dto.DataFileId;
 
 
@@ -1342,7 +1341,23 @@ namespace PitchGenApi.Controllers
             return Ok(new { message = $"BccEmail updated to '{bccEmail}' for Id={id}, ClinteId={clinteId}" });
         }
 
+        private async Task<bool> SequenceOutboxExistsAsync(string provider, int outboxId, string clientId)
+        {
+            if (!int.TryParse(clientId, out int clientIdInt))
+                return false;
 
-       
+            if (provider == "Gmail" || provider == "Outlook")
+            {
+                return await _context.EmailOAuthTokens.AnyAsync(o =>
+                    o.Id == outboxId &&
+                    o.ClientId == clientIdInt &&
+                    o.Provider.ToUpper() == provider.ToUpper());
+            }
+
+            return await _context.SmtpCredentials.AnyAsync(s =>
+                s.Id == outboxId &&
+                s.ClientId == clientId);
+        }
     }
 }
+

@@ -19,8 +19,10 @@ public class SequenceStep
     public int? CampaignId { get; set; }
 
     public int SmtpID { get; set; }
+    public string? Provider { get; set; }
     public string? BccEmail { get; set; }
     public bool IsSent { get; set; }
     public bool? IsFollowUp { get; set; }
 
 }
+

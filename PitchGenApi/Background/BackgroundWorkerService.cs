@@ -29,11 +29,11 @@ public class BackgroundWorkerService : BackgroundService
         Console.WriteLine("✅ Background jobs enabled.");
 
         return Task.WhenAll(
-            RunEmailScheduler(stoppingToken),
-            RunMonthlyCreditReset(stoppingToken),
-            RunInboxEmailSync(stoppingToken),
-            RunGmailInboxSync(stoppingToken),
-            RunOutlookInboxSync(stoppingToken)
+            RunEmailScheduler(stoppingToken)
+            //RunMonthlyCreditReset(stoppingToken),
+            //RunInboxEmailSync(stoppingToken),
+            //RunGmailInboxSync(stoppingToken),
+            //RunOutlookInboxSync(stoppingToken)
         );
     }
 
@@ -51,7 +51,7 @@ public class BackgroundWorkerService : BackgroundService
                 var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
                 var dueSteps = await context.SequenceSteps
-                    .Where(s => !s.IsSent)
+                    .Where(s => !s.TestIsSent)
                     .ToListAsync(stoppingToken);
 
                 Console.WriteLine($"🟡 Found {dueSteps.Count} pending step(s).");
