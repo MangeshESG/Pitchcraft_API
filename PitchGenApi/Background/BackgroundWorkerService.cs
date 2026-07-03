@@ -29,11 +29,11 @@ public class BackgroundWorkerService : BackgroundService
         Console.WriteLine("✅ Background jobs enabled.");
 
         return Task.WhenAll(
-            RunEmailScheduler(stoppingToken)
-            //RunMonthlyCreditReset(stoppingToken),
-            //RunInboxEmailSync(stoppingToken),
-            //RunGmailInboxSync(stoppingToken),
-            //RunOutlookInboxSync(stoppingToken)
+            RunEmailScheduler(stoppingToken),
+            RunMonthlyCreditReset(stoppingToken),
+            RunInboxEmailSync(stoppingToken),
+            RunGmailInboxSync(stoppingToken),
+            RunOutlookInboxSync(stoppingToken)
         );
     }
 
