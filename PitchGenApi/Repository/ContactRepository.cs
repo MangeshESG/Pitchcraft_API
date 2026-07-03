@@ -128,6 +128,7 @@ public class ContactRepository
     public async Task<string> BuildEmailThreadAsync(int clientId, int? datafileid, int contactid, int? segmentid)
     {
         var logsQuery = _context.EmailLogs
+            .AsNoTracking()
             .Where(x => x.ClientId == clientId
                         && x.ContactId == contactid
                         && x.IsSuccess == true);
@@ -148,22 +149,98 @@ public class ContactRepository
             .OrderByDescending(x => x.SentAt)
             .ToListAsync();
 
-        if (!logs.Any())
+        var inboxEmails = await _context.InboxEmails
+            .AsNoTracking()
+            .Where(x => x.ClientId == clientId
+                        && x.Contactid == contactid
+                        && !x.IsDeleted)
+            .ToListAsync();
+
+        var replies = await _context.EmailReplies
+            .AsNoTracking()
+            .Where(x => x.ClientId == clientId
+                        && x.ContactId == contactid
+                        && x.IsDeleted != true)
+            .ToListAsync();
+
+        var threadMessages = logs.Select(log => new EmailThreadMessage
+        {
+            MessageId = log.MessageId,
+            FromName = log.EmailSenderName,
+            FromEmail = log.SenderEmailId,
+            ToName = log.EmailRecipientName,
+            ToEmail = log.ToEmail,
+            Subject = log.Subject,
+            Body = log.Body,
+            Date = log.SentAt
+        })
+        .Concat(inboxEmails.Select(inbox => new EmailThreadMessage
+        {
+            MessageId = inbox.MessageId,
+            FromName = inbox.FromName,
+            FromEmail = inbox.FromEmail,
+            ToEmail = inbox.ToEmail,
+            Subject = inbox.Subject,
+            Body = inbox.Body,
+            Date = inbox.Date
+        }))
+        .Concat(replies.Select(reply => new EmailThreadMessage
+        {
+            MessageId = reply.MessageId,
+            FromName = reply.FromName,
+            FromEmail = reply.FromEmail,
+            ToEmail = reply.ToEmail,
+            Subject = reply.Subject,
+            Body = reply.Body,
+            Date = reply.Date ?? reply.CreatedAt
+        }))
+        .Where(x => x.Date != null)
+        .GroupBy(x => string.IsNullOrWhiteSpace(x.MessageId)
+            ? $"{x.FromEmail}|{x.ToEmail}|{x.Subject}|{x.Date:O}"
+            : x.MessageId)
+        .Select(x => x.First())
+        .OrderByDescending(x => x.Date)
+        .ToList();
+
+        if (!threadMessages.Any())
             return "";
 
         StringBuilder sb = new StringBuilder();
 
-        foreach (var log in logs)
+        foreach (var message in threadMessages)
         {
             sb.AppendLine("<hr style='border:0; border-top:0.5px solid #999; width:100%;' />");
-            sb.AppendLine($"<b>From:</b> {log.EmailSenderName} &lt;{log.SenderEmailId}&gt;<br/>");
-            sb.AppendLine($"<b>Sent:</b> {log.SentAt:dddd, MMMM d, yyyy h:mm tt}<br/>");
-            sb.AppendLine($"<b>To:</b> {log.EmailRecipientName} &lt;{log.ToEmail}&gt;<br/>");
-            sb.AppendLine($"<b>Subject:</b> {log.Subject}<br/><br/>");
-            sb.AppendLine($"{log.Body}<br/><br/>");
+            sb.AppendLine($"<b>From:</b> {FormatEmailAddress(message.FromName, message.FromEmail)}<br/>");
+            sb.AppendLine($"<b>Sent:</b> {message.Date:dddd, MMMM d, yyyy h:mm tt}<br/>");
+            sb.AppendLine($"<b>To:</b> {FormatEmailAddress(message.ToName, message.ToEmail)}<br/>");
+            sb.AppendLine($"<b>Subject:</b> {message.Subject}<br/><br/>");
+            sb.AppendLine($"{message.Body}<br/><br/>");
         }
 
         return sb.ToString();
+    }
+
+    private static string FormatEmailAddress(string? name, string? email)
+    {
+        if (string.IsNullOrWhiteSpace(email))
+            return name ?? "";
+
+        if (string.IsNullOrWhiteSpace(name))
+            return $"&lt;{email}&gt;";
+
+        return $"{name} &lt;{email}&gt;";
+    }
+
+    private class EmailThreadMessage
+    {
+        public string? MessageId { get; set; }
+        public string? FromName { get; set; }
+        public string? FromEmail { get; set; }
+        public string? ToName { get; set; }
+        public string? ToEmail { get; set; }
+        public string? Subject { get; set; }
+        public string? Body { get; set; }
+        public DateTime? Date { get; set; }
     }
 
 

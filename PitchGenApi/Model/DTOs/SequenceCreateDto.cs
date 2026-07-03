@@ -13,6 +13,8 @@ public class SequenceCreateDto
     [Required]
     public int SmtpID { get; set; }
 
+    public string? Provider { get; set; }
+
     [Required]
     public string TimeZone { get; set; }
 

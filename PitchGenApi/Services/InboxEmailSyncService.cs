@@ -868,17 +868,17 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         @"TRACKING_ID:[0-9a-fA-F\-]{36}",
                         "");
 
-                    cleanbody = Regex.Replace(
-                        cleanbody,
-                        @"(?m)^>\s?",
-                        "");
+                    //cleanbody = Regex.Replace(
+                    //    cleanbody,
+                    //    @"(?m)^>\s?",
+                    //    "");
 
                     cleanbody = cleanbody.Trim();
                     cleanbody = ExtractOnlyReply(cleanbody);
                     cleanbody ??= "";
 
-                    if (cleanbody.Length > 4000)
-                        cleanbody = cleanbody.Substring(0, 4000);
+                    //if (cleanbody.Length > 4000)
+                    //    cleanbody = cleanbody.Substring(0, 4000);
 
                     DateTime emailDate = DateTime.UtcNow;
 
@@ -1932,50 +1932,69 @@ public class InboxEmailSyncService : IInboxEmailSyncService
     {
         try
         {
-            // ✅ Direct body
+            if (payload == null)
+                return "";
+
+            // ✅ Direct HTML / Plain body
             if (payload.body != null && payload.body.data != null)
             {
                 return DecodeBase64(payload.body.data.ToString());
             }
 
-            // ✅ Parts (most common case)
             if (payload.parts != null)
             {
+                // ✅ First priority: HTML
                 foreach (var part in payload.parts)
                 {
-                    if (part.mimeType == "text/html")
-                    {
-                        if (part.body != null && part.body.data != null)
-                        {
-                            return DecodeBase64(part.body.data.ToString());
-                        }
-                    }
+                    var html = ExtractBodyByMimeType(part, "text/html");
+                    if (!string.IsNullOrWhiteSpace(html))
+                        return html;
+                }
 
-                    if (part.mimeType == "text/plain")
-                    {
-                        if (part.body != null && part.body.data != null)
-                        {
-                            return DecodeBase64(part.body.data.ToString());
-                        }
-                    }
-
-                    // 🔁 Nested parts (IMPORTANT)
-                    if (part.parts != null)
-                    {
-                        foreach (var subPart in part.parts)
-                        {
-                            if (subPart.body != null && subPart.body.data != null)
-                            {
-                                return DecodeBase64(subPart.body.data.ToString());
-                            }
-                        }
-                    }
+                // ✅ Second priority: Plain text
+                foreach (var part in payload.parts)
+                {
+                    var plain = ExtractBodyByMimeType(part, "text/plain");
+                    if (!string.IsNullOrWhiteSpace(plain))
+                        return plain;
                 }
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"❌ Body parse error: {ex.Message}");
+        }
+
+        return "";
+    }
+
+    private string ExtractBodyByMimeType(dynamic payload, string mimeType)
+    {
+        try
+        {
+            if (payload == null)
+                return "";
+
+            if (payload.mimeType != null &&
+                payload.mimeType.ToString().Equals(mimeType, StringComparison.OrdinalIgnoreCase) &&
+                payload.body != null &&
+                payload.body.data != null)
+            {
+                return DecodeBase64(payload.body.data.ToString());
+            }
+
+            if (payload.parts != null)
+            {
+                foreach (var part in payload.parts)
+                {
+                    var body = ExtractBodyByMimeType(part, mimeType);
+                    if (!string.IsNullOrWhiteSpace(body))
+                        return body;
+                }
+            }
+        }
+        catch
+        {
         }
 
         return "";

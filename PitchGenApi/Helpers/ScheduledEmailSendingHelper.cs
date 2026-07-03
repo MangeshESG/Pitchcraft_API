@@ -1,11 +1,9 @@
 ﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
-using PitchGenApi.Services;
-using System.Net.Mail;
-using System.Net;
-using PitchGenApi.Models;
-using PitchGenApi.Model;
 using PitchGenApi.Interfaces;
+using PitchGenApi.Model;
+using PitchGenApi.Models;
+using PitchGenApi.Services;
 
 public class ScheduledEmailSendingHelper
 {
@@ -13,7 +11,7 @@ public class ScheduledEmailSendingHelper
     private readonly ContactRepository _contactRepository;
     private readonly IDomainVerificationRepository _domain;
 
-    public ScheduledEmailSendingHelper(IServiceProvider serviceProvider, ContactRepository contactRepository,IDomainVerificationRepository domain)
+    public ScheduledEmailSendingHelper(IServiceProvider serviceProvider, ContactRepository contactRepository, IDomainVerificationRepository domain)
     {
         _serviceProvider = serviceProvider;
         _contactRepository = contactRepository;
@@ -22,47 +20,29 @@ public class ScheduledEmailSendingHelper
 
     public async Task ProcessStepAsync(SequenceStep step, CancellationToken cancellationToken)
     {
-        Console.WriteLine($"📧 Starting ProcessStepAsync for Step ID: {step?.Id}");
+        Console.WriteLine($"[ScheduledEmail] START StepId={step?.Id}, TriggerUtc={DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}");
 
         using var scope = _serviceProvider.CreateScope();
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var emailHelper = scope.ServiceProvider.GetRequiredService<EmailSendingHelper>();
 
         if (step == null || step.TimeZone == null)
         {
-            Console.WriteLine("⚠️ Step or TimeZone is null — skipping.");
-            return; // ADD THIS RETURN
-        }
-
-        if ((!step.DataFileId.HasValue || step.DataFileId.Value <= 0) &&
-            (!step.SegmentId.HasValue || step.SegmentId.Value <= 0))
-        {
-            Console.WriteLine("⚠️ Both DataFileId and SegmentId are invalid — skipping.");
+            Console.WriteLine("[ScheduledEmail] SKIP: Step or TimeZone is null.");
             return;
         }
 
         if ((!step.DataFileId.HasValue || step.DataFileId.Value <= 0) &&
             (!step.SegmentId.HasValue || step.SegmentId.Value <= 0))
         {
-            Console.WriteLine("⚠️ Both DataFileId and SegmentId are invalid — skipping.");
+            Console.WriteLine($"[ScheduledEmail] SKIP StepId={step.Id}: Both DataFileId and SegmentId are invalid.");
             return;
         }
-        if (step == null || step.TimeZone == null || step.SegmentId == null)
-        {
-            Console.WriteLine("⚠️ Step, TimeZone or Segmentid is null — skipping.");
-        }
+
         var scheduledUtc = step.ScheduledDate + step.ScheduledTime;
         if (scheduledUtc > DateTime.UtcNow || step.SmtpID == 0)
         {
-            Console.WriteLine($"⏳ Step not due yet (scheduled: {scheduledUtc:yyyy-MM-dd HH:mm:ss} UTC, now: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC) or invalid SMTP ID — skipping.");
-            return;
-        }
-
-        var smtpCredential = await context.SmtpCredentials
-            .FirstOrDefaultAsync(x => x.Id == step.SmtpID, cancellationToken);
-
-        if (smtpCredential == null)
-        {
-            Console.WriteLine($"❌ SMTP credentials not found for ID: {step.SmtpID}");
+            Console.WriteLine($"[ScheduledEmail] SKIP StepId={step.Id}: Not due or invalid outbox. ScheduledUtc={scheduledUtc:yyyy-MM-dd HH:mm:ss}, NowUtc={DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}, OutboxId={step.SmtpID}");
             return;
         }
 
@@ -70,296 +50,161 @@ public class ScheduledEmailSendingHelper
 
         if (step.DataFileId.HasValue && step.DataFileId.Value > 0)
         {
-            Console.WriteLine($"📂 Fetching contacts for DataFileId: {step.DataFileId}");
-            contacts = await _contactRepository.GetContactsAsync(step.DataFileId.Value); // Use .Value
+            Console.WriteLine($"[ScheduledEmail] StepId={step.Id}: Fetching contacts by DataFileId={step.DataFileId}");
+            contacts = await _contactRepository.GetContactsAsync(step.DataFileId.Value);
         }
         else if (step.SegmentId.HasValue && step.SegmentId.Value > 0)
         {
-            Console.WriteLine($"📂 Fetching contacts for SegmentId: {step.SegmentId}");
-            contacts = await _contactRepository.GetContactBySegment(step.SegmentId.Value); // Use .Value
+            Console.WriteLine($"[ScheduledEmail] StepId={step.Id}: Fetching contacts by SegmentId={step.SegmentId}");
+            contacts = await _contactRepository.GetContactBySegment(step.SegmentId.Value);
         }
         else
         {
-            Console.WriteLine("⚠️ Both DataFileId and SegmentId are invalid — skipping contacts fetch.");
+            Console.WriteLine($"[ScheduledEmail] SKIP StepId={step.Id}: No valid contact source found.");
             return;
         }
 
-        Console.WriteLine($"👥 Total contacts fetched: {contacts.Count}");
-
-        var user = await context.ClientDetails.FirstOrDefaultAsync(x => x.Id == step.ClientId);
-
-        var Blueprint = await context.Campaigns.FirstOrDefaultAsync(x => x.Id == step.CampaignId);
+        Console.WriteLine($"[ScheduledEmail] StepId={step.Id}: Total contacts fetched={contacts.Count}");
 
         var sentEmails = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        int successCount = 0;
+        int failCount = 0;
+        int skipCount = 0;
+        string provider = NormalizeProvider(step.Provider);
 
-        bool active = await context.UserCredits
-               .AnyAsync(u =>
-                   u.ClientId == step.ClientId &&
-                   u.Status == "active"
-               );
+        Console.WriteLine($"[ScheduledEmail] StepId={step.Id}: Provider={provider}, OutboxId={step.SmtpID}, CampaignId={step.CampaignId}, IsFollowUp={step.IsFollowUp == true}, Bcc={(string.IsNullOrWhiteSpace(step.BccEmail) ? "No" : "Yes")}");
 
-        //bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(step.SmtpID);
-
-        string smtpServer = smtpCredential.Server;
-        int smtpPort = smtpCredential.Port;
-        bool useSsl = smtpCredential.UseSsl;
-        string smtpUsername = smtpCredential.Username;
-        string smtpPassword = smtpCredential.Password;
-
-        string fromEmailToUse = smtpCredential.FromEmail;
-        string senderName = smtpCredential.SenderName;
-
-        foreach (var Contact in contacts)
+        foreach (var contact in contacts)
         {
-            //if (!isVerified)
-            //{
-            //    // ❌ NOT VERIFIED → FALLBACK SMTP
-            //    smtpServer = "mail.sender.pitchkraft.ai";
-            //    smtpPort = 587;
-            //    useSsl = true;
-            //    smtpUsername = "message-service@sender.pitchkraft.ai";
-            //    smtpPassword = "yV%691jd9";
-
-            //    fromEmailToUse = "message-service@sender.pitchkraft.ai";
-            //}
-
-            if (Contact == null || string.IsNullOrWhiteSpace(Contact.email))
+            if (contact == null || string.IsNullOrWhiteSpace(contact.email))
+            {
+                skipCount++;
+                Console.WriteLine($"[ScheduledEmail] StepId={step.Id}: SKIP contact because email is empty/null.");
                 continue;
+            }
 
             bool isUnsubscribed = await context.UnsubscribedContacts
                 .AnyAsync(x => x.ClientId == step.ClientId &&
-                               x.Email.ToLower() == Contact.email.ToLower(),
+                               x.Email.ToLower() == contact.email.ToLower(),
                           cancellationToken);
-
-            // ❗ Email subject/body validation (DO NOT STOP BULK)
-            if (string.IsNullOrWhiteSpace(Contact.email_subject) ||
-                Contact.email_subject.Trim().ToUpper() == "N/A" ||
-                string.IsNullOrWhiteSpace(Contact.email_body) ||
-                Contact.email_body.Trim().ToUpper() == "N/A")
-            {
-                context.EmailLogs.Add(new EmailLog
-                {
-                    StepId = step.Id,
-                    ToEmail = Contact.email,
-                    ContactId = Contact.id,
-                    Subject = Contact.email_subject,
-                    Body = Contact.email_body,
-                    IsSuccess = false,
-                    CampaignId = step.CampaignId,
-                    BlueprintId = Blueprint.TemplateId,
-                    ErrorMessage = "Email body or subject is incorrect.",
-                    zohoViewName = "from pitch craft",
-                    EmailRecipientName = Contact.full_name,
-                    EmailSenderName = senderName,
-                    SenderEmailId = fromEmailToUse,
-                    DataFileId = step.DataFileId,
-                    SegmentId = step.SegmentId,
-                    SentAt = DateTime.UtcNow,
-                    ClientId = step.ClientId,
-                    TrackingId = Guid.NewGuid(),
-                    process_name = "Bulk"
-                });
-
-                continue; // ✅ important (NO return)
-            }
 
             if (isUnsubscribed)
             {
-                Console.WriteLine($"🚫 Skipping email to {Contact.email} - User Unsubscribed.");
-
-                context.EmailLogs.Add(new EmailLog
-                {
-                    StepId = step.Id,
-                    ToEmail = Contact.email,
-                    ContactId = Contact.id,
-                    Subject = Contact.email_subject,
-                    Body = Contact.email_body,
-                    EmailRecipientName = Contact.full_name,
-                    EmailSenderName = senderName,
-                    SenderEmailId = fromEmailToUse,
-                    IsSuccess = false,
-                    CampaignId = step.CampaignId,
-                    BlueprintId = Blueprint.TemplateId,
-                    ErrorMessage = "Unsubscribed",
-                    zohoViewName = "from pitch craft",
-                    DataFileId = step.DataFileId,
-                    SegmentId = step.SegmentId,
-                    SentAt = DateTime.UtcNow,
-                    ClientId = step.ClientId,
-                    TrackingId = Guid.NewGuid(),
-                    process_name = "Bulk"
-                });
-
+                skipCount++;
+                Console.WriteLine($"[ScheduledEmail] StepId={step.Id}, ContactId={contact.id}, Email={contact.email}: SKIP unsubscribed.");
                 continue;
             }
 
-            if (sentEmails.Contains(Contact.email))
+            if (sentEmails.Contains(contact.email))
+            {
+                skipCount++;
+                Console.WriteLine($"[ScheduledEmail] StepId={step.Id}, ContactId={contact.id}, Email={contact.email}: SKIP duplicate email in this batch.");
                 continue;
-
-            string trackingId = Guid.NewGuid().ToString();
+            }
 
             bool alreadySent = await context.EmailLogs
-                .AnyAsync(x => x.StepId == step.Id && x.ToEmail == Contact.email, cancellationToken);
+                .AnyAsync(x => x.StepId == step.Id && x.ToEmail == contact.email, cancellationToken);
 
             if (alreadySent)
             {
-                Console.WriteLine($"ℹ️ Already sent to: {Contact.email} — skipping.");
+                skipCount++;
+                Console.WriteLine($"[ScheduledEmail] StepId={step.Id}, ContactId={contact.id}, Email={contact.email}: SKIP already sent for this step.");
                 continue;
             }
 
-            string finalEmailBody = Contact.email_body;
+            sentEmails.Add(contact.email);
+            Console.WriteLine($"[ScheduledEmail] StepId={step.Id}, ContactId={contact.id}, Email={contact.email}: Sending via {provider}...");
 
-            string emailFooter = @"<br/><br/>
-                <hr style='border:none;border-top:1px solid #e5e7eb;'/>
-                <p style='font-size:12px;color:#6b7280;text-align:center;'>
-                This message was sent from 
-                <a href='https://app.pitchkraft.ai/' target='_blank' style='color:#2563eb;text-decoration:none;font-weight:bold;'>
-                Pitchkraft.ai
-                </a>
-                </p>";
-            if (step.IsFollowUp == true)
+            var result = provider switch
             {
-                string oldThread = await _contactRepository
-                    .BuildEmailThreadAsync(step.ClientId, step.DataFileId, Contact.id, step.SegmentId);
+                "Gmail" => await emailHelper.SendEmailUsingGmailApi(
+                    step.ClientId,
+                    contact.id,
+                    step.CampaignId,
+                    step.IsFollowUp == true,
+                    step.BccEmail ?? string.Empty,
+                    step.SmtpID),
 
-                finalEmailBody =
-                $@"{Contact.email_body}
+                "Outlook" => await emailHelper.SendEmailUsingOutlookApi(
+                    step.ClientId,
+                    contact.id,
+                    step.CampaignId,
+                    step.IsFollowUp == true,
+                    step.BccEmail ?? string.Empty,
+                    step.SmtpID),
 
-                {oldThread}";
+                _ => await emailHelper.SendEmailUsingSmtp(
+                    step.ClientId,
+                    contact.id,
+                    step.CampaignId,
+                    step.IsFollowUp == true,
+                    step.BccEmail ?? string.Empty,
+                    step.SmtpID)
+            };
+
+            bool logUpdated = await MarkLatestLogAsScheduledAsync(context, step, contact, provider, cancellationToken);
+            Console.WriteLine($"[ScheduledEmail] StepId={step.Id}, ContactId={contact.id}, Email={contact.email}: Latest log update={(logUpdated ? "OK" : "NOT_FOUND")}");
+
+            if (result.Success)
+            {
+                successCount++;
+                Console.WriteLine($"[ScheduledEmail] StepId={step.Id}, ContactId={contact.id}, Email={contact.email}: SUCCESS via {provider}. Message={result.Message}");
             }
-
-            if (!active)
+            else
             {
-                finalEmailBody += emailFooter;
-            }
-            sentEmails.Add(Contact.email);
-
-            string subject = Contact.email_subject;
-            string toEmail = Contact.email;
-
-            if (user.IsTracking)
-            {
-                string bodyWithTracking = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
-                bodyWithTracking += EmailTrackingHelper.GetPixelTag(trackingId);
-                finalEmailBody = bodyWithTracking;
-            }
-
-            try
-            {
-                using var smtpClient = new SmtpClient(smtpServer)
-                {
-                    Port = smtpPort,
-                    Credentials = new NetworkCredential(smtpUsername, smtpPassword),
-                    EnableSsl = useSsl,
-                };
-
-                using (var toMessage = new MailMessage
-                {
-                    From = new MailAddress(fromEmailToUse, senderName),
-                    Subject = subject,
-                    Body = finalEmailBody,
-                    IsBodyHtml = true,
-                    BodyEncoding = System.Text.Encoding.UTF8,
-                    SubjectEncoding = System.Text.Encoding.UTF8,
-                })
-                {
-                    toMessage.To.Add(toEmail);
-                    await smtpClient.SendMailAsync(toMessage, cancellationToken);
-                }
-
-                Console.WriteLine($"✅ Email sent to: {toEmail}");
-
-                if (!string.IsNullOrWhiteSpace(step.BccEmail))
-                {
-                    using var bccMessage = new MailMessage
-                    {
-                        From = new MailAddress(fromEmailToUse, senderName),
-                        Subject = subject,
-                        Body = Contact.email_body,
-                        IsBodyHtml = true,
-                        BodyEncoding = System.Text.Encoding.UTF8,
-                        SubjectEncoding = System.Text.Encoding.UTF8,
-                    };
-
-                    bccMessage.To.Add(new MailAddress("pitch.craft@virtual-employees.co.uk", Contact.email));
-                    bccMessage.Bcc.Add(step.BccEmail);
-
-                    await smtpClient.SendMailAsync(bccMessage, cancellationToken);
-
-                    var nowUtc = DateTime.UtcNow;
-
-                    var dbContact = await context.contacts
-                        .AsTracking()
-                        .FirstOrDefaultAsync(c => c.email == toEmail &&
-                                                  c.DataFileId == step.DataFileId,
-                                              cancellationToken);
-
-                    if (dbContact != null)
-                    {
-                        dbContact.email_sent_at = nowUtc;
-                        context.Entry(dbContact).Property(x => x.email_sent_at).IsModified = true;
-                        context.Entry(dbContact).Property(x => x.updated_at).IsModified = true;
-                        await context.SaveChangesAsync(cancellationToken);
-                    }
-                }
-
-                context.EmailLogs.Add(new EmailLog
-                {
-                    StepId = step.Id,
-                    ToEmail = toEmail,
-                    ContactId = Contact.id,
-                    Subject = subject,
-                    Body = Contact.email_body,
-                    IsSuccess = true,
-                    CampaignId = step.CampaignId,
-                    BlueprintId = Blueprint.TemplateId,
-                    zohoViewName = "from pitch craft",
-                    EmailRecipientName = Contact.full_name,
-                    EmailSenderName = senderName,
-                    SenderEmailId = fromEmailToUse,
-                    DataFileId = step.DataFileId,
-                    SegmentId = step.SegmentId,
-                    SentAt = DateTime.UtcNow,
-                    ClientId = step.ClientId,
-                    TrackingId = Guid.Parse(trackingId),
-                    process_name = "Bulk"
-                });
-            }
-            catch (Exception ex)
-            {
-                context.EmailLogs.Add(new EmailLog
-                {
-                    StepId = step.Id,
-                    ToEmail = toEmail,
-                    ContactId = Contact.id,
-                    Subject = subject,
-                    Body = Contact.email_body,
-                    IsSuccess = false,
-                    CampaignId = step.CampaignId,
-                    BlueprintId = Blueprint.TemplateId,
-                    ErrorMessage = ex.Message,
-                    EmailRecipientName = Contact.full_name,
-                    EmailSenderName = senderName,
-                    SenderEmailId = fromEmailToUse,
-                    zohoViewName = "from pitch craft",
-                    DataFileId = step.DataFileId,
-                    SegmentId = step.SegmentId,
-                    SentAt = DateTime.UtcNow,
-                    ClientId = step.ClientId,
-                    TrackingId = Guid.Parse(trackingId),
-                    process_name = "Bulk"
-                });
+                failCount++;
+                Console.WriteLine($"[ScheduledEmail] StepId={step.Id}, ContactId={contact.id}, Email={contact.email}: FAILED via {provider}. Message={result.Message}");
             }
         }
 
         var dbStep = await context.SequenceSteps.FirstOrDefaultAsync(x => x.Id == step.Id, cancellationToken);
         if (dbStep != null)
         {
-            dbStep.IsSent = true;
-            Console.WriteLine($"🟢 Marked step ID {step.Id} as sent.");
+            dbStep.TestIsSent = true;
+            Console.WriteLine($"[ScheduledEmail] StepId={step.Id}: Marked as sent. Success={successCount}, Failed={failCount}, Skipped={skipCount}");
+        }
+        else
+        {
+            Console.WriteLine($"[ScheduledEmail] StepId={step.Id}: Step not found while marking sent.");
         }
 
         await context.SaveChangesAsync(cancellationToken);
-        Console.WriteLine("💾 Changes saved to database.");
+        Console.WriteLine($"[ScheduledEmail] END StepId={step.Id}: Changes saved. Success={successCount}, Failed={failCount}, Skipped={skipCount}, CompletedUtc={DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}");
+    }
+
+    private static string NormalizeProvider(string? provider)
+    {
+        return provider?.Trim().ToUpper() switch
+        {
+            "GMAIL" => "Gmail",
+            "OUTLOOK" => "Outlook",
+            _ => "SMTP"
+        };
+    }
+
+    private static async Task<bool> MarkLatestLogAsScheduledAsync(
+        AppDbContext context,
+        SequenceStep step,
+        Contact contact,
+        string provider,
+        CancellationToken cancellationToken)
+    {
+        var latestLog = await context.EmailLogs
+            .Where(x => x.ClientId == step.ClientId &&
+                        x.ContactId == contact.id &&
+                        x.CampaignId == step.CampaignId &&
+                        x.ToEmail == contact.email &&
+                        x.outboxid == step.SmtpID)
+            .OrderByDescending(x => x.SentAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (latestLog == null)
+            return false;
+
+        latestLog.StepId = step.Id;
+        latestLog.Provider = provider;
+        latestLog.outboxid = step.SmtpID;
+        latestLog.process_name = "Bulk";
+        return true;
     }
 }
