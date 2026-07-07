@@ -14,6 +14,9 @@ using System.Reflection;
 using System.Text.Json;
 using PitchGenApi.Helpers;
 using Serilog;
+using System.Globalization;
+using System.Text.Json.Serialization;
+
 
 
 
@@ -1026,7 +1029,7 @@ namespace PitchGenApi.Controllers
             if (request.GPTGenerate == true)
             {
                 await _contactRepository.CreditDeduction(request.ClientId);
-                await _contactRepository.SaveKraftHistoryAsync(request.ContactId, request.ClientId, request.campaignId, request.blueprintId,"Kraft");
+                await _contactRepository.SaveKraftHistoryAsync(request.ContactId, request.ClientId, request.campaignId, request.blueprintId, "Kraft");
             }
 
             await _context.SaveChangesAsync();
@@ -2822,24 +2825,61 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        public class FlexibleStringConverter : JsonConverter<string?>
+        {
+            public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            {
+                switch (reader.TokenType)
+                {
+                    case JsonTokenType.String:
+                        return reader.GetString();
 
+                    case JsonTokenType.Number:
+                        return reader.TryGetInt64(out var l)
+                            ? l.ToString(CultureInfo.InvariantCulture)
+                            : reader.GetDouble().ToString(CultureInfo.InvariantCulture);
+
+                    case JsonTokenType.True:
+                        return "true";
+
+                    case JsonTokenType.False:
+                        return "false";
+
+                    case JsonTokenType.Null:
+                        return null;
+
+                    case JsonTokenType.StartArray:
+                    case JsonTokenType.StartObject:
+                        using (var doc = JsonDocument.ParseValue(ref reader))
+                            return doc.RootElement.GetRawText(); // fallback: raw JSON (e.g. ["Retail","Finance"])
+
+                    default:
+                        throw new JsonException($"Unexpected token {reader.TokenType} for string value.");
+                }
+            }
+
+            public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options)
+            {
+                if (value is null)
+                    writer.WriteNullValue();
+                else
+                    writer.WriteStringValue(value);
+            }
+        }
 
         [HttpPost("view-contacts")]
-
-
         public async Task<IActionResult> GetViewContacts([FromBody] ViewContactsRequest dto)
         {
             try
             {
-                var view = await _context.crm_views
-                    .AsNoTracking()
-                    .FirstOrDefaultAsync(v => v.id == dto.ViewId && v.client_id == dto.ClientId);
+                _context.Database.SetCommandTimeout(120);
 
+                var view = await _context.crm_views.AsNoTracking()
+                    .FirstOrDefaultAsync(v => v.id == dto.ViewId && v.client_id == dto.ClientId);
                 if (view == null)
                     return NotFound(new { success = false, message = "View not found" });
 
                 FiltersPayload? payload = null;
-
                 if (!string.IsNullOrWhiteSpace(view.filters_json))
                 {
                     try
@@ -2848,107 +2888,69 @@ namespace PitchGenApi.Controllers
                             view.filters_json,
                             new JsonSerializerOptions
                             {
-                                PropertyNameCaseInsensitive = true
+                                PropertyNameCaseInsensitive = true,
+                                Converters = { new FlexibleStringConverter() }
                             });
                     }
                     catch (Exception parseEx)
                     {
-                        return BadRequest(new
-                        {
-                            success = false,
-                            message = "Invalid filters_json saved for this view",
-                            error = parseEx.Message
-                        });
+                        return BadRequest(new { success = false, message = "Invalid filters_json saved for this view", error = parseEx.Message });
                     }
                 }
 
                 var validationError = TrackingFilterHelper.ValidateTrackingFilters(payload);
                 if (!string.IsNullOrWhiteSpace(validationError))
-                {
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = validationError
-                    });
-                }
+                    return BadRequest(new { success = false, message = validationError });
 
                 List<int> dataFileIds;
-
                 if (view.use_all_datafiles)
                 {
-                    var all = await _context.data_files
-                        .AsNoTracking()
-                        .Where(df => df.client_id == dto.ClientId)
-                        .Select(df => df.id)
-                        .ToListAsync();
-
-                    var excluded = await _context.crm_view_excluded_datafiles
-                        .AsNoTracking()
-                        .Where(x => x.view_id == view.id)
-                        .Select(x => x.datafile_id)
-                        .ToListAsync();
-
+                    var all = await _context.data_files.AsNoTracking()
+                        .Where(df => df.client_id == dto.ClientId).Select(df => df.id).ToListAsync();
+                    var excluded = await _context.crm_view_excluded_datafiles.AsNoTracking()
+                        .Where(x => x.view_id == view.id).Select(x => x.datafile_id).ToListAsync();
                     dataFileIds = all.Except(excluded).Distinct().ToList();
                 }
                 else
                 {
-                    dataFileIds = await _context.crm_view_datafiles
-                        .AsNoTracking()
-                        .Where(x => x.view_id == view.id)
-                        .Select(x => x.datafile_id)
-                        .Distinct()
-                        .ToListAsync();
+                    dataFileIds = await _context.crm_view_datafiles.AsNoTracking()
+                        .Where(x => x.view_id == view.id).Select(x => x.datafile_id).Distinct().ToListAsync();
                 }
 
-                if (!dataFileIds.Any())
+                var segmentIds = await _context.crm_view_segments.AsNoTracking()
+                    .Where(x => x.view_id == view.id).Select(x => x.segment_id).Distinct().ToListAsync();
+
+                if (!dataFileIds.Any() && !segmentIds.Any())
+                    return Ok(new { total = 0, page = dto.Page <= 0 ? 1 : dto.Page, pageSize = dto.PageSize <= 0 ? 0 : dto.PageSize, contacts = new List<object>() });
+
+                var unsubscribedEmails = await _context.UnsubscribedContacts.AsNoTracking()
+                    .Where(uc => uc.ClientId == dto.ClientId && uc.Email != null).Select(uc => uc.Email!).ToListAsync();
+                var unsubSet = new HashSet<string>(unsubscribedEmails, StringComparer.OrdinalIgnoreCase);
+
+                var query = _context.contacts.AsNoTracking();
+                if (dataFileIds.Any() && segmentIds.Any())
                 {
-                    return Ok(new
-                    {
-                        total = 0,
-                        page = dto.Page <= 0 ? 1 : dto.Page,
-                        pageSize = dto.PageSize <= 0 ? 0 : dto.PageSize,
-                        contacts = new List<object>()
-                    });
+                    var segIds = _context.segmentContacts.AsNoTracking()
+                        .Where(x => segmentIds.Contains(x.SegmentId)).Select(x => x.ContactId);
+                    query = query.Where(c => (c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value)) || segIds.Contains(c.id));
                 }
-
-                var query = _context.contacts
-                    .AsNoTracking()
-                    .Where(c =>
-                        c.DataFileId.HasValue &&
-                        dataFileIds.Contains(c.DataFileId.Value) &&
-                        !_context.UnsubscribedContacts
-                            .Any(uc => uc.ClientId == dto.ClientId && uc.Email == c.email));
-
-                var segmentIds = await _context.crm_view_segments
-                    .AsNoTracking()
-                    .Where(x => x.view_id == view.id)
-                    .Select(x => x.segment_id)
-                    .ToListAsync();
-
-                if (segmentIds.Any())
+                else if (dataFileIds.Any())
                 {
-                    var segmentContactIds = _context.segmentContacts
-                        .AsNoTracking()
-                        .Where(x => segmentIds.Contains(x.SegmentId))
-                        .Select(x => x.ContactId);
-
-                    query = query.Where(c => segmentContactIds.Contains(c.id));
+                    query = query.Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value));
                 }
-
-                if (dto.NotKrafted)
+                else
                 {
-                    query = query.Where(c => c.updated_at == null);
+                    var segIds = _context.segmentContacts.AsNoTracking()
+                        .Where(x => segmentIds.Contains(x.SegmentId)).Select(x => x.ContactId);
+                    query = query.Where(c => segIds.Contains(c.id));
                 }
 
-                if (dto.KraftedNotSent)
-                {
-                    query = query.Where(c => c.updated_at != null && c.email_sent_at == null);
-                }
+                if (dto.NotKrafted) query = query.Where(c => c.updated_at == null);
+                if (dto.KraftedNotSent) query = query.Where(c => c.updated_at != null && c.email_sent_at == null);
 
                 if (!string.IsNullOrWhiteSpace(dto.Search))
                 {
                     var s = dto.Search.Trim();
-
                     query = query.Where(c =>
                         EF.Functions.Like(c.full_name ?? "", $"%{s}%") ||
                         EF.Functions.Like(c.email ?? "", $"%{s}%") ||
@@ -2956,153 +2958,70 @@ namespace PitchGenApi.Controllers
                         EF.Functions.Like(c.job_title ?? "", $"%{s}%"));
                 }
 
-                var contacts = await query
-                    .OrderBy(c => c.id)
-                    .Select(c => new
-                    {
-                        c.id,
-                        c.DataFileId,
-                        c.full_name,
-                        c.first_name,
-                        c.last_name,
-                        c.email,
-                        c.website,
-                        c.company_name,
-                        c.job_title,
-                        c.linkedin_url,
-                        c.country_or_address,
-                        c.email_subject,
-                        c.email_body,
-                        c.created_at,
-                        c.updated_at,
-                        c.email_sent_at,
-                        c.CompanyTelephone,
-                        c.CompanyEmployeeCount,
-                        c.CompanyIndustry,
-                        c.CompanyLinkedInURL,
-                        c.linkedIninformation
-                    })
-                    .ToListAsync();
-
-                if (!contacts.Any())
+                // Lightweight projection — NO email_subject / email_body (that's the big transfer).
+                var contacts = await query.OrderBy(c => c.id).Select(c => new
                 {
-                    return Ok(new
-                    {
-                        total = 0,
-                        page = dto.Page <= 0 ? 1 : dto.Page,
-                        pageSize = dto.PageSize <= 0 ? 0 : dto.PageSize,
-                        contacts = new List<object>()
-                    });
-                }
+                    c.id,
+                    c.DataFileId,
+                    c.full_name,
+                    c.first_name,
+                    c.last_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    c.created_at,
+                    c.updated_at,
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    c.linkedIninformation
+                }).ToListAsync();
+
+                contacts = contacts.Where(c => string.IsNullOrWhiteSpace(c.email) || !unsubSet.Contains(c.email.Trim())).ToList();
+                if (!contacts.Any())
+                    return Ok(new { total = 0, page = dto.Page <= 0 ? 1 : dto.Page, pageSize = dto.PageSize <= 0 ? 0 : dto.PageSize, contacts = new List<object>() });
 
                 var contactIds = contacts.Select(c => c.id).ToList();
-
-                var contactEmails = contacts
-                    .Select(c => string.IsNullOrWhiteSpace(c.email) ? "" : c.email.Trim().ToLower())
-                    .Where(x => x.Length > 0)
-                    .Distinct()
-                    .ToList();
+                var contactIdSet = contactIds.ToHashSet();
+                var contactEmails = contacts.Select(c => string.IsNullOrWhiteSpace(c.email) ? "" : c.email.Trim().ToLower())
+                    .Where(x => x.Length > 0).Distinct().ToList();
 
                 var notesSet = new HashSet<int>(
-                    await _context.Notes
-                        .AsNoTracking()
-                        .Where(n => n.ClientId == dto.ClientId && contactIds.Contains(n.ContactId))
-                        .Select(n => n.ContactId)
-                        .Distinct()
-                        .ToListAsync()
-                );
+                    (await _context.Notes.AsNoTracking().Where(n => n.ClientId == dto.ClientId)
+                        .Select(n => n.ContactId).Distinct().ToListAsync())
+                    .Where(id => contactIdSet.Contains(id)));
 
-                var customValues = await (
+                var customValuesRaw = await (
                     from v in _context.contact_custom_field_values.AsNoTracking()
-                    join f in _context.crm_custom_fields.AsNoTracking()
-                        on v.field_id equals f.id
-                    where contactIds.Contains(v.contact_id) && f.client_id == dto.ClientId
-                    select new
-                    {
-                        v.contact_id,
-                        f.field_name,
-                        v.value
-                    }
-                ).ToListAsync();
+                    join f in _context.crm_custom_fields.AsNoTracking() on v.field_id equals f.id
+                    where f.client_id == dto.ClientId
+                    select new { v.contact_id, f.field_name, v.value }).ToListAsync();
+                var customValues = customValuesRaw.Where(x => contactIdSet.Contains(x.contact_id)).ToList();
 
                 var customByContact = new Dictionary<int, Dictionary<string, object?>>();
-
                 foreach (var row in customValues)
                 {
-                    if (string.IsNullOrWhiteSpace(row.field_name))
-                        continue;
-
+                    if (string.IsNullOrWhiteSpace(row.field_name)) continue;
                     var fieldName = row.field_name.Trim();
-
                     if (!customByContact.TryGetValue(row.contact_id, out var fields))
                     {
                         fields = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
                         customByContact[row.contact_id] = fields;
                     }
-
                     fields[fieldName] = row.value;
                 }
 
-                var emailThreadByContactId = new Dictionary<int, string>();
-
-                if (dto.IsFollowUp)
-                {
-                    var logs = await _context.EmailLogs
-                        .AsNoTracking()
-                        .Where(x =>
-                            x.ClientId == dto.ClientId &&
-                            x.ContactId.HasValue &&
-                            contactIds.Contains(x.ContactId.Value) &&
-                            x.IsSuccess == true)
-                        .OrderByDescending(x => x.SentAt)
-                        .ToListAsync();
-
-                    emailThreadByContactId = logs
-                        .GroupBy(x => x.ContactId!.Value)
-                        .ToDictionary(
-                            g => g.Key,
-                            g =>
-                            {
-                                var sb = new StringBuilder();
-
-                                foreach (var log in g)
-                                {
-                                    sb.AppendLine("<hr style='border:0; border-top:0.5px solid #999; width:100%;' />");
-                                    sb.AppendLine($"<b>From:</b> {log.EmailSenderName} &lt;{log.SenderEmailId}&gt;<br/>");
-                                    sb.AppendLine($"<b>Sent:</b> {log.SentAt:dddd, MMMM d, yyyy h:mm tt}<br/>");
-                                    sb.AppendLine($"<b>To:</b> {log.EmailRecipientName} &lt;{log.ToEmail}&gt;<br/>");
-                                    sb.AppendLine($"<b>Subject:</b> {log.Subject}<br/><br/>");
-                                    sb.AppendLine($"{log.Body}<br/><br/>");
-                                }
-
-                                return sb.ToString();
-                            });
-                }
-
+                // Build filter objects (no bodies yet).
                 var result = new List<object>();
-
                 foreach (var c in contacts)
                 {
                     var customFields = customByContact.TryGetValue(c.id, out var found)
-                        ? found
-                        : new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-
-                    string finalEmailBody = c.email_body;
-
-                    if (dto.IsFollowUp)
-                    {
-                        if (c.updated_at < c.email_sent_at)
-                        {
-                            finalEmailBody = "You have not krafted any email after sending the last email. Please kraft to continue.";
-                        }
-
-                        emailThreadByContactId.TryGetValue(c.id, out var oldThread);
-
-                        finalEmailBody = $@"{finalEmailBody}
-
-                    {oldThread}";
-                    }
-
+                        ? found : new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
                     result.Add(new
                     {
                         c.id,
@@ -3116,8 +3035,6 @@ namespace PitchGenApi.Controllers
                         c.job_title,
                         c.linkedin_url,
                         c.country_or_address,
-                        c.email_subject,
-                        email_body = finalEmailBody,
                         c.created_at,
                         c.updated_at,
                         c.email_sent_at,
@@ -3128,44 +3045,98 @@ namespace PitchGenApi.Controllers
                         linkedIninformation = c.linkedIninformation,
                         hasNotes = notesSet.Contains(c.id),
                         hasLinkedInInfo = !string.IsNullOrWhiteSpace(c.linkedIninformation),
-                        customFields = customFields
+                        customFields
                     });
                 }
 
                 var trackingContext = await TrackingFilterHelper.BuildTrackingFilterContextAsync(
-                    _context,
-                    dto.ClientId,
-                    payload,
-                    contactIds,
-                    contactEmails
-                );
-
+                    _context, dto.ClientId, payload, contactIds, contactEmails);
                 var filtered = TrackingFilterHelper.ApplyFilters(result, payload, trackingContext);
 
                 var safePage = dto.Page <= 0 ? 1 : dto.Page;
                 var safePageSize = dto.PageSize <= 0 ? filtered.Count : dto.PageSize;
+                var pagedRaw = filtered.Skip((safePage - 1) * safePageSize).Take(safePageSize).ToList();
 
-                var pagedContacts = filtered
-                    .Skip((safePage - 1) * safePageSize)
-                    .Take(safePageSize)
-                    .ToList();
+                // Now fetch email bodies ONLY for the contacts being returned.
+                var pagedIds = pagedRaw.Select(p => (int)((dynamic)p).id).ToList();
 
-                return Ok(new
+                var bodyRows = await _context.contacts.AsNoTracking()
+                    .Where(c => pagedIds.Contains(c.id))
+                    .Select(c => new { c.id, c.email_subject, c.email_body, c.updated_at, c.email_sent_at })
+                    .ToListAsync();
+                var bodyById = bodyRows.ToDictionary(x => x.id);
+
+                var emailThreadByContactId = new Dictionary<int, string>();
+                if (dto.IsFollowUp)
                 {
-                    total = filtered.Count,
-                    page = safePage,
-                    pageSize = safePageSize,
-                    contacts = pagedContacts
-                });
+                    var logs = await _context.EmailLogs.AsNoTracking()
+                        .Where(x => x.ClientId == dto.ClientId && x.ContactId.HasValue && x.IsSuccess == true
+                                    && pagedIds.Contains(x.ContactId.Value))
+                        .OrderByDescending(x => x.SentAt).ToListAsync();
+                    emailThreadByContactId = logs.GroupBy(x => x.ContactId!.Value).ToDictionary(g => g.Key, g =>
+                    {
+                        var sb = new StringBuilder();
+                        foreach (var log in g)
+                        {
+                            sb.AppendLine("<hr style='border:0; border-top:0.5px solid #999; width:100%;' />");
+                            sb.AppendLine($"<b>From:</b> {log.EmailSenderName} &lt;{log.SenderEmailId}&gt;<br/>");
+                            sb.AppendLine($"<b>Sent:</b> {log.SentAt:dddd, MMMM d, yyyy h:mm tt}<br/>");
+                            sb.AppendLine($"<b>To:</b> {log.EmailRecipientName} &lt;{log.ToEmail}&gt;<br/>");
+                            sb.AppendLine($"<b>Subject:</b> {log.Subject}<br/><br/>");
+                            sb.AppendLine($"{log.Body}<br/><br/>");
+                        }
+                        return sb.ToString();
+                    });
+                }
+
+                var pagedContacts = pagedRaw.Select(p =>
+                {
+                    dynamic d = p;
+                    int id = (int)d.id;
+                    bodyById.TryGetValue(id, out var body);
+                    string emailSubject = body?.email_subject ?? "";
+                    string emailBody = body?.email_body ?? "";
+                    if (dto.IsFollowUp)
+                    {
+                        if (body != null && body.updated_at < body.email_sent_at)
+                            emailBody = "You have not krafted any email after sending the last email. Please kraft to continue.";
+                        emailThreadByContactId.TryGetValue(id, out var oldThread);
+                        emailBody = $"{emailBody}\n\n{oldThread}";
+                    }
+                    return new
+                    {
+                        id = d.id,
+                        DataFileId = d.DataFileId,
+                        full_name = d.full_name,
+                        first_name = d.first_name,
+                        last_name = d.last_name,
+                        email = d.email,
+                        website = d.website,
+                        company_name = d.company_name,
+                        job_title = d.job_title,
+                        linkedin_url = d.linkedin_url,
+                        country_or_address = d.country_or_address,
+                        email_subject = emailSubject,
+                        email_body = emailBody,
+                        created_at = d.created_at,
+                        updated_at = d.updated_at,
+                        email_sent_at = d.email_sent_at,
+                        CompanyTelephone = d.CompanyTelephone,
+                        CompanyEmployeeCount = d.CompanyEmployeeCount,
+                        CompanyIndustry = d.CompanyIndustry,
+                        CompanyLinkedInURL = d.CompanyLinkedInURL,
+                        linkedIninformation = d.linkedIninformation,
+                        hasNotes = d.hasNotes,
+                        hasLinkedInInfo = d.hasLinkedInInfo,
+                        customFields = d.customFields
+                    };
+                }).ToList();
+
+                return Ok(new { total = filtered.Count, page = safePage, pageSize = safePageSize, contacts = pagedContacts });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "An unexpected server error occurred.",
-                    error = ex.Message
-                });
+                return StatusCode(500, new { success = false, message = "An unexpected server error occurred.", error = ex.Message });
             }
         }
 
@@ -3411,6 +3382,20 @@ namespace PitchGenApi.Controllers
 
             return Ok(result);
         }
+
+        [HttpGet("unsubscribed-emails-by-client")]
+        public async Task<IActionResult> GetUnsubscribedEmailsByClient([FromQuery] int clientId)
+        {
+            var emails = await _context.UnsubscribedContacts
+                .AsNoTracking()
+                .Where(uc => uc.ClientId == clientId && uc.Email != null)
+                .Select(uc => uc.Email!)
+                .Distinct()
+                .ToListAsync();
+
+            return Ok(emails); // plain string[]; the frontend also accepts { emails: [...] }
+        }
+
     }
 
 }

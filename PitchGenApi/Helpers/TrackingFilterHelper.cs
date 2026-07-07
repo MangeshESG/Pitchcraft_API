@@ -25,12 +25,17 @@ namespace PitchGenApi.Helpers
 
             public HashSet<int> ClickedContactIds { get; } = new();
             public HashSet<string> ClickedEmails { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+            public Dictionary<int, List<DateTime>> SentDatesByContactId { get; } = new();
+            public Dictionary<string, List<DateTime>> SentDatesByEmail { get; } =
+                new(StringComparer.OrdinalIgnoreCase);
         }
 
         public static bool IsTrackingField(string? field)
         {
             return string.Equals(field, "tracking_open", StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(field, "tracking_click", StringComparison.OrdinalIgnoreCase);
+                   string.Equals(field, "tracking_click", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(field, "tracking_send_date", StringComparison.OrdinalIgnoreCase);
         }
 
         public static bool IsAllCampaigns(FilterConditionDto cond) =>
@@ -90,7 +95,12 @@ namespace PitchGenApi.Helpers
             if (string.IsNullOrWhiteSpace(cond.Operator))
                 return false;
 
-            if (string.IsNullOrWhiteSpace(cond.Value))
+            var op = cond.Operator.Trim();
+            var valuelessOperator =
+                op.Equals("isEmpty", StringComparison.OrdinalIgnoreCase) ||
+                op.Equals("isNotEmpty", StringComparison.OrdinalIgnoreCase);
+
+            if (!valuelessOperator && GetConditionValues(cond.Value).Count == 0)
                 return false;
 
             if (IsTrackingField(cond.Field) && string.IsNullOrWhiteSpace(cond.Context?.CampaignId))
@@ -115,6 +125,9 @@ namespace PitchGenApi.Helpers
                 .Where(c => IsTrackingField(c.Field))
                 .ToList();
 
+            if (trackingConditions.Count == 0)
+                return trackingContext;
+
             var includesAllCampaigns = trackingConditions.Any(IsAllCampaigns);
 
             List<int> campaignIds;
@@ -122,6 +135,7 @@ namespace PitchGenApi.Helpers
             if (includesAllCampaigns)
             {
                 campaignIds = await context.Campaigns
+                    .AsNoTracking()
                     .Where(c => c.ClientId == clientId)
                     .Select(c => c.Id)
                     .Distinct()
@@ -140,21 +154,19 @@ namespace PitchGenApi.Helpers
             if (!campaignIds.Any())
                 return trackingContext;
 
+            // Load by client + campaign only (no per-contact IN clause).
             var emailLogs = await context.EmailLogs
+                .AsNoTracking()
                 .Where(x =>
                     x.ClientId == clientId &&
                     x.CampaignId.HasValue &&
-                    campaignIds.Contains(x.CampaignId.Value) &&
-                    (
-                        (x.ContactId.HasValue && contactIds.Contains(x.ContactId.Value)) ||
-                        contactEmails.Contains((x.ToEmail ?? "").ToLower())
-                    )
-                )
+                    campaignIds.Contains(x.CampaignId.Value))
                 .Select(x => new
                 {
                     CampaignId = x.CampaignId!.Value,
                     ContactId = x.ContactId,
-                    ToEmail = x.ToEmail
+                    ToEmail = x.ToEmail,
+                    SentAt = (DateTime?)x.SentAt
                 })
                 .ToListAsync();
 
@@ -168,18 +180,31 @@ namespace PitchGenApi.Helpers
                 var email = NormalizeEmail(item.ToEmail);
                 if (!string.IsNullOrWhiteSpace(email))
                     bucket.SentEmails.Add(email);
+
+                if (item.SentAt.HasValue)
+                {
+                    if (item.ContactId.HasValue)
+                    {
+                        if (!bucket.SentDatesByContactId.TryGetValue(item.ContactId.Value, out var byId))
+                            bucket.SentDatesByContactId[item.ContactId.Value] = byId = new List<DateTime>();
+                        byId.Add(item.SentAt.Value);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(email))
+                    {
+                        if (!bucket.SentDatesByEmail.TryGetValue(email, out var byEmail))
+                            bucket.SentDatesByEmail[email] = byEmail = new List<DateTime>();
+                        byEmail.Add(item.SentAt.Value);
+                    }
+                }
             }
 
             var trackingLogs = await context.EmailTrackingLogs
+                .AsNoTracking()
                 .Where(x =>
                     x.ClientId == clientId &&
                     x.CampaignId.HasValue &&
-                    campaignIds.Contains(x.CampaignId.Value) &&
-                    (
-                        (x.ContactId.HasValue && contactIds.Contains(x.ContactId.Value)) ||
-                        contactEmails.Contains((x.Email ?? "").ToLower())
-                    )
-                )
+                    campaignIds.Contains(x.CampaignId.Value))
                 .Select(x => new
                 {
                     CampaignId = x.CampaignId!.Value,
@@ -284,24 +309,31 @@ namespace PitchGenApi.Helpers
                 return EvaluateTrackingCondition(row, cond, trackingContext);
 
             var rawValue = GetFieldValue(row, cond.Field ?? "");
-            var target = cond.Value ?? "";
+            var targets = GetConditionValues(cond.Value);
+            var target = targets.FirstOrDefault() ?? "";
 
             switch ((cond.Operator ?? "").Trim())
             {
                 case "contains":
-                    return rawValue.Contains(target, StringComparison.OrdinalIgnoreCase);
+                    return targets.Any(t => rawValue.Contains(t, StringComparison.OrdinalIgnoreCase));
 
                 case "equals":
-                    return rawValue.Equals(target, StringComparison.OrdinalIgnoreCase);
+                    return targets.Any(t => rawValue.Equals(t, StringComparison.OrdinalIgnoreCase));
 
                 case "notEquals":
-                    return !rawValue.Equals(target, StringComparison.OrdinalIgnoreCase);
+                    return targets.All(t => !rawValue.Equals(t, StringComparison.OrdinalIgnoreCase));
 
                 case "startsWith":
-                    return rawValue.StartsWith(target, StringComparison.OrdinalIgnoreCase);
+                    return targets.Any(t => rawValue.StartsWith(t, StringComparison.OrdinalIgnoreCase));
 
                 case "endsWith":
-                    return rawValue.EndsWith(target, StringComparison.OrdinalIgnoreCase);
+                    return targets.Any(t => rawValue.EndsWith(t, StringComparison.OrdinalIgnoreCase));
+
+                case "isEmpty":
+                    return string.IsNullOrWhiteSpace(rawValue);
+
+                case "isNotEmpty":
+                    return !string.IsNullOrWhiteSpace(rawValue);
 
                 case "gt":
                     {
@@ -356,15 +388,6 @@ namespace PitchGenApi.Helpers
             TrackingFilterContext trackingContext
         )
         {
-            var operatorValue = (cond.Operator ?? "").Trim();
-            if (!operatorValue.Equals("equals", StringComparison.OrdinalIgnoreCase) &&
-                !operatorValue.Equals("notEquals", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            var wantsTrue = string.Equals(cond.Value, "true", StringComparison.OrdinalIgnoreCase);
-
             var contactId = ToIntSafe(GetFieldValue(row, "id"));
             var email = NormalizeEmail(GetFieldValue(row, "email"));
 
@@ -388,6 +411,18 @@ namespace PitchGenApi.Helpers
 
             if (!buckets.Any())
                 return false;
+
+            if (string.Equals(cond.Field, "tracking_send_date", StringComparison.OrdinalIgnoreCase))
+                return EvaluateSendDateCondition(cond, buckets, contactId, email);
+
+            var operatorValue = (cond.Operator ?? "").Trim();
+            if (!operatorValue.Equals("equals", StringComparison.OrdinalIgnoreCase) &&
+                !operatorValue.Equals("notEquals", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var wantsTrue = string.Equals(cond.Value, "true", StringComparison.OrdinalIgnoreCase);
 
             var sentInCampaign = buckets.Any(bucket =>
                 (contactId.HasValue && bucket.SentContactIds.Contains(contactId.Value)) ||
@@ -423,6 +458,52 @@ namespace PitchGenApi.Helpers
                 result = !result;
 
             return result;
+        }
+
+        private static bool EvaluateSendDateCondition(
+            FilterConditionDto cond,
+            List<CampaignTrackingBucket> buckets,
+            int? contactId,
+            string email
+        )
+        {
+            var dates = new List<DateTime>();
+
+            foreach (var bucket in buckets)
+            {
+                if (contactId.HasValue &&
+                    bucket.SentDatesByContactId.TryGetValue(contactId.Value, out var byId))
+                    dates.AddRange(byId);
+
+                if (!string.IsNullOrWhiteSpace(email) &&
+                    bucket.SentDatesByEmail.TryGetValue(email, out var byEmail))
+                    dates.AddRange(byEmail);
+            }
+
+            var op = (cond.Operator ?? "").Trim();
+
+            if (op.Equals("isEmpty", StringComparison.OrdinalIgnoreCase))
+                return dates.Count == 0;
+
+            if (op.Equals("isNotEmpty", StringComparison.OrdinalIgnoreCase))
+                return dates.Count > 0;
+
+            if (dates.Count == 0)
+                return false;
+
+            var latest = dates.Max();
+            var target = ToDateSafe(cond.Value ?? "");
+            if (!target.HasValue)
+                return false;
+
+            switch (op)
+            {
+                case "equals": return latest.Date == target.Value.Date;
+                case "notEquals": return latest.Date != target.Value.Date;
+                case "before": return latest < target.Value;
+                case "after": return latest > target.Value;
+                default: return false;
+            }
         }
 
         private static CampaignTrackingBucket GetCampaignBucket(
@@ -540,6 +621,36 @@ namespace PitchGenApi.Helpers
 
         private static string NormalizeEmail(string? value) =>
             string.IsNullOrWhiteSpace(value) ? "" : value.Trim().ToLowerInvariant();
+
+        private static List<string> GetConditionValues(string? rawValue)
+        {
+            if (string.IsNullOrWhiteSpace(rawValue))
+                return new List<string>();
+
+            var trimmed = rawValue.Trim();
+
+            if (trimmed.StartsWith("[") && trimmed.EndsWith("]"))
+            {
+                try
+                {
+                    var parsed = JsonSerializer.Deserialize<List<JsonElement>>(trimmed);
+                    if (parsed != null)
+                    {
+                        return parsed
+                            .Select(el => el.ValueKind == JsonValueKind.String
+                                ? el.GetString() ?? ""
+                                : el.ToString())
+                            .Where(v => !string.IsNullOrWhiteSpace(v))
+                            .ToList();
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            return new List<string> { trimmed };
+        }
 
         private static int? ToIntSafe(string? s)
         {
