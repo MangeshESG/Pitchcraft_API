@@ -10,7 +10,7 @@
 
         public string? MessageId { get; set; }
         public string? InReplyTo { get; set; }
-
+        public string? Provider { get; set; }
         public string? FromEmail { get; set; }
         public string? FromName { get; set; }
         public string? ToEmail { get; set; }

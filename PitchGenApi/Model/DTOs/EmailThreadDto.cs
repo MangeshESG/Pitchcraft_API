@@ -34,6 +34,9 @@
         public int? ContactId { get; set; }
 
         public string? ContactName { get; set; }
+        public string? Provider { get; set; }
+
+        public int? Inboxid { get; set; }
 
         // =========================================
         // ATTACHMENTS

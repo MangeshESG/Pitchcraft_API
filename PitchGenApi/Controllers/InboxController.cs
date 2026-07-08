@@ -315,7 +315,7 @@ public class InboxController : ControllerBase
             .Where(x => x.id == contactId)
             .Select(x => new { x.id, x.email, x.full_name, x.first_name, x.last_name })
             .FirstOrDefaultAsync();
-
+        
         if (contact == null)
         {
             return NotFound(new { success = false, message = "Contact not found" });
@@ -434,6 +434,14 @@ public class InboxController : ControllerBase
             .Select(x => x.TrackingId)
             .ToListAsync();
 
+        var imapInboxMap = await _context.Inboxcredentials
+            .Where(x => x.ClientId == clientId)
+            .ToDictionaryAsync(x => x.Outboxid, x => x.Id);
+
+        var oauthInboxMap = await _context.EmailOAuthTokens
+            .Where(x => x.ClientId == clientId)
+            .ToDictionaryAsync(x => x.Id, x => x.Id);
+
         var threads = trackingIds
             .Select(trackingId =>
             {
@@ -453,6 +461,8 @@ public class InboxController : ControllerBase
                         IsRead = i.IsRead,
                         ContactId = i.Contactid ?? contactId,
                         ContactName = i.FromName ?? contact.full_name,
+                        Inboxid = i.InboxId,
+                        Provider = i.Provider,
                         Attachments = attachments
                             .Where(a => a.MessageId == i.MessageId)
                             .Select(a => new EmailAttachmentDto
@@ -482,6 +492,14 @@ public class InboxController : ControllerBase
                         IsRead = true,
                         ContactId = s.ContactId ?? contactId,
                         ContactName = s.EmailRecipientName ?? contact.full_name,
+                        Inboxid =s.outboxid.HasValue
+                                ? (
+                                    s.Provider == "SMTP"
+                                        ? (imapInboxMap.TryGetValue(s.outboxid.Value, out var imapInboxId) ? imapInboxId : 0)
+                                        : (oauthInboxMap.TryGetValue(s.outboxid.Value, out var oauthInboxId) ? oauthInboxId : 0)
+                                  )
+                                : 0,
+                        Provider = s.Provider,
                         Attachments = attachments
                             .Where(a => a.MessageId == s.MessageId)
                             .Select(a => new EmailAttachmentDto
@@ -511,6 +529,8 @@ public class InboxController : ControllerBase
                         IsRead = r.IsRead ?? false,
                         ContactId = r.ContactId ?? contactId,
                         ContactName = r.FromName ?? contact.full_name ?? r.FromEmail,
+                        Inboxid = r.Inboxid,
+                        Provider = r.Provider,
                         Attachments = attachments
                             .Where(a => a.MessageId == r.MessageId)
                             .Select(a => new EmailAttachmentDto
