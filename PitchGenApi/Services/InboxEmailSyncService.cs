@@ -9,6 +9,8 @@ using System.Text.RegularExpressions;
 using System.Net.Http.Headers;
 using System.Text;
 using MimeKit;
+using PitchGenApi.Model.DTOs;
+using PitchGenApi.Helpers;
 
 public class InboxEmailSyncService : IInboxEmailSyncService
 {
@@ -162,6 +164,14 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 var trackingId =
                     EmailTrackingHelper.ExtractinboxTrackingId(rawBody);
 
+                var bounceInfo = BounceParser.Parse(new BounceMailInput
+                {
+                    FromEmail = msg.From.Mailboxes.FirstOrDefault()?.Address,
+                    Subject = msg.Subject,
+                    Body = rawBody,
+                    HeadersText = msg.Headers.ToString(),
+                    Provider = provider
+                });
                 Console.WriteLine($"🎯 TrackingId: {trackingId}");
 
                 Console.WriteLine($"RAW BODY LENGTH = {rawBody?.Length}");
@@ -206,6 +216,56 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 Console.WriteLine($"↩️ IN-REPLY-TO: {normalizedInReplyTo}");
                 Console.WriteLine($"📚 REFERENCES: {rawReferences}");
                 Console.WriteLine("=================================");
+
+                // =========================================
+                // BOUNCE MAIL SAVE
+                // =========================================
+
+                var referenceIds = new List<string>();
+
+                if (!string.IsNullOrWhiteSpace(rawReferences))
+                {
+                    referenceIds = rawReferences
+                        .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(NormalizeMessageId)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Distinct()
+                        .ToList();
+                }
+
+                bool bounceSaved = await SaveBounceIfNeededAsync(new BounceSaveInput
+                {
+                    ClientId = setting.ClientId,
+                    TrackingId = trackingId,
+                    BounceInfo = bounceInfo,
+
+                    BounceMessageId = normalizedMessageId,
+                    AlternateBounceMessageId = null,
+
+                    InReplyTo = normalizedInReplyTo,
+                    ReferenceIds = referenceIds,
+
+                    Provider = "SMTP",
+                    BounceDate = msg.Date.UtcDateTime,
+
+                    RawHeaders = msg.Headers.ToString(),
+                    RawBody = rawBody
+                });
+
+                if (bounceSaved)
+                {
+                    if (uid.Id > maxUid)
+                        maxUid = uid.Id;
+
+                    if (maxUid > setting.LastUid)
+                    {
+                        setting.LastUid = maxUid;
+                        _context.Inboxcredentials.Update(setting);
+                        await _context.SaveChangesAsync();
+                    }
+
+                    continue;
+                }
 
                 var fromEmail =
                     msg.From.Mailboxes.FirstOrDefault()?.Address;
@@ -297,7 +357,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         }
                     }
                 }
-
+                
                 // =========================================
                 // SAVE REPLY
                 // =========================================
@@ -341,7 +401,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                     500)),
 
                         Body = body,
-
+                        Provider = "SMTP",
                         TrackingId = trackingId ?? sent.TrackingId,
 
                         Date = msg.Date.UtcDateTime,
@@ -482,6 +542,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             FromEmail = fromEmail,
 
                             FromName = fromName,
+                            Provider = "SMTP",
 
                             ToEmail = msg.To.ToString(),
 
@@ -567,7 +628,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                             IsRead = false,
 
-                            Provider = provider,
+                            Provider = "SMTP",
 
                             TrackingId = trackingId,
 
@@ -775,6 +836,16 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                     var headers = msg.payload.headers;
 
+                    string rawHeadersText = "";
+
+                    foreach (var h in headers)
+                    {
+                        string headerName = h.name != null ? h.name.ToString() : "";
+                        string headerValue = h.value != null ? h.value.ToString() : "";
+
+                        rawHeadersText += $"{headerName}: {headerValue}\n";
+                    }
+
                     string messageId =
                         NormalizeMessageId(GetHeader(headers, "Message-ID"));
 
@@ -863,6 +934,15 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                     string body = ExtractBody(msg.payload);
 
+                    var bounceInfo = BounceParser.Parse(new BounceMailInput
+                    {
+                        FromEmail = fromAddress,
+                        Subject = subject,
+                        Body = body,
+                        HeadersText = rawHeadersText,
+                        Provider = "Gmail"
+                    });
+
                     var cleanbody = Regex.Replace(
                         body,
                         @"TRACKING_ID:[0-9a-fA-F\-]{36}",
@@ -895,6 +975,42 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                     var trackingId =
                         EmailTrackingHelper.ExtractinboxTrackingId(body);
+                    bool bounceSaved = await SaveBounceIfNeededAsync(new BounceSaveInput
+                    {
+                        ClientId = tokenData.ClientId,
+                        TrackingId = trackingId,
+                        BounceInfo = bounceInfo,
+
+                        BounceMessageId = messageId,
+                        AlternateBounceMessageId = gmailMessageId,
+
+                        InReplyTo = inReplyTo,
+                        ReferenceIds = referenceIds,
+
+                        Provider = "Gmail",
+                        BounceDate = emailDate,
+
+                        RawHeaders = rawHeadersText,
+                        RawBody = body
+                    });
+
+                    if (bounceSaved)
+                    {
+                        if (latestEmailTime == null || emailDate > latestEmailTime)
+                        {
+                            latestEmailTime = emailDate;
+                        }
+
+                        processed++;
+
+                        continue;
+                    }
+
+                    if (replyExists || inboxExistsAlready)
+                    {
+                        Console.WriteLine("⚠️ Duplicate Gmail mail skipped");
+                        continue;
+                    }
 
                     if (trackingId != null)
                     {
@@ -1213,7 +1329,13 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             {
                 try
                 {
-                    string messageId = msg.internetMessageId;
+                    string outlookMessageId = msg.id?.ToString() ?? "";
+
+                    string messageId =
+                        NormalizeMessageId(msg.internetMessageId?.ToString());
+
+                    if (string.IsNullOrWhiteSpace(messageId))
+                        messageId = outlookMessageId;
 
                     if (string.IsNullOrWhiteSpace(messageId))
                         continue;
@@ -1223,16 +1345,14 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     // =========================================
 
                     bool replyExists = await _context.EmailReplies
-                        .AnyAsync(x => x.MessageId == messageId);
-
-                    if (replyExists)
-                        continue;
+                         .AnyAsync(x =>
+                             x.MessageId == messageId ||
+                             x.MessageId == outlookMessageId);
 
                     bool inboxExistsAlready = await _context.InboxEmails
-                        .AnyAsync(x => x.MessageId == messageId);
-
-                    if (inboxExistsAlready)
-                        continue;
+                        .AnyAsync(x =>
+                            x.MessageId == messageId ||
+                            x.MessageId == outlookMessageId);
 
                     string subject = msg.subject ?? "";
 
@@ -1303,24 +1423,42 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     // =========================================
 
                     string inReplyTo = "";
-
                     string threadIndex = "";
+                    string references = "";
+                    string rawHeadersText = "";
 
                     if (msg.internetMessageHeaders != null)
                     {
                         foreach (var h in msg.internetMessageHeaders)
                         {
-                            if (h.name == "In-Reply-To")
+                            string headerName = h.name?.ToString() ?? "";
+                            string headerValue = h.value?.ToString() ?? "";
+
+                            rawHeadersText += $"{headerName}: {headerValue}\n";
+
+                            if (headerName.Equals("In-Reply-To", StringComparison.OrdinalIgnoreCase))
                             {
-                                inReplyTo = h.value;
+                                inReplyTo = NormalizeMessageId(headerValue);
                             }
 
-                            if (h.name == "Thread-Index")
+                            if (headerName.Equals("References", StringComparison.OrdinalIgnoreCase))
                             {
-                                threadIndex = h.value;
+                                references = headerValue;
+                            }
+
+                            if (headerName.Equals("Thread-Index", StringComparison.OrdinalIgnoreCase))
+                            {
+                                threadIndex = headerValue;
                             }
                         }
                     }
+
+                    var referenceIds = (references ?? "")
+                        .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(NormalizeMessageId)
+                        .Where(x => !string.IsNullOrWhiteSpace(x))
+                        .Distinct()
+                        .ToList();
 
                     if (!string.IsNullOrWhiteSpace(threadIndex))
                     {
@@ -1334,6 +1472,15 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     // =========================================
 
                     string body = msg.body?.content ?? "";
+
+                    var bounceInfo = BounceParser.Parse(new BounceMailInput
+                    {
+                        FromEmail = from,
+                        Subject = subject,
+                        Body = body,
+                        HeadersText = rawHeadersText,
+                        Provider = "Outlook"
+                    });
 
                     DateTime emailDate =
                         msg.receivedDateTime != null
@@ -1374,6 +1521,43 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     var trackingId =
                         EmailTrackingHelper
                         .ExtractinboxTrackingId(body);
+
+                    bool bounceSaved = await SaveBounceIfNeededAsync(new BounceSaveInput
+                    {
+                        ClientId = tokenData.ClientId,
+                        TrackingId = trackingId,
+                        BounceInfo = bounceInfo,
+
+                        BounceMessageId = messageId,
+                        AlternateBounceMessageId = outlookMessageId,
+
+                        InReplyTo = inReplyTo,
+                        ReferenceIds = referenceIds,
+
+                        Provider = "Outlook",
+                        BounceDate = emailDate,
+
+                        RawHeaders = rawHeadersText,
+                        RawBody = body
+                    });
+
+                    if (bounceSaved)
+                    {
+                        if (latestEmailTime == null || emailDate > latestEmailTime)
+                        {
+                            latestEmailTime = emailDate;
+                        }
+
+                        processed++;
+
+                        continue;
+                    }
+
+                    if (replyExists || inboxExistsAlready)
+                    {
+                        Console.WriteLine("⚠️ Duplicate Outlook mail skipped");
+                        continue;
+                    }
 
                     if (trackingId != null)
                     {
@@ -2211,5 +2395,129 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             Environment.NewLine + Environment.NewLine);
 
         return body.Trim();
+    }
+    private async Task<bool> SaveBounceIfNeededAsync(BounceSaveInput input)
+    {
+        if (input.BounceInfo == null || !input.BounceInfo.IsBounce)
+            return false;
+
+        Console.WriteLine("❌ Bounce mail detected");
+
+        EmailLog? bouncedSent = null;
+
+        // 1. Match by Original MessageId
+        if (!string.IsNullOrWhiteSpace(input.BounceInfo.OriginalMessageId))
+        {
+            var originalMsgId = NormalizeMessageId(input.BounceInfo.OriginalMessageId);
+
+            bouncedSent = await _context.EmailLogs
+                .FirstOrDefaultAsync(x =>
+                    x.MessageId == originalMsgId &&
+                    x.ClientId == input.ClientId);
+        }
+
+        // 2. Match by InReplyTo
+        if (bouncedSent == null && !string.IsNullOrWhiteSpace(input.InReplyTo))
+        {
+            bouncedSent = await _context.EmailLogs
+                .FirstOrDefaultAsync(x =>
+                    x.MessageId == input.InReplyTo &&
+                    x.ClientId == input.ClientId);
+        }
+
+        // 3. Match by References
+        if (bouncedSent == null && input.ReferenceIds.Any())
+        {
+            foreach (var refId in input.ReferenceIds)
+            {
+                bouncedSent = await _context.EmailLogs
+                    .FirstOrDefaultAsync(x =>
+                        x.MessageId == refId &&
+                        x.ClientId == input.ClientId);
+
+                if (bouncedSent != null)
+                    break;
+            }
+        }
+
+        // 4. Match by recipient email fallback
+        if (bouncedSent == null &&
+            !string.IsNullOrWhiteSpace(input.BounceInfo.RecipientEmail))
+        {
+            bouncedSent = await _context.EmailLogs
+                .Where(x =>
+                    x.ClientId == input.ClientId &&
+                    x.ToEmail == input.BounceInfo.RecipientEmail)
+                .OrderByDescending(x => x.SentAt)
+                .FirstOrDefaultAsync();
+        }
+
+        bool alreadyExists = await _context.EmailBounces
+            .AnyAsync(x =>
+                x.BounceMessageId == input.BounceMessageId ||
+                (
+                    input.AlternateBounceMessageId != null &&
+                    x.BounceMessageId == input.AlternateBounceMessageId
+                ));
+
+        if (alreadyExists)
+        {
+            Console.WriteLine("⚠️ Duplicate bounce skipped");
+            return true;
+        }
+
+        var bounceEntity = new EmailBounce
+        {
+            ClientId = bouncedSent?.ClientId ?? input.ClientId,
+
+            TrackingId = bouncedSent?.TrackingId ?? input.TrackingId,
+
+            EmailLogId = bouncedSent?.Id,
+
+            BounceMessageId = input.BounceMessageId,
+
+            OriginalMessageId = input.BounceInfo.OriginalMessageId,
+
+            RecipientEmail = input.BounceInfo.RecipientEmail ?? bouncedSent?.ToEmail,
+
+            BounceType = input.BounceInfo.BounceType,
+
+            Action = input.BounceInfo.Action,
+
+            StatusCode = input.BounceInfo.StatusCode,
+
+            DiagnosticCode = input.BounceInfo.DiagnosticCode,
+
+            RemoteServer = input.BounceInfo.RemoteServer,
+
+            Reason = input.BounceInfo.Reason,
+
+            Provider = input.Provider,
+
+            BounceDate = input.BounceDate,
+
+            RawHeaders = input.RawHeaders,
+
+            RawBody = input.RawBody,
+
+            CreatedAt = DateTime.UtcNow
+        };
+
+        _context.EmailBounces.Add(bounceEntity);
+
+        if (bouncedSent != null)
+        {
+            bouncedSent.IsBounced = true;
+            bouncedSent.BounceReason = input.BounceInfo.Reason;
+            bouncedSent.BounceDate = input.BounceDate;
+
+            _context.EmailLogs.Update(bouncedSent);
+        }
+
+        await _context.SaveChangesAsync();
+
+        Console.WriteLine("💾 Bounce saved");
+
+        return true;
     }
 }

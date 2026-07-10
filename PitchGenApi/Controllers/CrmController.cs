@@ -3317,9 +3317,9 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("Single_signatures/{clientId}")]
-        public async Task<IActionResult> GetSingleSignatures(int clientId, int InboxId, string Provider)
+        public async Task<IActionResult> GetSingleSignatures(int clientId, int InboxId, string Provider, string Mathod)
         {
-            var result = await _contactRepository.GetSingleSignatures(clientId, InboxId, Provider);
+            var result = await _contactRepository.GetSingleSignatures(clientId, InboxId, Provider, Mathod);
 
             return Ok(result);
         }

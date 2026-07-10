@@ -34,4 +34,10 @@
 
     public string? process_name { get; set; }
 
+    public bool IsBounced { get; set; }
+
+    public string? BounceReason { get; set; }
+
+    public DateTime? BounceDate { get; set; }
+
 }

@@ -68,7 +68,7 @@ namespace PitchGenApi.Database
         public DbSet<EmailSignatures> EmailSignatures { get; set; }
         public DbSet<PinnedEmails> PinnedEmails { get; set; }
         public DbSet<KraftHistory> KraftHistory { get; set; }
-
+        public DbSet<EmailBounce> EmailBounces { get; set; }
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
