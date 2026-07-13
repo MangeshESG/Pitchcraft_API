@@ -330,7 +330,6 @@ public class InboxController : ControllerBase
                 x.ClientId == clientId &&
                 x.TrackingId.HasValue &&
                 x.IsSuccess &&
-                !x.IsDeleted &&
                 (
                     x.ContactId == contactId ||
                     (hasContactEmail && x.ToEmail != null && x.ToEmail.ToLower() == contactEmail)
@@ -342,7 +341,6 @@ public class InboxController : ControllerBase
             .Where(x =>
                 x.ClientId == clientId &&
                 x.TrackingId.HasValue &&
-                !x.IsDeleted &&
                 (
                     x.Contactid == contactId ||
                     (hasContactEmail && x.FromEmail != null && x.FromEmail.ToLower() == contactEmail) ||
@@ -355,7 +353,6 @@ public class InboxController : ControllerBase
             .Where(x =>
                 x.ClientId == clientId &&
                 x.TrackingId.HasValue &&
-                x.IsDeleted != true &&
                 (
                     x.ContactId == contactId ||
                     (hasContactEmail && x.FromEmail != null && x.FromEmail.ToLower() == contactEmail) ||
@@ -393,8 +390,7 @@ public class InboxController : ControllerBase
                 x.ClientId == clientId &&
                 x.TrackingId.HasValue &&
                 trackingIds.Contains(x.TrackingId.Value) &&
-                x.IsSuccess &&
-                !x.IsDeleted)
+                x.IsSuccess)
             .ToListAsync();
 
         var inboxEmails = await _context.InboxEmails
@@ -402,8 +398,7 @@ public class InboxController : ControllerBase
             .Where(x =>
                 x.ClientId == clientId &&
                 x.TrackingId.HasValue &&
-                trackingIds.Contains(x.TrackingId.Value) &&
-                !x.IsDeleted)
+                trackingIds.Contains(x.TrackingId.Value))
             .ToListAsync();
 
         var replies = await _context.EmailReplies
@@ -411,8 +406,7 @@ public class InboxController : ControllerBase
             .Where(x =>
                 x.ClientId == clientId &&
                 x.TrackingId.HasValue &&
-                trackingIds.Contains(x.TrackingId.Value) &&
-                x.IsDeleted != true)
+                trackingIds.Contains(x.TrackingId.Value))
             .ToListAsync();
 
         var allMessageIds = sentEmails

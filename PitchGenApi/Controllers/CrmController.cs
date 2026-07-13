@@ -1196,6 +1196,72 @@ namespace PitchGenApi.Controllers
             return Ok(counts);
         }
 
+        [HttpGet("dashboard-card-counts")]
+        public async Task<IActionResult> GetDashboardCardCounts(
+            [FromQuery] int clientId,
+            [FromQuery] int? campaignId = null,
+            [FromQuery] DateTime? startDate = null,
+            [FromQuery] DateTime? endDate = null,
+            [FromQuery] int? outboxId = null,
+            [FromQuery] bool excludeBots = false
+        )
+        {
+            var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
+
+            var emailLogsQuery = _context.EmailLogs
+                .AsNoTracking()
+                .Where(log => log.ClientId == clientId
+                    && (!campaignId.HasValue || log.CampaignId == campaignId.Value)
+                    && (!outboxId.HasValue || log.outboxid == outboxId.Value)
+                    && (!startDate.HasValue || log.SentAt >= startDate.Value.Date)
+                    && (!endDateInclusive.HasValue || log.SentAt <= endDateInclusive.Value)
+                    && (log.process_name != "ThreadReply"));
+
+            var sentCount = await emailLogsQuery.CountAsync(log => log.IsSuccess);
+            var errorCount = await emailLogsQuery.CountAsync(log => !log.IsSuccess);
+            var bounceback = await emailLogsQuery.CountAsync(log => log.IsBounced);
+
+            var trackingQuery = _context.EmailTrackingLogs
+                .AsNoTracking()
+                .Where(t => t.ClientId == clientId
+                    && (!campaignId.HasValue || t.CampaignId == campaignId.Value)
+                    && (!outboxId.HasValue || _context.EmailLogs.Any(e => e.TrackingId == t.TrackingId && e.outboxid == outboxId.Value))
+                    && (!startDate.HasValue || t.Timestamp >= startDate.Value.Date)
+                    && (!endDateInclusive.HasValue || t.Timestamp <= endDateInclusive.Value)
+                    && (!excludeBots || !t.IsBot.HasValue || !t.IsBot.Value));
+
+            var trackingData = await trackingQuery
+                .Select(t => new
+                {
+                    t.Email,
+                    t.EventType
+                })
+                .ToListAsync();
+
+            var uniqueOpens = trackingData
+                .Where(item => item.EventType == "Open" && !string.IsNullOrWhiteSpace(item.Email))
+                .Select(item => item.Email.Trim().ToLower())
+                .Distinct()
+                .Count();
+
+            var uniqueClicks = trackingData
+                .Where(item => item.EventType == "Click" && !string.IsNullOrWhiteSpace(item.Email))
+                .Select(item => item.Email.Trim().ToLower())
+                .Distinct()
+                .Count();
+
+            var totalClicks = trackingData.Count(item => item.EventType == "Click");
+
+            return Ok(new
+            {
+                sent = sentCount,
+                opens = uniqueOpens,
+                clicks = uniqueClicks,
+                totalClicks,
+                errors = errorCount,
+                bounceback
+            });
+        }
         [HttpGet("gettrackinglogs")]
         public async Task<IActionResult> GettrackingLogs(
             [FromQuery] int clientId,
@@ -1213,12 +1279,26 @@ namespace PitchGenApi.Controllers
             var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
 
             var trackingBase = _context.EmailTrackingLogs
-                .Where(t => t.ClientId == clientId
-                    && (!campaignId.HasValue || t.CampaignId == campaignId.Value)
-                    && (!outboxId.HasValue || _context.EmailLogs.Any(e => e.TrackingId == t.TrackingId && e.outboxid == outboxId.Value))
-                    && (!startDate.HasValue || t.Timestamp >= startDate.Value.Date)
-                    && (!endDateInclusive.HasValue || t.Timestamp <= endDateInclusive.Value)
-                    && (!excludeBots || !t.IsBot.HasValue || !t.IsBot.Value));
+                 .Where(t => t.ClientId == clientId
+                     && (!campaignId.HasValue || t.CampaignId == campaignId.Value)
+                     && (!outboxId.HasValue || _context.EmailLogs.Any(e =>
+                         e.TrackingId == t.TrackingId &&
+                         e.outboxid == outboxId.Value))
+
+                     // bounced emails exclude by EmailBounces table
+                     && !_context.EmailBounces.Any(b =>
+                         b.ClientId == t.ClientId &&
+                         b.TrackingId == t.TrackingId)
+
+                    // bounced emails exclude by EmailLogs flag
+                     && !_context.EmailLogs.Any(e =>
+                         e.ClientId == t.ClientId &&
+                         e.TrackingId == t.TrackingId &&
+                         e.IsBounced == true)
+
+         && (!startDate.HasValue || t.Timestamp >= startDate.Value.Date)
+         && (!endDateInclusive.HasValue || t.Timestamp <= endDateInclusive.Value)
+         && (!excludeBots || !t.IsBot.HasValue || !t.IsBot.Value));
 
             switch (detailFilter)
             {
@@ -3350,35 +3430,89 @@ namespace PitchGenApi.Controllers
         [HttpGet("contact-engagement/{contactId}")]
         public async Task<IActionResult> GetContactEngagement(int contactId)
         {
-            var result = await (
-                from el in _context.EmailLogs
-                where el.ContactId == contactId
-                      && !el.IsDeleted
-                join etl in _context.EmailTrackingLogs
-                    on el.TrackingId equals etl.TrackingId into tracking
-                from etl in tracking.DefaultIfEmpty()
-                group new { el, etl } by el.ContactId into g
-                select new
+            // 1. Contact ke sent tracking ids
+            var sentTrackingIds = await _context.EmailLogs
+                .Where(el =>
+                    el.ContactId == contactId &&
+                    !el.IsDeleted &&
+                    el.TrackingId != null)
+                .Select(el => el.TrackingId)
+                .Distinct()
+                .ToListAsync();
+
+            if (!sentTrackingIds.Any())
+            {
+                return Ok(new
                 {
-                    ContactId = g.Key,
+                    ContactId = contactId,
+                    SentCount = 0,
+                    OpenCount = 0,
+                    ClickCount = 0,
+                    BounceBackCount = 0
+                });
+            }
 
-                    SentCount = g.Select(x => x.el.TrackingId)
-                                 .Distinct()
-                                 .Count(),
+            // 2. Bounce from EmailBounces table
+            var bouncedFromBounceTable = await _context.EmailBounces
+                .Where(b =>
+                    b.TrackingId != null &&
+                    sentTrackingIds.Contains(b.TrackingId))
+                .Select(b => b.TrackingId)
+                .Distinct()
+                .ToListAsync();
 
-                    OpenCount = g.Where(x => x.etl != null &&
-                                             x.etl.EventType == "Open")
-                                 .Select(x => x.etl.TrackingId)
-                                 .Distinct()
-                                 .Count(),
+            // 3. Bounce from EmailLogs flag
+            var bouncedFromEmailLogs = await _context.EmailLogs
+                .Where(el =>
+                    el.ContactId == contactId &&
+                    !el.IsDeleted &&
+                    el.TrackingId != null &&
+                    el.IsBounced == true)
+                .Select(el => el.TrackingId)
+                .Distinct()
+                .ToListAsync();
 
-                    ClickCount = g.Where(x => x.etl != null &&
-                                             x.etl.EventType == "Click")
-                                 .Select(x => x.etl.TrackingId)
-                                 .Distinct()
-                                 .Count()
-                }
-            ).FirstOrDefaultAsync();
+            var bouncedTrackingIds = bouncedFromBounceTable
+                .Union(bouncedFromEmailLogs)
+                .Distinct()
+                .ToList();
+
+            // 4. Open count, bounce wale exclude
+            var openCount = await _context.EmailTrackingLogs
+                .Where(t =>
+                    t.ContactId == contactId &&
+                    t.EventType == "Open" &&
+                    t.TrackingId != null &&
+                    sentTrackingIds.Contains(t.TrackingId) &&
+                    !bouncedTrackingIds.Contains(t.TrackingId))
+                .Select(t => t.TrackingId)
+                .Distinct()
+                .CountAsync();
+
+            // 5. Click count, bounce wale exclude
+            var clickCount = await _context.EmailTrackingLogs
+                .Where(t =>
+                    t.ContactId == contactId &&
+                    t.EventType == "Click" &&
+                    t.TrackingId != null &&
+                    sentTrackingIds.Contains(t.TrackingId) &&
+                    !bouncedTrackingIds.Contains(t.TrackingId))
+                .Select(t => t.TrackingId)
+                .Distinct()
+                .CountAsync();
+
+            var result = new
+            {
+                ContactId = contactId,
+
+                SentCount = sentTrackingIds.Count,
+
+                OpenCount = openCount,
+
+                ClickCount = clickCount,
+
+                BounceBackCount = bouncedTrackingIds.Count
+            };
 
             return Ok(result);
         }
