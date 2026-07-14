@@ -34,13 +34,20 @@ public class EmailSendingHelper
 
         var smtpCredential = await _context.SmtpCredentials.FirstOrDefaultAsync(x => x.Id == SmtpID);
 
-        var Blueprint = await _context.Campaigns.FirstOrDefaultAsync(x => x.Id == CampaignId);
+        var Blueprint = CampaignId.HasValue
+            ? await _context.Campaigns
+                .FirstOrDefaultAsync(x => x.Id == CampaignId.Value)
+            : null;
+
         int DataFileId = 0;
 
-        if (!string.IsNullOrWhiteSpace(Blueprint.ZohoViewId))
+        if (!string.IsNullOrWhiteSpace(Blueprint?.ZohoViewId))
         {
             int.TryParse(Blueprint.ZohoViewId, out DataFileId);
         }
+
+        int? blueprintId = Blueprint?.TemplateId;
+        int? segmentId = Blueprint?.SegmentId;
 
 
         if (string.IsNullOrWhiteSpace(EmailDetails.email_subject) ||
@@ -70,8 +77,8 @@ public class EmailSendingHelper
                 ContactId = contactId,
                 DataFileId = DataFileId,
                 CampaignId = CampaignId,
-                BlueprintId = Blueprint.TemplateId,
-                SegmentId = Blueprint.SegmentId,
+                BlueprintId = blueprintId,
+                SegmentId = segmentId,
                 ToEmail = EmailDetails.email,
                 Subject = EmailDetails.email_subject,
                 Body = EmailDetails.email_body,
@@ -149,7 +156,7 @@ public class EmailSendingHelper
 
                 if (isFollowUp)
                 {
-                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, DataFileId, EmailDetails.id, Blueprint.SegmentId);
+                    string oldThread = await _repository.BuildEmailThreadAsync(clientId, DataFileId, EmailDetails.id, segmentId);
 
                     finalEmailBody =
                      $@"{EmailDetails.email_body}
@@ -193,14 +200,27 @@ public class EmailSendingHelper
                     HtmlBody = finalEmailBody
                 }.ToMessageBody();
 
-                await smtpClient.SendAsync(toMessage);
-
+                try
+                {
+                    await smtpClient.SendAsync(toMessage);
+                }
+                catch (MailKit.Net.Smtp.SmtpCommandException ex)
+                {
+                    throw new Exception(
+                        $"Main email failed. " +
+                        $"Recipient: {EmailDetails.email}, " +
+                        $"StatusCode: {ex.StatusCode}, " +
+                        $"ErrorCode: {ex.ErrorCode}, " +
+                        $"Mailbox: {ex.Mailbox?.Address}, " +
+                        $"Message: {ex.Message}",
+                        ex);
+                }
                 _context.EmailLogs.Add(new EmailLog
                 {
                     ClientId = clientId,
                     ContactId = contactId,
                     CampaignId = CampaignId,
-                    BlueprintId = Blueprint.TemplateId,
+                    BlueprintId = blueprintId,
                     ToEmail = EmailDetails.email,
                     Subject = EmailDetails.email_subject,
                     Body = EmailDetails.email_body,
@@ -211,7 +231,7 @@ public class EmailSendingHelper
                     DataFileId = DataFileId,
                     Provider = "SMTP",
                     outboxid = smtpCredential.Id,
-                    SegmentId = Blueprint.SegmentId,
+                    SegmentId = segmentId,
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
                     TrackingId = Guid.Parse(trackingId),
@@ -258,7 +278,7 @@ public class EmailSendingHelper
                 ClientId = clientId,
                 ContactId = contactId,
                 CampaignId = CampaignId,
-                BlueprintId = Blueprint.TemplateId,
+                BlueprintId = blueprintId,
                 ToEmail = EmailDetails.email,
                 Subject = EmailDetails.email_subject,
                 Body = EmailDetails.email_body,
@@ -271,7 +291,7 @@ public class EmailSendingHelper
                 outboxid = smtpCredential.Id,
                 zohoViewName = "from pitch craft",
                 DataFileId = DataFileId,
-                SegmentId = Blueprint.SegmentId,
+                SegmentId = segmentId,
                 SentAt = DateTime.UtcNow,
                 process_name = "Single"
             });
@@ -297,12 +317,20 @@ public class EmailSendingHelper
     int clientId, int contactId, int? CampaignId, bool isFollowUp, string BccEmail = "", int OutBoxId = 0)
     {
         var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
-        var Blueprint = await _context.Campaigns.FirstOrDefaultAsync(x => x.Id == CampaignId);
+        var Blueprint = CampaignId.HasValue
+            ? await _context.Campaigns
+                .FirstOrDefaultAsync(x => x.Id == CampaignId.Value)
+            : null;
 
         int DataFileId = 0;
-        if (!string.IsNullOrWhiteSpace(Blueprint?.ZohoViewId))
-            int.TryParse(Blueprint.ZohoViewId, out DataFileId);
 
+        if (!string.IsNullOrWhiteSpace(Blueprint?.ZohoViewId))
+        {
+            int.TryParse(Blueprint.ZohoViewId, out DataFileId);
+        }
+
+        int? blueprintId = Blueprint?.TemplateId;
+        int? segmentId = Blueprint?.SegmentId;
         if (string.IsNullOrWhiteSpace(EmailDetails?.email_subject) ||
             string.IsNullOrWhiteSpace(EmailDetails?.email_body))
         {
@@ -342,7 +370,7 @@ public class EmailSendingHelper
             if (isFollowUp)
             {
                 string oldThread = await _repository.BuildEmailThreadAsync(
-                    clientId, DataFileId, EmailDetails.id, Blueprint?.SegmentId);
+                    clientId, DataFileId, EmailDetails.id, segmentId);
 
                 finalEmailBody = $"{EmailDetails.email_body}{oldThread}{emailFooter}";
             }
@@ -410,7 +438,7 @@ public class EmailSendingHelper
                 outboxid = tokenData.Id,
                 ContactId = contactId,
                 CampaignId = CampaignId,
-                BlueprintId = Blueprint?.TemplateId,
+                BlueprintId = blueprintId,
                 ToEmail = EmailDetails.email,
                 Subject = EmailDetails.email_subject,
                 Body = EmailDetails.email_body,
@@ -419,7 +447,7 @@ public class EmailSendingHelper
                 SenderEmailId = tokenData.Email,
                 DataFileId = DataFileId,
                 Provider = "Gmail",
-                SegmentId = Blueprint?.SegmentId,
+                SegmentId = segmentId,
                 IsSuccess = true,
                 SentAt = DateTime.UtcNow,
                 TrackingId = Guid.Parse(trackingId),
@@ -475,13 +503,20 @@ public class EmailSendingHelper
         var EmailDetails = await _context.contacts
             .FirstOrDefaultAsync(x => x.id == contactId);
 
-        var Blueprint = await _context.Campaigns
-            .FirstOrDefaultAsync(x => x.Id == CampaignId);
+        var Blueprint = CampaignId.HasValue
+             ? await _context.Campaigns
+                 .FirstOrDefaultAsync(x => x.Id == CampaignId.Value)
+             : null;
 
         int DataFileId = 0;
-        if (!string.IsNullOrWhiteSpace(Blueprint?.ZohoViewId))
-            int.TryParse(Blueprint.ZohoViewId, out DataFileId);
 
+        if (!string.IsNullOrWhiteSpace(Blueprint?.ZohoViewId))
+        {
+            int.TryParse(Blueprint.ZohoViewId, out DataFileId);
+        }
+
+        int? blueprintId = Blueprint?.TemplateId;
+        int? segmentId = Blueprint?.SegmentId;
         if (string.IsNullOrWhiteSpace(EmailDetails?.email_subject) ||
             string.IsNullOrWhiteSpace(EmailDetails?.email_body))
         {
@@ -518,7 +553,7 @@ public class EmailSendingHelper
                     clientId,
                     DataFileId,
                     EmailDetails.id,
-                    Blueprint?.SegmentId);
+                    segmentId);
 
                 finalEmailBody = $"{EmailDetails.email_body}{oldThread}";
             }
@@ -612,7 +647,7 @@ public class EmailSendingHelper
                 outboxid = tokenData.Id,
                 ContactId = contactId,
                 CampaignId = CampaignId,
-                BlueprintId = Blueprint?.TemplateId,
+                BlueprintId = blueprintId,
                 ToEmail = EmailDetails.email,
                 Subject = EmailDetails.email_subject,
                 Body = EmailDetails.email_body,
@@ -621,7 +656,7 @@ public class EmailSendingHelper
                 SenderEmailId = tokenData.Email,
                 DataFileId = DataFileId,
                 Provider = "Outlook",
-                SegmentId = Blueprint?.SegmentId,
+                SegmentId = segmentId,
                 IsSuccess = true,
                 SentAt = DateTime.UtcNow,
                 TrackingId = Guid.Parse(trackingId),

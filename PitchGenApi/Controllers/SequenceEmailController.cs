@@ -593,7 +593,7 @@ namespace PitchGenApi.Controllers
 
             switch (request.Provider.ToUpper())
             {
-                case "IMAP":
+                case "IMAP" or "SMTP":
                     result = await _replyRepo.ReplyEmailUsingSmtp(
                         request.TrackingId,
                         request.ClientId,
