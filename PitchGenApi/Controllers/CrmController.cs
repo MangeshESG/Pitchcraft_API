@@ -1074,16 +1074,7 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("getlogs")]
-        public async Task<IActionResult> GetLogs(
-            [FromQuery] int clientId,
-            [FromQuery] int? campaignId = null,
-            [FromQuery] DateTime? startDate = null,
-            [FromQuery] DateTime? endDate = null,
-            [FromQuery] int? pageNumber = null,
-            [FromQuery] int pageSize = 10,
-            [FromQuery] string? search = null,
-            [FromQuery] int? outboxId = null
-        )
+        public async Task<IActionResult> GetLogs([FromQuery] int clientId,[FromQuery] int? campaignId = null,[FromQuery] DateTime? startDate = null,[FromQuery] DateTime? endDate = null,[FromQuery] int? pageNumber = null,[FromQuery] int pageSize = 10,[FromQuery] string? search = null,[FromQuery] int? outboxId = null)
         {
             var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
 
@@ -1170,12 +1161,7 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("campaign-email-counts")]
-        public async Task<IActionResult> GetCampaignEmailCounts(
-            [FromQuery] int clientId,
-            [FromQuery] DateTime? startDate = null,
-            [FromQuery] DateTime? endDate = null,
-            [FromQuery] int? outboxId = null
-        )
+        public async Task<IActionResult> GetCampaignEmailCounts([FromQuery] int clientId,[FromQuery] DateTime? startDate = null,[FromQuery] DateTime? endDate = null,[FromQuery] int? outboxId = null)
         {
             var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
 
@@ -1196,16 +1182,24 @@ namespace PitchGenApi.Controllers
             return Ok(counts);
         }
 
-        [HttpGet("dashboard-card-counts")]
-        public async Task<IActionResult> GetDashboardCardCounts(
-            [FromQuery] int clientId,
-            [FromQuery] int? campaignId = null,
-            [FromQuery] DateTime? startDate = null,
-            [FromQuery] DateTime? endDate = null,
-            [FromQuery] int? outboxId = null,
-            [FromQuery] bool excludeBots = false
-        )
+        [HttpPost("dashboard-card-counts")]
+        public async Task<IActionResult> GetDashboardCardCounts([FromBody] DashboardCardCountsRequest request)
         {
+            if (request == null || request.ClientId <= 0)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "clientId must be greater than 0."
+                });
+            }
+
+            var clientId = request.ClientId;
+            var campaignId = request.CampaignId;
+            var startDate = request.StartDate;
+            var endDate = request.EndDate;
+            var outboxId = request.OutboxId;
+            var excludeBots = request.ExcludeBots;
             var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
 
             var emailLogsQuery = _context.EmailLogs
@@ -1439,6 +1433,86 @@ namespace PitchGenApi.Controllers
                 kraftRate,
                 chartData
             });
+        }
+        [HttpGet("dashboard-contacts")]
+        public async Task<IActionResult> GetDashboardContacts(
+            [FromQuery] int clientId,
+            [FromQuery] int pageNumber = 1,
+            [FromQuery] int pageSize = 8,
+            [FromQuery] string? search = null)
+        {
+            try
+            {
+                if (clientId <= 0)
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "clientId must be greater than 0."
+                    });
+
+                pageNumber = Math.Max(1, pageNumber);
+                pageSize = Math.Clamp(pageSize, 1, 50);
+
+                var dataFileIds = _context.data_files
+                    .AsNoTracking()
+                    .Where(df => df.client_id == clientId)
+                    .Select(df => df.id);
+
+                var contactsQuery = _context.contacts
+                    .AsNoTracking()
+                    .Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value));
+
+                if (!string.IsNullOrWhiteSpace(search))
+                {
+                    var searchTerm = search.Trim();
+                    var searchPattern = $"%{searchTerm}%";
+                    contactsQuery = contactsQuery.Where(c =>
+                        (c.full_name != null && EF.Functions.Like(c.full_name, searchPattern)) ||
+                        (c.email != null && EF.Functions.Like(c.email, searchPattern)) ||
+                        (c.company_name != null && EF.Functions.Like(c.company_name, searchPattern)) ||
+                        (c.job_title != null && EF.Functions.Like(c.job_title, searchPattern)) ||
+                        (c.country_or_address != null && EF.Functions.Like(c.country_or_address, searchPattern)));
+                }
+
+                var rows = await contactsQuery
+                    .OrderBy(c => c.id)
+                    .Skip((pageNumber - 1) * pageSize)
+                    .Take(pageSize + 1)
+                    .Select(c => new
+                    {
+                        c.id,
+                        DataFileId = c.DataFileId ?? 0,
+                        c.full_name,
+                        c.email,
+                        c.company_name,
+                        c.job_title,
+                        c.country_or_address,
+                        c.updated_at,
+                        c.email_sent_at
+                    })
+                    .ToListAsync();
+
+                var hasNextPage = rows.Count > pageSize;
+                var contacts = rows.Take(pageSize).ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    pageNumber,
+                    pageSize,
+                    hasNextPage,
+                    contacts
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "An unexpected server error occurred.",
+                    error = ex.Message
+                });
+            }
         }
         [HttpGet("gettrackinglogs")]
         public async Task<IActionResult> GettrackingLogs(
@@ -2428,7 +2502,11 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("allcontacts/list-by-clientId")]
-        public async Task<IActionResult> GetContactsByClientId([FromQuery] int clientId)
+        public async Task<IActionResult> GetContactsByClientId(
+            [FromQuery] int clientId,
+            [FromQuery] int pageNumber = 1,
+            [FromQuery] int pageSize = 0,
+            [FromQuery] string? search = null)
         {
             try
             {
@@ -2439,33 +2517,54 @@ namespace PitchGenApi.Controllers
                         message = "clientId must be greater than 0."
                     });
 
-                // 1️⃣ Get all DataFileIds for this client
+                pageNumber = Math.Max(1, pageNumber);
+                pageSize = Math.Max(0, Math.Min(pageSize, 200));
+
                 var dataFileIds = await _context.data_files
+                    .AsNoTracking()
                     .Where(df => df.client_id == clientId)
                     .Select(df => df.id)
                     .ToListAsync();
 
                 if (!dataFileIds.Any())
-                    return NotFound(new
+                    return Ok(new
                     {
-                        success = false,
-                        message = "No data files found for this client."
+                        success = true,
+                        dataFileCount = 0,
+                        contactCount = 0,
+                        pageNumber,
+                        pageSize,
+                        totalPages = 0,
+                        contacts = Array.Empty<object>()
                     });
 
-                // 2️⃣ Load unsubscribed emails
-                var unsubscribedEmails = await _context.UnsubscribedContacts
-                    .Where(u => u.ClientId == clientId)
-                    .Select(u => u.Email)
-                    .ToListAsync();
+                var contactsQuery = _context.contacts
+                    .AsNoTracking()
+                    .Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value));
 
-                // ✅ Performance optimization
-                var unsubscribedSet = new HashSet<string>(unsubscribedEmails);
+                if (!string.IsNullOrWhiteSpace(search))
+                {
+                    var searchTerm = search.Trim();
+                    var searchPattern = $"%{searchTerm}%";
+                    contactsQuery = contactsQuery.Where(c =>
+                        (c.full_name != null && EF.Functions.Like(c.full_name, searchPattern)) ||
+                        (c.email != null && EF.Functions.Like(c.email, searchPattern)) ||
+                        (c.company_name != null && EF.Functions.Like(c.company_name, searchPattern)) ||
+                        (c.job_title != null && EF.Functions.Like(c.job_title, searchPattern)) ||
+                        (c.country_or_address != null && EF.Functions.Like(c.country_or_address, searchPattern)));
+                }
 
-                // 3️⃣ Load contacts from ALL data files of this client
-                var contactsRaw = await _context.contacts
-                    .Where(c => c.DataFileId.HasValue &&
-                                dataFileIds.Contains(c.DataFileId.Value))
-                    .OrderBy(c => c.id)
+                var contactCount = await contactsQuery.CountAsync();
+
+                var orderedContactsQuery = contactsQuery.OrderBy(c => c.id).AsQueryable();
+                if (pageSize > 0)
+                {
+                    orderedContactsQuery = orderedContactsQuery
+                        .Skip((pageNumber - 1) * pageSize)
+                        .Take(pageSize);
+                }
+
+                var contactsRaw = await orderedContactsQuery
                     .Select(c => new
                     {
                         c.id,
@@ -2491,7 +2590,20 @@ namespace PitchGenApi.Controllers
                     })
                     .ToListAsync();
 
-                // 4️⃣ Add unsubscribe flag safely
+                var pageEmails = contactsRaw
+                    .Select(c => c.email)
+                    .Where(email => !string.IsNullOrWhiteSpace(email))
+                    .Distinct()
+                    .ToList();
+
+                var unsubscribedSet = pageEmails.Any()
+                    ? new HashSet<string>(await _context.UnsubscribedContacts
+                        .AsNoTracking()
+                        .Where(u => u.ClientId == clientId && pageEmails.Contains(u.Email))
+                        .Select(u => u.Email)
+                        .ToListAsync())
+                    : new HashSet<string>();
+
                 var contacts = contactsRaw.Select(c => new
                 {
                     c.id,
@@ -2514,14 +2626,17 @@ namespace PitchGenApi.Controllers
                     c.CompanyLinkedInURL,
                     c.linkedIninformation,
                     c.web_search_data,
-                    unsubscribe = unsubscribedSet.Contains(c.email) ? "Yes" : "No"
+                    unsubscribe = c.email != null && unsubscribedSet.Contains(c.email) ? "Yes" : "No"
                 }).ToList();
 
                 return Ok(new
                 {
                     success = true,
                     dataFileCount = dataFileIds.Count,
-                    contactCount = contacts.Count,
+                    contactCount,
+                    pageNumber,
+                    pageSize,
+                    totalPages = pageSize > 0 ? (int)Math.Ceiling(contactCount / (double)pageSize) : 1,
                     contacts
                 });
             }
@@ -2535,7 +2650,6 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
-
         [HttpGet("allcontacts/count-by-clientId")]
         public async Task<IActionResult> GetContactCountByClientId([FromQuery] int clientId)
         {
