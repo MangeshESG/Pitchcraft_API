@@ -1262,6 +1262,184 @@ namespace PitchGenApi.Controllers
                 bounceback
             });
         }
+
+        [HttpGet("dashboard-summary")]
+        public async Task<IActionResult> GetDashboardSummary(
+            [FromQuery] int clientId,
+            [FromQuery] string dateRange = "1d"
+        )
+        {
+            if (clientId <= 0)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "clientId must be greater than 0."
+                });
+            }
+
+            var dataFileIds = await _context.data_files
+                .AsNoTracking()
+                .Where(df => df.client_id == clientId)
+                .Select(df => df.id)
+                .ToListAsync();
+
+            if (!dataFileIds.Any())
+            {
+                return Ok(new
+                {
+                    success = true,
+                    totalContacts = 0,
+                    emailsGenerated = 0,
+                    emailsSent = 0,
+                    sendRate = 0,
+                    kraftRate = 0,
+                    chartData = Array.Empty<object>()
+                });
+            }
+
+            var contacts = await _context.contacts
+                .AsNoTracking()
+                .Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value))
+                .Select(c => new
+                {
+                    c.updated_at,
+                    c.email_sent_at
+                })
+                .ToListAsync();
+
+            var totalContacts = contacts.Count;
+            var now = DateTime.Now;
+
+            (DateTime? from, DateTime? to) GetWindow(string range)
+            {
+                var key = (range ?? "1d").Trim().ToLowerInvariant();
+                if (key == "all") return (null, null);
+                if (key == "1d")
+                {
+                    return (now.Date, null);
+                }
+                if (key == "24h")
+                {
+                    return (now.AddHours(-24), null);
+                }
+                if (key == "yesterday")
+                {
+                    var start = now.Date.AddDays(-1);
+                    return (start, start.Date.AddDays(1).AddTicks(-1));
+                }
+                if (key == "7d")
+                {
+                    return (now.AddDays(-7), null);
+                }
+                if (key == "30d")
+                {
+                    return (now.AddDays(-30), null);
+                }
+                return (now.Date, null);
+            }
+
+            bool InWindow(DateTime? value, DateTime? from, DateTime? to)
+            {
+                return value.HasValue
+                    && (!from.HasValue || value.Value >= from.Value)
+                    && (!to.HasValue || value.Value <= to.Value);
+            }
+
+            var (windowFrom, windowTo) = GetWindow(dateRange);
+            var rangeKey = (dateRange ?? "1d").Trim().ToLowerInvariant();
+            var chartData = new List<object>();
+
+            if (rangeKey == "all")
+            {
+                var groups = new Dictionary<string, (DateTime sortDate, int gen, int sent)>();
+
+                foreach (var contact in contacts)
+                {
+                    if (contact.updated_at.HasValue)
+                    {
+                        var date = new DateTime(contact.updated_at.Value.Year, contact.updated_at.Value.Month, 1);
+                        var label = date.ToString("MMM yy");
+                        groups.TryGetValue(label, out var current);
+                        groups[label] = (date, current.gen + 1, current.sent);
+                    }
+
+                    if (contact.email_sent_at.HasValue)
+                    {
+                        var date = new DateTime(contact.email_sent_at.Value.Year, contact.email_sent_at.Value.Month, 1);
+                        var label = date.ToString("MMM yy");
+                        groups.TryGetValue(label, out var current);
+                        groups[label] = (date, current.gen, current.sent + 1);
+                    }
+                }
+
+                chartData = groups
+                    .OrderBy(group => group.Value.sortDate)
+                    .Select(group => new { label = group.Key, gen = group.Value.gen, sent = group.Value.sent })
+                    .Cast<object>()
+                    .ToList();
+            }
+            else if (rangeKey == "1d" || rangeKey == "yesterday")
+            {
+                var day = rangeKey == "yesterday" ? now.Date.AddDays(-1) : now.Date;
+                for (var hour = 0; hour < 24; hour++)
+                {
+                    var start = day.AddHours(hour);
+                    var end = start.AddHours(1).AddTicks(-1);
+                    chartData.Add(new
+                    {
+                        label = $"{hour:00}:00",
+                        gen = contacts.Count(c => InWindow(c.updated_at, start, end)),
+                        sent = contacts.Count(c => InWindow(c.email_sent_at, start, end))
+                    });
+                }
+            }
+            else if (rangeKey == "24h")
+            {
+                for (var i = 23; i >= 0; i--)
+                {
+                    var start = new DateTime(now.Year, now.Month, now.Day, now.Hour, 0, 0).AddHours(-i);
+                    var end = start.AddHours(1).AddTicks(-1);
+                    chartData.Add(new
+                    {
+                        label = start.ToString("d MMM HH:mm"),
+                        gen = contacts.Count(c => InWindow(c.updated_at, start, end)),
+                        sent = contacts.Count(c => InWindow(c.email_sent_at, start, end))
+                    });
+                }
+            }
+            else
+            {
+                var days = rangeKey == "7d" ? 7 : 30;
+                for (var i = days - 1; i >= 0; i--)
+                {
+                    var day = now.Date.AddDays(-i);
+                    var end = day.AddDays(1).AddTicks(-1);
+                    chartData.Add(new
+                    {
+                        label = day.ToString("MMM d"),
+                        gen = contacts.Count(c => InWindow(c.updated_at, day, end)),
+                        sent = contacts.Count(c => InWindow(c.email_sent_at, day, end))
+                    });
+                }
+            }
+
+            var emailsGenerated = contacts.Count(c => InWindow(c.updated_at, windowFrom, windowTo));
+            var emailsSent = contacts.Count(c => InWindow(c.email_sent_at, windowFrom, windowTo));
+            var sendRate = emailsGenerated > 0 ? (int)Math.Round((emailsSent / (double)emailsGenerated) * 100) : 0;
+            var kraftRate = totalContacts > 0 ? (int)Math.Round((emailsGenerated / (double)totalContacts) * 100) : 0;
+
+            return Ok(new
+            {
+                success = true,
+                totalContacts,
+                emailsGenerated,
+                emailsSent,
+                sendRate,
+                kraftRate,
+                chartData
+            });
+        }
         [HttpGet("gettrackinglogs")]
         public async Task<IActionResult> GettrackingLogs(
             [FromQuery] int clientId,
