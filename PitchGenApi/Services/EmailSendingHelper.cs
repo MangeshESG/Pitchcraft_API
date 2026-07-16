@@ -1,4 +1,4 @@
-﻿
+
 using PitchGenApi.Database;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
@@ -17,7 +17,7 @@ public class EmailSendingHelper
     private readonly IDomainVerificationRepository _domain;
     private readonly IConfiguration _config;
     private readonly IInboxRepository _inboxRepository;
-
+     
     public EmailSendingHelper(AppDbContext context, ContactRepository repository,IDomainVerificationRepository domain, IConfiguration config, IInboxRepository inboxRepository)
     {
         _context = context;
@@ -27,7 +27,27 @@ public class EmailSendingHelper
         _inboxRepository = inboxRepository;
     }
 
-    public async Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId,bool isFollowUp, string BccEmail = "", int SmtpID = 0)
+    private static List<string> NormalizeEmailList(IEnumerable<string>? emails)
+    {
+        return emails?
+            .Where(email => !string.IsNullOrWhiteSpace(email))
+            .Select(email => email.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new List<string>();
+    }
+
+    private static List<string> NormalizeEmailList(string? emails)
+    {
+        return string.IsNullOrWhiteSpace(emails)
+            ? new List<string>()
+            : NormalizeEmailList(emails.Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    public Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId, bool isFollowUp, string BccEmail = "", int SmtpID = 0)
+    {
+        return SendEmailUsingSmtp(clientId, contactId, CampaignId, isFollowUp, null, NormalizeEmailList(BccEmail), SmtpID);
+    }
+    public async Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId,bool isFollowUp, List<string>? CcEmail = null, List<string>? BccEmail = null, int SmtpID = 0)
     {
         var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
 
@@ -172,7 +192,9 @@ public class EmailSendingHelper
             {
                 finalEmailBody += emailFooter;
             }
-            // 🔥 STEP 1: Hidden tracking inject (reply ke liye)
+            string untrackedEmailBody = finalEmailBody;
+
+            // ?? STEP 1: Hidden tracking inject (reply ke liye)
             finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
 
             // Send main email
@@ -185,9 +207,27 @@ public class EmailSendingHelper
                 }
 
                 var toMessage = new MimeMessage();
+                var ccEmailList = NormalizeEmailList(CcEmail);
+                var bccEmailList = NormalizeEmailList(BccEmail);
+                var envelopeRecipients = new List<MailboxAddress>();
+
+                var primaryRecipient = MailboxAddress.Parse(EmailDetails.email);
+                envelopeRecipients.Add(primaryRecipient);
 
                 toMessage.From.Add(new MailboxAddress(senderName, fromEmailToUse));
-                toMessage.To.Add(MailboxAddress.Parse(EmailDetails.email));
+                toMessage.To.Add(primaryRecipient);
+                foreach (var cc in ccEmailList)
+                {
+                    var ccRecipient = MailboxAddress.Parse(cc);
+                    toMessage.Cc.Add(ccRecipient);
+                    envelopeRecipients.Add(ccRecipient);
+                }
+                foreach (var bcc in bccEmailList)
+                {
+                    var bccRecipient = MailboxAddress.Parse(bcc);
+                    toMessage.Bcc.Add(bccRecipient);
+                    envelopeRecipients.Add(bccRecipient);
+                }
                 toMessage.Subject = EmailDetails.email_subject;
 
                 toMessage.Headers.Replace(HeaderId.MessageId, messageId); // keep <> brackets
@@ -202,7 +242,7 @@ public class EmailSendingHelper
 
                 try
                 {
-                    await smtpClient.SendAsync(toMessage);
+                    await smtpClient.SendAsync(toMessage, (MailboxAddress)toMessage.From.Mailboxes.First(), envelopeRecipients);
                 }
                 catch (MailKit.Net.Smtp.SmtpCommandException ex)
                 {
@@ -239,23 +279,6 @@ public class EmailSendingHelper
                     process_name = "Single",
                     ThreadId = threadIndex
                 });
-            }
-
-            // Send BCC email
-            if (!string.IsNullOrWhiteSpace(BccEmail))
-            {
-                var bccMessage = new MimeMessage();
-
-                bccMessage.From.Add(new MailboxAddress(senderName, fromEmailToUse));
-                bccMessage.Bcc.Add(MailboxAddress.Parse(BccEmail));
-                bccMessage.Subject = EmailDetails.email_subject;
-
-                bccMessage.Body = new BodyBuilder
-                {
-                    HtmlBody = EmailDetails.email_body
-                }.ToMessageBody();
-
-                await smtpClient.SendAsync(bccMessage);
             }
 
             if (smtpClient.IsConnected)
@@ -313,8 +336,13 @@ public class EmailSendingHelper
         }
     }
 
+    public Task<EmailSendResult> SendEmailUsingGmailApi(int clientId, int contactId, int? CampaignId, bool isFollowUp, string BccEmail = "", int OutBoxId = 0)
+    {
+        return SendEmailUsingGmailApi(clientId, contactId, CampaignId, isFollowUp, null, NormalizeEmailList(BccEmail), OutBoxId);
+    }
+
     public async Task<EmailSendResult> SendEmailUsingGmailApi(
-    int clientId, int contactId, int? CampaignId, bool isFollowUp, string BccEmail = "", int OutBoxId = 0)
+    int clientId, int contactId, int? CampaignId, bool isFollowUp, List<string>? CcEmail = null, List<string>? BccEmail = null, int OutBoxId = 0)
     {
         var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
         var Blueprint = CampaignId.HasValue
@@ -375,7 +403,9 @@ public class EmailSendingHelper
                 finalEmailBody = $"{EmailDetails.email_body}{oldThread}{emailFooter}";
             }
 
-            // 🔥 TRACKING
+            string untrackedEmailBody = finalEmailBody;
+
+            // ?? TRACKING
             finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
 
             if (user.IsTracking)
@@ -391,6 +421,14 @@ public class EmailSendingHelper
 
             mimeMessage.From.Add(new MailboxAddress(tokenData.SenderName, tokenData.Email));
             mimeMessage.To.Add(new MailboxAddress("", EmailDetails.email));
+            foreach (var cc in NormalizeEmailList(CcEmail))
+            {
+                mimeMessage.Cc.Add(new MailboxAddress("", cc));
+            }
+            foreach (var bcc in NormalizeEmailList(BccEmail))
+            {
+                mimeMessage.Bcc.Add(new MailboxAddress("", bcc));
+            }
             mimeMessage.Subject = EmailDetails.email_subject;
 
             mimeMessage.Headers.Add("Message-ID", customMessageId);
@@ -423,7 +461,7 @@ public class EmailSendingHelper
             if (!response.IsSuccessStatusCode)
                 throw new Exception(resultJson);
 
-            // 🔥 IMPORTANT: Gmail response parse
+            // ?? IMPORTANT: Gmail response parse
             var gmailResponse = JsonConvert.DeserializeObject<dynamic>(resultJson);
 
             string gmailMessageId = gmailResponse.id;
@@ -452,9 +490,9 @@ public class EmailSendingHelper
                 SentAt = DateTime.UtcNow,
                 TrackingId = Guid.Parse(trackingId),
 
-                // 🔥 FIXED PART
+                // ?? FIXED PART
                 MessageId = gmailMessageId,   // Gmail ka actual id
-                ThreadId = threadId,          // 🔥 MUST SAVE
+                ThreadId = threadId,          // ?? MUST SAVE
 
                 process_name = "Single"
             });
@@ -492,12 +530,24 @@ public class EmailSendingHelper
 
     }
 
-    public async Task<EmailSendResult> SendEmailUsingOutlookApi(
+    public Task<EmailSendResult> SendEmailUsingOutlookApi(
     int clientId,
     int contactId,
     int? CampaignId,
     bool isFollowUp,
     string BccEmail = "",
+    int OutBoxId = 0)
+    {
+        return SendEmailUsingOutlookApi(clientId, contactId, CampaignId, isFollowUp, null, NormalizeEmailList(BccEmail), OutBoxId);
+    }
+
+    public async Task<EmailSendResult> SendEmailUsingOutlookApi(
+    int clientId,
+    int contactId,
+    int? CampaignId,
+    bool isFollowUp,
+    List<string>? CcEmail = null,
+    List<string>? BccEmail = null,
     int OutBoxId = 0)
     {
         var EmailDetails = await _context.contacts
@@ -558,6 +608,8 @@ public class EmailSendingHelper
                 finalEmailBody = $"{EmailDetails.email_body}{oldThread}";
             }
 
+            string untrackedEmailBody = finalEmailBody;
+
             finalEmailBody = EmailTrackingHelper.InjectinboxTracking(
                 finalEmailBody,
                 trackingId);
@@ -570,6 +622,13 @@ public class EmailSendingHelper
 
                 finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
             }
+
+            var ccRecipients = NormalizeEmailList(CcEmail)
+                .Select(email => new { emailAddress = new { address = email } })
+                .ToArray();
+            var bccRecipients = NormalizeEmailList(BccEmail)
+                .Select(email => new { emailAddress = new { address = email } })
+                .ToArray();
 
             var message = new
             {
@@ -591,6 +650,9 @@ public class EmailSendingHelper
                     }
                 }
             },
+
+                ccRecipients = ccRecipients,
+                bccRecipients = bccRecipients,
 
                 internetMessageHeaders = new[]
                 {
@@ -712,11 +774,11 @@ public class EmailSendingHelper
         if (tokenData == null)
             return null;
 
-        // ✅ Expiry check (2 min buffer)
+        // ? Expiry check (2 min buffer)
         if (tokenData.ExpiryTime > DateTime.UtcNow.AddMinutes(2))
             return tokenData;
 
-        // 🔥 Refresh token
+        // ?? Refresh token
         var client = new HttpClient();
 
         var requestData = new Dictionary<string, string>
@@ -738,7 +800,7 @@ public class EmailSendingHelper
 
         dynamic obj = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
 
-        // ✅ Update DB
+        // ? Update DB
         tokenData.AccessToken = obj.access_token;
         tokenData.ExpiryTime = DateTime.UtcNow.AddSeconds((int)obj.expires_in);
 
@@ -756,7 +818,7 @@ public class EmailSendingHelper
         if (tokenData == null)
             return null;
 
-        // ✅ Expiry check (2 min buffer)
+        // ? Expiry check (2 min buffer)
         if (tokenData.ExpiryTime > DateTime.UtcNow.AddMinutes(2))
             return tokenData;
 
@@ -770,7 +832,7 @@ public class EmailSendingHelper
             { "client_secret", cfg["ClientSecret"] },
             { "refresh_token", tokenData.RefreshToken },
             { "grant_type", "refresh_token" },
-            { "scope", "https://graph.microsoft.com/.default" } // 🔥 IMPORTANT
+            { "scope", "https://graph.microsoft.com/.default" } // ?? IMPORTANT
         };
 
             var response = await client.PostAsync(
@@ -784,9 +846,9 @@ public class EmailSendingHelper
 
             dynamic obj = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
 
-            // ✅ Update DB
+            // ? Update DB
             tokenData.AccessToken = obj.access_token;
-            tokenData.RefreshToken = obj.refresh_token ?? tokenData.RefreshToken; // 🔥 sometimes new milta hai
+            tokenData.RefreshToken = obj.refresh_token ?? tokenData.RefreshToken; // ?? sometimes new milta hai
             tokenData.ExpiryTime = DateTime.UtcNow.AddSeconds((int)obj.expires_in);
 
             await _context.SaveChangesAsync();
@@ -795,8 +857,18 @@ public class EmailSendingHelper
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"❌ Outlook Token Refresh Error: {ex.Message}");
+            Console.WriteLine($"? Outlook Token Refresh Error: {ex.Message}");
             return null;
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
