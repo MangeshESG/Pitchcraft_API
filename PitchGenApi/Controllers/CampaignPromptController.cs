@@ -1269,6 +1269,9 @@ namespace PitchGenApi.Controllers
             });
         }
 
+        // ============================================
+        // 🚀 SINGLE-CONTACT CAMPAIGN EMAIL (mirrors frontend generation)
+        // ============================================
         [HttpPost("campaign/generate-single-contact")]
         public async Task<IActionResult> GenerateSingleContactCampaignEmail(
         [FromBody] GenerateSingleContactCampaignEmailRequest request)
@@ -1289,7 +1292,6 @@ namespace PitchGenApi.Controllers
 
                 if (!int.TryParse(request.ClientId, out var parsedClientId))
                     return BadRequest(new { Message = "ClientId must be numeric" });
-
 
                 var template = await _dbContext.CampaignTemplates
                     .Include(t => t.TemplateDefinition)
@@ -1336,11 +1338,7 @@ namespace PitchGenApi.Controllers
                     join field in _dbContext.crm_custom_fields
                         on value.field_id equals field.id
                     where value.contact_id == request.ContactId
-                    select new
-                    {
-                        field.field_name,
-                        value.value
-                    }
+                    select new { field.field_name, value.value }
                 ).ToDictionaryAsync(
                     x => x.field_name,
                     x => x.value ?? "",
@@ -1348,10 +1346,9 @@ namespace PitchGenApi.Controllers
                 );
 
                 var currentDate = DateTime.UtcNow.ToString("MMMM d, yyyy");
-
-
                 var generationNotes = await GetGenerationNotesAsync(parsedClientId, request.ContactId);
 
+                // ---- runtime replacements (ITEM #5: first_name/last_name/custom fields kept) ----
                 var runtimeReplacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["full_name"] = contact.full_name ?? $"{contact.first_name} {contact.last_name}".Trim(),
@@ -1366,34 +1363,103 @@ namespace PitchGenApi.Controllers
                     ["linkedin_info"] = StripHtml(contact.linkedIninformation),
                     ["date"] = currentDate,
                     ["notes"] = generationNotes,
-                    ["search_output_summary"] = ""
+                    ["use_email"] = "",              // ITEM #3
+                    ["use_emails"] = "",             // ITEM #3
+                    ["search_output_summary"] = ""   // matches FE: body prompt gets "" here
                 };
-
-
 
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
 
+                // ---- populate campaign-level placeholders into master blueprint ----
                 var campaignBlueprint = ApplyPlaceholders(
                     template.TemplateDefinition.MasterBlueprintUnpopulated ?? "",
                     campaignPlaceholderValues
                 );
 
-                var finalPrompt = ApplyPlaceholders(
-                    campaignBlueprint,
-                    runtimeReplacements
-                );
+                // ---- ITEM #3: email-conversation context (use_email / use_emails) ----
+                if (ContainsPlaceholder(campaignBlueprint, "use_email") ||
+                    ContainsPlaceholder(campaignBlueprint, "use_emails"))
+                {
+                    var emailContext = await GetEmailConversationContextAsync(parsedClientId, request.ContactId);
+                    runtimeReplacements["use_email"] = emailContext;
+                    runtimeReplacements["use_emails"] = emailContext;
+                }
 
-                var systemPrompt = ApplyPlaceholders(
-                    template.TemplateDefinition.AIInstructions ?? "",
-                    runtimeReplacements
-                );
-
+                // ---- model + GPT detection (matches FE isGptModel) ----
                 var selectedModel = !string.IsNullOrWhiteSpace(template.SelectedModel)
                     ? template.SelectedModel
                     : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
                         ? template.TemplateDefinition.SelectedModel
                         : "gpt-5.1");
+
+                var isGptModel = selectedModel.Trim().StartsWith("gpt", StringComparison.OrdinalIgnoreCase);
+
+                // ---- body prompt (runtime placeholders applied) ----
+                var finalPrompt = ApplyPlaceholders(campaignBlueprint, runtimeReplacements);
+
+                // ---- ITEM #2: web / personalization search (non-GPT only, matches FE) ----
+                PitchResult? searchResult = null;
+                string webSearchData = "";
+
+                if (!isGptModel)
+                {
+                    var personalization = campaignPlaceholderValues.TryGetValue("use_personalization_search", out var ps)
+                        ? (ps ?? "").Trim().ToLower()
+                        : "";
+
+                    if (personalization == "no")
+                    {
+                        finalPrompt = finalPrompt.Replace("{web_searched_data}", "");
+                    }
+                    else
+                    {
+                        var instructionTemplate = !string.IsNullOrWhiteSpace(template.TemplateDefinition.WebSearchInstructions)
+                            ? template.TemplateDefinition.WebSearchInstructions
+                            : (campaignPlaceholderValues.TryGetValue("search_objective", out var so) ? so ?? "" : "");
+
+                        var webSearchReplacements =
+                            new Dictionary<string, string>(campaignPlaceholderValues, StringComparer.OrdinalIgnoreCase);
+
+                        webSearchReplacements["hook"] =
+                            (campaignPlaceholderValues.TryGetValue("hook", out var hk) && !string.IsNullOrWhiteSpace(hk))
+                                ? hk
+                                : (campaignPlaceholderValues.TryGetValue("hook_search_terms", out var hst) ? hst ?? "" : "");
+
+                        foreach (var kv in runtimeReplacements)
+                            webSearchReplacements[kv.Key] = kv.Value;
+
+                        var filledInstructions = ApplyPlaceholders(instructionTemplate, webSearchReplacements);
+
+                        if (string.IsNullOrWhiteSpace(filledInstructions))
+                        {
+                            finalPrompt = finalPrompt.Replace("{web_searched_data}", "");
+                        }
+                        else
+                        {
+                            searchResult = await _pitchService.GenerateWebSearchAsync(new EnquiryRequest
+                            {
+                                Prompt = filledInstructions,
+                                ScrappedData = "",
+                                ModelName = "gpt-4o-mini-search-preview"
+                            }, parsedClientId);
+
+                            if (searchResult != null && searchResult.IsSuccess)
+                                webSearchData = searchResult.Content ?? "";
+
+                            finalPrompt = finalPrompt.Contains("{web_searched_data}")
+                                ? finalPrompt.Replace("{web_searched_data}", webSearchData)
+                                : $"{finalPrompt}\n\n{webSearchData}";
+                        }
+                    }
+
+                    // FE stores web-search result into search_output_summary AFTER the body prompt
+                    // is built, so only the SUBJECT step can see it.
+                    runtimeReplacements["search_output_summary"] = webSearchData;
+                }
+
+                // ---- ITEM #1: system prompt is EMPTY (matches FE) ----
+                var systemPrompt = "";
 
                 var bodyResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                 {
@@ -1411,6 +1477,7 @@ namespace PitchGenApi.Controllers
                     });
                 }
 
+                // ---- ITEM #6: subject (match FE branch order/conditions) ----
                 string subjectLine = "";
                 PitchResult? subjectResult = null;
 
@@ -1424,17 +1491,15 @@ namespace PitchGenApi.Controllers
 
                 var subjectReplacements = new Dictionary<string, string>(runtimeReplacements, StringComparer.OrdinalIgnoreCase)
                 {
-                    ["generated_pitch"] = bodyResult.Content
+                    ["generated_pitch"] = bodyResult.Content ?? ""
                 };
 
-                if (aiMode == "no" && !string.IsNullOrWhiteSpace(manualSubjectTemplate))
-                {
-                    subjectLine = ApplyPlaceholders(manualSubjectTemplate, subjectReplacements);
-                }
-                else if (!string.IsNullOrWhiteSpace(template.SubjectInstructions))
+                var isAiSubject = aiMode != "no"; // FE: isAI = (aiMode !== "no")
+
+                if (isAiSubject)
                 {
                     var filledSubjectInstruction = ApplyPlaceholders(
-                        template.SubjectInstructions,
+                        template.SubjectInstructions ?? "",
                         subjectReplacements
                     );
 
@@ -1448,6 +1513,11 @@ namespace PitchGenApi.Controllers
                     if (subjectResult.IsSuccess)
                         subjectLine = subjectResult.Content ?? "";
                 }
+                else if (!string.IsNullOrWhiteSpace(manualSubjectTemplate))
+                {
+                    subjectLine = ApplyPlaceholders(manualSubjectTemplate, subjectReplacements);
+                }
+                // else: aiMode == "no" AND empty manual template -> subjectLine stays "" (matches FE)
 
                 contact.email_body = bodyResult.Content;
                 contact.email_subject = subjectLine;
@@ -1457,7 +1527,7 @@ namespace PitchGenApi.Controllers
                 int clientId = int.Parse(request.ClientId);
 
                 await _contactRepository.CreditDeduction(clientId);
-                await _contactRepository.SaveKraftHistoryAsync(request.ContactId, clientId, null, request.BlueprintId,"Reply");
+                await _contactRepository.SaveKraftHistoryAsync(request.ContactId, clientId, null, request.BlueprintId, "Reply");
 
                 return Ok(new
                 {
@@ -1470,12 +1540,14 @@ namespace PitchGenApi.Controllers
                     EmailBody = bodyResult.Content,
                     Usage = new
                     {
+                        WebSearchTokens = searchResult?.TotalTokens ?? 0,
+                        WebSearchCost = searchResult?.CurrentCost ?? 0,
                         BodyTokens = bodyResult.TotalTokens,
                         BodyCost = bodyResult.CurrentCost,
                         SubjectTokens = subjectResult?.TotalTokens ?? 0,
                         SubjectCost = subjectResult?.CurrentCost ?? 0,
-                        TotalTokens = bodyResult.TotalTokens + (subjectResult?.TotalTokens ?? 0),
-                        TotalCost = bodyResult.CurrentCost + (subjectResult?.CurrentCost ?? 0)
+                        TotalTokens = (searchResult?.TotalTokens ?? 0) + bodyResult.TotalTokens + (subjectResult?.TotalTokens ?? 0),
+                        TotalCost = (searchResult?.CurrentCost ?? 0) + bodyResult.CurrentCost + (subjectResult?.CurrentCost ?? 0)
                     }
                 });
             }
@@ -1488,6 +1560,43 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
+
+        // Matches FE shouldInjectPlaceholder(): true when "{key}" is present in the text.
+        private static bool ContainsPlaceholder(string? text, string key)
+            => !string.IsNullOrEmpty(text) && text.Contains("{" + key + "}");
+
+        // ITEM #3: email-conversation context (use_email / use_emails).
+        // Calls the SAME repository method the /api/Crm/email-conversation-context endpoint uses.
+        private async Task<string> GetEmailConversationContextAsync(int clientId, int contactId)
+        {
+            try
+            {
+                var result = await _contactRepository.GetEmailConversationContextAsync(clientId, contactId);
+                if (result == null)
+                    return "";
+
+                var rawJson = JsonSerializer.Serialize(result);
+                using var doc = JsonDocument.Parse(rawJson);
+                var root = doc.RootElement;
+
+                if (root.ValueKind != JsonValueKind.Object)
+                    return "";
+
+                if ((root.TryGetProperty("promptContext", out var pc) ||
+                     root.TryGetProperty("PromptContext", out pc)) &&
+                    pc.ValueKind == JsonValueKind.String)
+                {
+                    return (pc.GetString() ?? "").Trim();
+                }
+
+                return "";
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
         private static string StripHtml(string? input)
         {
             if (string.IsNullOrWhiteSpace(input))
