@@ -1257,6 +1257,113 @@ namespace PitchGenApi.Controllers
             });
         }
 
+
+        [HttpPost("dashboard-bounceback-details")]
+        public async Task<IActionResult> GetDashboardBounceBackDetails([FromBody] DashboardBounceBackDetailsRequest request)
+        {
+            if (request == null || request.ClientId <= 0)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "clientId must be greater than 0."
+                });
+            }
+
+            var clientId = request.ClientId;
+            var campaignId = request.CampaignId;
+            var startDate = request.StartDate;
+            var endDate = request.EndDate;
+            var outboxId = request.OutboxId;
+            var endDateInclusive = endDate?.Date.AddDays(1).AddTicks(-1);
+            var safePage = Math.Max(1, request.PageNumber);
+            var safePageSize = Math.Clamp(request.PageSize, 1, 100);
+
+            var bounceQuery =
+                from log in _context.EmailLogs.AsNoTracking()
+                join contact in _context.contacts.AsNoTracking()
+                    on log.ContactId equals contact.id into contactGroup
+                from contact in contactGroup.DefaultIfEmpty()
+                let bounce = _context.EmailBounces.AsNoTracking()
+                    .Where(b => b.ClientId == log.ClientId &&
+                        ((b.EmailLogId.HasValue && b.EmailLogId.Value == log.Id) ||
+                         (log.TrackingId.HasValue && b.TrackingId == log.TrackingId)))
+                    .OrderByDescending(b => b.BounceDate)
+                    .FirstOrDefault()
+                where log.ClientId == clientId
+                   && log.IsBounced
+                   && (!campaignId.HasValue || log.CampaignId == campaignId.Value)
+                   && (!outboxId.HasValue || log.outboxid == outboxId.Value)
+                   && (!startDate.HasValue || log.SentAt >= startDate.Value.Date)
+                   && (!endDateInclusive.HasValue || log.SentAt <= endDateInclusive.Value)
+                   && (log.process_name != "ThreadReply")
+                select new
+                {
+                    log.Id,
+                    log.ContactId,
+                    log.ClientId,
+                    log.DataFileId,
+                    log.CampaignId,
+                    log.Subject,
+                    log.SentAt,
+                    log.ToEmail,
+                    log.SenderEmailId,
+                    log.Provider,
+                    log.process_name,
+                    log.IsSuccess,
+                    log.IsBounced,
+                    log.ErrorMessage,
+                    BounceReason = log.BounceReason ?? (bounce != null ? bounce.Reason ?? bounce.DiagnosticCode : null),
+                    BounceDate = log.BounceDate ?? (bounce != null ? (DateTime?)bounce.BounceDate : null),
+                    BounceType = bounce != null ? bounce.BounceType : null,
+                    StatusCode = bounce != null ? bounce.StatusCode : null,
+                    DiagnosticCode = bounce != null ? bounce.DiagnosticCode : null,
+                    RemoteServer = bounce != null ? bounce.RemoteServer : null,
+                    Name = contact.full_name,
+                    FirstName = contact.first_name,
+                    LastName = contact.last_name,
+                    Email = contact.email,
+                    address = contact.country_or_address,
+                    Website = contact.website,
+                    Company = contact.company_name,
+                    JobTitle = contact.job_title,
+                    LinkedIn = contact.linkedin_url
+                };
+
+            if (!string.IsNullOrWhiteSpace(request.Search))
+            {
+                var q = request.Search.Trim().ToLower();
+                bounceQuery = bounceQuery.Where(log =>
+                    (log.Name != null && log.Name.ToLower().Contains(q)) ||
+                    (log.ToEmail != null && log.ToEmail.ToLower().Contains(q)) ||
+                    (log.Company != null && log.Company.ToLower().Contains(q)) ||
+                    (log.JobTitle != null && log.JobTitle.ToLower().Contains(q)) ||
+                    (log.Subject != null && log.Subject.ToLower().Contains(q)) ||
+                    (log.SenderEmailId != null && log.SenderEmailId.ToLower().Contains(q)) ||
+                    (log.BounceReason != null && log.BounceReason.ToLower().Contains(q)) ||
+                    (log.BounceType != null && log.BounceType.ToLower().Contains(q)) ||
+                    (log.StatusCode != null && log.StatusCode.ToLower().Contains(q))
+                );
+            }
+
+            var totalCount = await bounceQuery.CountAsync();
+            var data = await bounceQuery
+                .OrderByDescending(log => log.BounceDate ?? log.SentAt)
+                .Skip((safePage - 1) * safePageSize)
+                .Take(safePageSize)
+                .ToListAsync();
+
+            return Ok(new
+            {
+                data,
+                totalCount,
+                pageNumber = safePage,
+                pageSize = safePageSize,
+                totalPages = (int)Math.Ceiling(totalCount / (double)safePageSize),
+                bounceBackCount = totalCount
+            });
+        }
+
         [HttpGet("dashboard-summary")]
         public async Task<IActionResult> GetDashboardSummary(
             [FromQuery] int clientId,
@@ -3825,3 +3932,4 @@ namespace PitchGenApi.Controllers
     }
 
 }
+

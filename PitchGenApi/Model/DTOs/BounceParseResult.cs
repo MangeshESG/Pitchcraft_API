@@ -11,6 +11,7 @@
         public string? Action { get; set; }
 
         public string? StatusCode { get; set; }
+        public string? SmtpStatusCode { get; set; }
 
         public string? DiagnosticCode { get; set; }
 
