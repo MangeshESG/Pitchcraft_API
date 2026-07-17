@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
@@ -504,6 +504,7 @@ namespace PitchGenApi.Controllers
                             dto.contactid,
                             dto.campaignid,
                             dto.isFollowUp,
+                            dto.CcEmail,
                             dto.BccEmail,
                             dto.Outboxid
                         );
@@ -515,6 +516,7 @@ namespace PitchGenApi.Controllers
                             dto.contactid,
                             dto.campaignid,
                             dto.isFollowUp,
+                            dto.CcEmail,
                             dto.BccEmail,
                             dto.Outboxid
                         );
@@ -526,6 +528,7 @@ namespace PitchGenApi.Controllers
                             dto.contactid,
                             dto.campaignid,
                             dto.isFollowUp,
+                            dto.CcEmail,
                             dto.BccEmail,
                             dto.Outboxid
                         );
@@ -1360,4 +1363,5 @@ namespace PitchGenApi.Controllers
         }
     }
 }
+
 
