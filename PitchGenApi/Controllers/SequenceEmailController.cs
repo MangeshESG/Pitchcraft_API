@@ -498,7 +498,7 @@ namespace PitchGenApi.Controllers
                 // ? Switch case
                 switch (dto.Type?.ToUpper())
                 {
-                    case "SMTP":
+                    case "IMAP" or "SMTP":
                         success = await _emailHelper.SendEmailUsingSmtp(
                             dto.clientId,
                             dto.contactid,

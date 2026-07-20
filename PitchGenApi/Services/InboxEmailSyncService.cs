@@ -11,6 +11,7 @@ using System.Text;
 using MimeKit;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Helpers;
+using Org.BouncyCastle.Crypto.Macs;
 
 public class InboxEmailSyncService : IInboxEmailSyncService
 {
@@ -1071,7 +1072,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             Body = cleanbody,
                             TrackingId = trackingId ?? sentMail.TrackingId,
                             Date = emailDate,
-
+                            Provider = "Gmail",
                             ThreadId = !string.IsNullOrWhiteSpace(gmailThreadId)
                                 ? gmailThreadId
                                 : (sentMail.ThreadId ?? sentMail.MessageId)
@@ -1130,7 +1131,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 Body = cleanbody,
                                 TrackingId = inboxExists.TrackingId,
                                 Date = emailDate,
-
+                                Provider = "Gmail",
                                 ThreadId = !string.IsNullOrWhiteSpace(gmailThreadId)
                                     ? gmailThreadId
                                     : (inboxExists.ThreadId ??
@@ -1158,7 +1159,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 Body = cleanbody,
                                 TrackingId = Guid.NewGuid(),
                                 Date = emailDate,
-
+                                Provider = "Gmail",
                                 ThreadId = !string.IsNullOrWhiteSpace(gmailThreadId)
                                     ? gmailThreadId
                                     : messageId
@@ -1611,7 +1612,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             Inboxid = tokenData.Id,
 
                             Body = cleanbody,
-
+                            Provider = "Outlook",
                             TrackingId = sentMail.TrackingId,
 
                             Date = emailDate,
@@ -1689,7 +1690,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 Subject = subject,
 
                                 Inboxid = tokenData.Id,
-
+                                Provider = "Outlook",
                                 Body = cleanbody,
 
                                 TrackingId = inboxExists.TrackingId,
@@ -1732,7 +1733,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 Subject = subject,
 
                                 Inboxid = tokenData.Id,
-
+                                Provider = "Outlook",
                                 Body = cleanbody,
 
                                 TrackingId = Guid.NewGuid(),
@@ -1792,7 +1793,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 Body = cleanbody,
 
                                 Date = emailDate,
-
+                                Provider = "Outlook",
                                 IsRead = false,
 
                                 TrackingId = trackingId,
