@@ -1,4 +1,4 @@
-﻿using PitchGenApi.Model.DTOs;
+using PitchGenApi.Model.DTOs;
 
 namespace PitchGenApi.Interfaces
 {
@@ -6,5 +6,8 @@ namespace PitchGenApi.Interfaces
     {
        Task<EmailSendResult> ForwardEmailUsingSmtp(Guid trackingid, int clientId, string forwardToEmail, string forwardMessage, int outboxId, string? BccEmail = "");
        Task<EmailSendResult> ForwardEmailUsingOutlookApi(Guid trackingid, int clientId, string forwardToEmail, string forwardMessage, int outboxId, string? BccEmail = "");
+       Task<EmailSendResult> ForwardEmailUsingGmailApi(Guid trackingid, int clientId, string forwardToEmail, string forwardMessage, int outboxId, string? BccEmail = "");
     }
 }
+
+

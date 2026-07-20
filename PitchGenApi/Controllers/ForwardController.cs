@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model.DTOs;
@@ -36,6 +36,18 @@ namespace PitchGenApi.Controllers
                 case "IMAP" or "SMTP":
 
                     result = await _forword.ForwardEmailUsingSmtp(
+                        dto.TrackingId,
+                        dto.ClientId,
+                        dto.ForwardToEmail,
+                        dto.ForwardMessage,
+                        dto.OutboxId,
+                        dto.BccEmail);
+
+                    break;
+
+                case "GMAIL":
+
+                    result = await _forword.ForwardEmailUsingGmailApi(
                         dto.TrackingId,
                         dto.ClientId,
                         dto.ForwardToEmail,
@@ -83,3 +95,5 @@ namespace PitchGenApi.Controllers
         }
     }
 }
+
+
