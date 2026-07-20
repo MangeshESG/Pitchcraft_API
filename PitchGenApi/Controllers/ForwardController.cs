@@ -33,7 +33,7 @@ namespace PitchGenApi.Controllers
 
             switch (dto.Provider?.ToUpper())
             {
-                case "SMTP":
+                case "IMAP" or "SMTP":
 
                     result = await _forword.ForwardEmailUsingSmtp(
                         dto.TrackingId,
