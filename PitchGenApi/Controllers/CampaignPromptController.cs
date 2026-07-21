@@ -377,10 +377,17 @@ namespace PitchGenApi.Controllers
                 // -------------------------------
                 // Runtime placeholder replacement
                 // -------------------------------
+                // 🔧 runtime placeholders must survive for the generation step
+                var campaignOnlyValues = placeholderValues
+                    .Where(kv => !RuntimeOnlyPlaceholders.Contains(kv.Key))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+
                 string filledBlueprint = ApplyPlaceholders(
                     template.TemplateDefinition.MasterBlueprintUnpopulated,
-                    placeholderValues
+                    campaignOnlyValues
                 );
+
+               
 
                 // -------------------------------
                 // Build response
@@ -894,7 +901,16 @@ namespace PitchGenApi.Controllers
             "linkedin_url",
             "company_name",
             "company_name_friendly",
-            "website"
+            "website",
+            // 🔧 ADD — these are filled at generation time, never at campaign level
+            "notes",
+            "use_email",
+            "use_emails",
+            "linkedin_info",
+            "date",
+            "search_output_summary",
+            "web_searched_data",
+            "generated_pitch"
         };
 
 
@@ -1348,7 +1364,7 @@ namespace PitchGenApi.Controllers
                 var currentDate = DateTime.UtcNow.ToString("MMMM d, yyyy");
                 var generationNotes = await GetGenerationNotesAsync(parsedClientId, request.ContactId);
 
-                // ---- runtime replacements (ITEM #5: first_name/last_name/custom fields kept) ----
+                // ---- runtime replacements ----
                 var runtimeReplacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["full_name"] = contact.full_name ?? $"{contact.first_name} {contact.last_name}".Trim(),
@@ -1363,30 +1379,41 @@ namespace PitchGenApi.Controllers
                     ["linkedin_info"] = StripHtml(contact.linkedIninformation),
                     ["date"] = currentDate,
                     ["notes"] = generationNotes,
-                    ["use_email"] = "",              // ITEM #3
-                    ["use_emails"] = "",             // ITEM #3
-                    ["search_output_summary"] = ""   // matches FE: body prompt gets "" here
+                    ["use_email"] = "",
+                    ["use_emails"] = "",
+                    ["search_output_summary"] = ""
                 };
 
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
 
-                // ---- populate campaign-level placeholders into master blueprint ----
+                // 🔧 FIX: runtime keys must SURVIVE the campaign-level pass, otherwise
+                // {notes} / {use_email} get blanked before runtime values apply.
+                var campaignOnlyValues = campaignPlaceholderValues
+                    .Where(kv => !runtimeReplacements.ContainsKey(kv.Key))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+
                 var campaignBlueprint = ApplyPlaceholders(
                     template.TemplateDefinition.MasterBlueprintUnpopulated ?? "",
-                    campaignPlaceholderValues
+                    campaignOnlyValues
                 );
 
-                // ---- ITEM #3: email-conversation context (use_email / use_emails) ----
-                if (ContainsPlaceholder(campaignBlueprint, "use_email") ||
+                // ---- email-conversation context (use_email / use_emails) ----
+                var emailHistoryEnabled =
+                    campaignPlaceholderValues.TryGetValue("use_email_history", out var histVal) &&
+                    (histVal ?? "").Trim().ToLower() == "yes";
+
+                if (emailHistoryEnabled ||
+                    ContainsPlaceholder(campaignBlueprint, "use_email") ||
                     ContainsPlaceholder(campaignBlueprint, "use_emails"))
                 {
+
                     var emailContext = await GetEmailConversationContextAsync(parsedClientId, request.ContactId);
                     runtimeReplacements["use_email"] = emailContext;
                     runtimeReplacements["use_emails"] = emailContext;
                 }
 
-                // ---- model + GPT detection (matches FE isGptModel) ----
+                // ---- model + GPT detection ----
                 var selectedModel = !string.IsNullOrWhiteSpace(template.SelectedModel)
                     ? template.SelectedModel
                     : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
@@ -1395,10 +1422,22 @@ namespace PitchGenApi.Controllers
 
                 var isGptModel = selectedModel.Trim().StartsWith("gpt", StringComparison.OrdinalIgnoreCase);
 
-                // ---- body prompt (runtime placeholders applied) ----
+                // ---- body prompt ----
+                // ---- body prompt ----
                 var finalPrompt = ApplyPlaceholders(campaignBlueprint, runtimeReplacements);
 
-                // ---- ITEM #2: web / personalization search (non-GPT only, matches FE) ----
+                // Email history ON but no {use_emails} placeholder → append it
+                var pastEmails = runtimeReplacements["use_emails"];
+                if (emailHistoryEnabled &&
+                    !string.IsNullOrWhiteSpace(pastEmails) &&
+                    !ContainsPlaceholder(campaignBlueprint, "use_email") &&
+                    !ContainsPlaceholder(campaignBlueprint, "use_emails"))
+                {
+                    finalPrompt = $"{finalPrompt}\n\nPrevious email conversation with this contact:\n{pastEmails}";
+                }
+
+
+                // ---- web / personalization search (non-GPT only) ----
                 PitchResult? searchResult = null;
                 string webSearchData = "";
 
@@ -1453,12 +1492,10 @@ namespace PitchGenApi.Controllers
                         }
                     }
 
-                    // FE stores web-search result into search_output_summary AFTER the body prompt
-                    // is built, so only the SUBJECT step can see it.
                     runtimeReplacements["search_output_summary"] = webSearchData;
                 }
 
-                // ---- ITEM #1: system prompt is EMPTY (matches FE) ----
+                // ---- system prompt is EMPTY (matches frontend) ----
                 var systemPrompt = "";
 
                 var bodyResult = await GeneratePitchByProviderAsync(new EnquiryRequest
@@ -1477,7 +1514,7 @@ namespace PitchGenApi.Controllers
                     });
                 }
 
-                // ---- ITEM #6: subject (match FE branch order/conditions) ----
+                // ---- subject ----
                 string subjectLine = "";
                 PitchResult? subjectResult = null;
 
@@ -1494,7 +1531,7 @@ namespace PitchGenApi.Controllers
                     ["generated_pitch"] = bodyResult.Content ?? ""
                 };
 
-                var isAiSubject = aiMode != "no"; // FE: isAI = (aiMode !== "no")
+                var isAiSubject = aiMode != "no";
 
                 if (isAiSubject)
                 {
@@ -1517,7 +1554,6 @@ namespace PitchGenApi.Controllers
                 {
                     subjectLine = ApplyPlaceholders(manualSubjectTemplate, subjectReplacements);
                 }
-                // else: aiMode == "no" AND empty manual template -> subjectLine stays "" (matches FE)
 
                 contact.email_body = bodyResult.Content;
                 contact.email_subject = subjectLine;
@@ -1538,6 +1574,12 @@ namespace PitchGenApi.Controllers
                     ClientId = request.ClientId,
                     EmailSubject = subjectLine,
                     EmailBody = bodyResult.Content,
+
+                    // 🔧 TEMPORARY DEBUG — delete these 3 lines once notes/emails work
+                    DebugNotes = generationNotes,
+                    DebugUseEmail = runtimeReplacements["use_email"],
+                    DebugPrompt = finalPrompt,
+
                     Usage = new
                     {
                         WebSearchTokens = searchResult?.TotalTokens ?? 0,
@@ -1561,12 +1603,18 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        // Matches FE shouldInjectPlaceholder(): true when "{key}" is present in the text.
-        private static bool ContainsPlaceholder(string? text, string key)
-            => !string.IsNullOrEmpty(text) && text.Contains("{" + key + "}");
+        // 🔧 FIX: camelCase, or TryGetProperty("success"/"promptContext") never matches
+        // when the repository returns PascalCase DTOs.
+        private static readonly JsonSerializerOptions CamelCaseJson = new()
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
 
-        // ITEM #3: email-conversation context (use_email / use_emails).
-        // Calls the SAME repository method the /api/Crm/email-conversation-context endpoint uses.
+        // 🔧 FIX: case-insensitive, to match ApplyPlaceholders' RegexOptions.IgnoreCase
+        private static bool ContainsPlaceholder(string? text, string key)
+            => !string.IsNullOrEmpty(text) &&
+               text.Contains("{" + key + "}", StringComparison.OrdinalIgnoreCase);
+
         private async Task<string> GetEmailConversationContextAsync(int clientId, int contactId)
         {
             try
@@ -1575,15 +1623,14 @@ namespace PitchGenApi.Controllers
                 if (result == null)
                     return "";
 
-                var rawJson = JsonSerializer.Serialize(result);
+                var rawJson = JsonSerializer.Serialize(result, CamelCaseJson);
                 using var doc = JsonDocument.Parse(rawJson);
                 var root = doc.RootElement;
 
                 if (root.ValueKind != JsonValueKind.Object)
                     return "";
 
-                if ((root.TryGetProperty("promptContext", out var pc) ||
-                     root.TryGetProperty("PromptContext", out pc)) &&
+                if (root.TryGetProperty("promptContext", out var pc) &&
                     pc.ValueKind == JsonValueKind.String)
                 {
                     return (pc.GetString() ?? "").Trim();
@@ -1614,7 +1661,7 @@ namespace PitchGenApi.Controllers
                 if (result == null)
                     return "";
 
-                var rawJson = JsonSerializer.Serialize(result);
+                var rawJson = JsonSerializer.Serialize(result, CamelCaseJson);
                 using var doc = JsonDocument.Parse(rawJson);
 
                 var root = doc.RootElement;
@@ -1669,6 +1716,8 @@ namespace PitchGenApi.Controllers
                 ? _deepSeekService.GeneratePitchAsync(request)
                 : _pitchService.GeneratePitchAsync(request);
         }
+    
+
 
 
 
