@@ -13,6 +13,7 @@
 
         public int OutboxId { get; set; }
 
+        public string? CcEmail { get; set; } = "";
         public string? BccEmail { get; set; } = "";
     }
 }
