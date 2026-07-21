@@ -19,7 +19,12 @@ namespace PitchGenApi.Repository
             _inboxRepository = inboxRepository;
             _emailSending = emailSending;
         }
-        public async Task<EmailSendResult> ForwardEmailUsingSmtp(Guid trackingid, int clientId,string forwardToEmail, string forwardMessage, int outboxId, string? BccEmail = "")
+        private static IEnumerable<string> ParseRecipients(string? recipients) =>
+            (recipients ?? string.Empty)
+                .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(email => !string.IsNullOrWhiteSpace(email));
+
+        public async Task<EmailSendResult> ForwardEmailUsingSmtp(Guid trackingid, int clientId,string forwardToEmail, string forwardMessage, int outboxId, string? CcEmail = "", string? BccEmail = "")
         {
             try
             {
@@ -137,10 +142,11 @@ namespace PitchGenApi.Repository
 
                 mail.To.Add(MailboxAddress.Parse(forwardToEmail));
 
-                if (!string.IsNullOrWhiteSpace(BccEmail))
-                {
-                    mail.Bcc.Add(MailboxAddress.Parse(BccEmail));
-                }
+                foreach (var cc in ParseRecipients(CcEmail))
+                    mail.Cc.Add(MailboxAddress.Parse(cc));
+
+                foreach (var bcc in ParseRecipients(BccEmail))
+                    mail.Bcc.Add(MailboxAddress.Parse(bcc));
 
                 mail.Subject = forwardSubject;
 
@@ -230,7 +236,7 @@ namespace PitchGenApi.Repository
         }
 
 
-        public async Task<EmailSendResult> ForwardEmailUsingGmailApi(Guid trackingid, int clientId, string forwardToEmail, string forwardMessage, int outboxId, string? BccEmail = "")
+        public async Task<EmailSendResult> ForwardEmailUsingGmailApi(Guid trackingid, int clientId, string forwardToEmail, string forwardMessage, int outboxId, string? CcEmail = "", string? BccEmail = "")
         {
             try
             {
@@ -317,17 +323,11 @@ namespace PitchGenApi.Repository
                 mimeMessage.From.Add(new MailboxAddress(tokenData.SenderName, tokenData.Email));
                 mimeMessage.To.Add(MailboxAddress.Parse(forwardToEmail));
 
-                if (!string.IsNullOrWhiteSpace(BccEmail))
-                {
-                    foreach (var bcc in BccEmail.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        var email = bcc.Trim();
-                        if (!string.IsNullOrWhiteSpace(email))
-                        {
-                            mimeMessage.Bcc.Add(MailboxAddress.Parse(email));
-                        }
-                    }
-                }
+                foreach (var cc in ParseRecipients(CcEmail))
+                    mimeMessage.Cc.Add(MailboxAddress.Parse(cc));
+
+                foreach (var bcc in ParseRecipients(BccEmail))
+                    mimeMessage.Bcc.Add(MailboxAddress.Parse(bcc));
 
                 mimeMessage.Subject = forwardSubject;
                 mimeMessage.Headers.Add("Message-ID", MimeKit.Utils.MimeUtils.GenerateMessageId());
@@ -399,7 +399,7 @@ namespace PitchGenApi.Repository
                 };
             }
         }
-        public async Task<EmailSendResult> ForwardEmailUsingOutlookApi(Guid trackingid, int clientId, string forwardToEmail, string forwardMessage, int outboxId, string BccEmail = "")
+        public async Task<EmailSendResult> ForwardEmailUsingOutlookApi(Guid trackingid, int clientId, string forwardToEmail, string forwardMessage, int outboxId, string? CcEmail = "", string? BccEmail = "")
 
         {
             try
@@ -524,19 +524,18 @@ namespace PitchGenApi.Repository
                     }
                 };
 
-                // ? Add BCC only if exists
-                if (!string.IsNullOrWhiteSpace(BccEmail))
+                var ccRecipients = ParseRecipients(CcEmail)
+                    .Select(address => new { emailAddress = new { address } })
+                    .ToArray();
+                if (ccRecipients.Length > 0)
+                    message["ccRecipients"] = ccRecipients;
+
+                var bccRecipients = ParseRecipients(BccEmail)
+                    .Select(address => new { emailAddress = new { address } })
+                    .ToArray();
+                if (bccRecipients.Length > 0)
                 {
-                    message["bccRecipients"] = new[]
-                    {
-                        new
-                        {
-                            emailAddress = new
-                            {
-                                address = BccEmail
-                            }
-                        }
-                    };
+                    message["bccRecipients"] = bccRecipients;
                 }
 
                 var payload = new

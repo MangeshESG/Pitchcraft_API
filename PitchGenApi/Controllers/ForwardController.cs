@@ -41,6 +41,7 @@ namespace PitchGenApi.Controllers
                         dto.ForwardToEmail,
                         dto.ForwardMessage,
                         dto.OutboxId,
+                        dto.CcEmail,
                         dto.BccEmail);
 
                     break;
@@ -53,6 +54,7 @@ namespace PitchGenApi.Controllers
                         dto.ForwardToEmail,
                         dto.ForwardMessage,
                         dto.OutboxId,
+                        dto.CcEmail,
                         dto.BccEmail);
 
                     break;
@@ -65,6 +67,7 @@ namespace PitchGenApi.Controllers
                         dto.ForwardToEmail,
                         dto.ForwardMessage,
                         dto.OutboxId,
+                        dto.CcEmail,
                         dto.BccEmail);
 
                     break;
