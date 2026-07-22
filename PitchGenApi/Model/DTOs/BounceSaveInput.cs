@@ -4,6 +4,8 @@
     {
         public int ClientId { get; set; }
 
+        public int? InboxId { get; set; }
+
         public Guid? TrackingId { get; set; }
 
         public BounceParseResult BounceInfo { get; set; }

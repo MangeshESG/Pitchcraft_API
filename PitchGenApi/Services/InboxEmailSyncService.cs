@@ -237,6 +237,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                 bool bounceSaved = await SaveBounceIfNeededAsync(new BounceSaveInput
                 {
                     ClientId = setting.ClientId,
+                    InboxId = setting.Id,
                     TrackingId = trackingId,
                     BounceInfo = bounceInfo,
 
@@ -979,6 +980,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     bool bounceSaved = await SaveBounceIfNeededAsync(new BounceSaveInput
                     {
                         ClientId = tokenData.ClientId,
+                        InboxId = tokenData.Id,
                         TrackingId = trackingId,
                         BounceInfo = bounceInfo,
 
@@ -1526,6 +1528,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     bool bounceSaved = await SaveBounceIfNeededAsync(new BounceSaveInput
                     {
                         ClientId = tokenData.ClientId,
+                        InboxId = tokenData.Id,
                         TrackingId = trackingId,
                         BounceInfo = bounceInfo,
 
@@ -2513,6 +2516,47 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             bouncedSent.BounceDate = input.BounceDate;
 
             _context.EmailLogs.Update(bouncedSent);
+
+            var clientHasBounceBackDisabled = await _context.ClientDetails
+                .AsNoTracking()
+                .AnyAsync(x => x.Id == input.ClientId && !x.BounceBack);
+
+            if (clientHasBounceBackDisabled && bouncedSent.TrackingId != null)
+            {
+                var replyAlreadyExists = await _context.EmailReplies
+                    .AnyAsync(x =>
+                        x.ClientId == input.ClientId &&
+                        (x.MessageId == input.BounceMessageId ||
+                         (input.AlternateBounceMessageId != null &&
+                          x.MessageId == input.AlternateBounceMessageId)));
+
+                if (!replyAlreadyExists)
+                {
+                    _context.EmailReplies.Add(new EmailReplies
+                    {
+                        ClientId = input.ClientId,
+                        ContactId = bouncedSent.ContactId,
+                        CampaignId = bouncedSent.CampaignId,
+                        Inboxid = input.InboxId,
+                        MessageId = input.BounceMessageId,
+                        InReplyTo = bouncedSent.MessageId,
+                        Provider = input.Provider,
+                        FromEmail = "mailer-daemon",
+                        FromName = "Mail Delivery System",
+                        ToEmail = bouncedSent.SenderEmailId,
+                        Subject = $"Bounce: {bouncedSent.Subject}",
+                        Body = ReplaceUnavailableBounceIcons(
+                            input.RawBody ?? input.BounceInfo.Reason ??
+                            input.BounceInfo.DiagnosticCode ?? "Email delivery failed."),
+                        ThreadId = bouncedSent.ThreadId,
+                        TrackingId = bouncedSent.TrackingId,
+                        Date = input.BounceDate,
+                        IsRead = false,
+                        IsDeleted = false,
+                        CreatedAt = DateTime.UtcNow
+                    });
+                }
+            }
         }
 
         await _context.SaveChangesAsync();
@@ -2520,5 +2564,26 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         Console.WriteLine("💾 Bounce saved");
 
         return true;
+    }
+
+    private static string ReplaceUnavailableBounceIcons(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+            return body;
+
+        const string unavailableIconPattern =
+            "<img\\b(?=[^>]*(?:\\bsrc\\s*=\\s*['\"]cid:|\\balt\\s*=\\s*['\"]Error Icon['\"]))[^>]*>";
+
+        const string websiteSafeIcon =
+            "<span aria-label=\"Delivery error\" " +
+            "style=\"display:inline-flex;align-items:center;justify-content:center;" +
+            "width:44px;height:44px;border:4px solid #f9a825;color:#f9a825;" +
+            "font-size:30px;font-weight:700;line-height:1;box-sizing:border-box;\">!</span>";
+
+        return Regex.Replace(
+            body,
+            unavailableIconPattern,
+            websiteSafeIcon,
+            RegexOptions.IgnoreCase);
     }
 }

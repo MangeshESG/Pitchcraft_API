@@ -16,6 +16,7 @@ namespace PitchGenApi.Model
         public string JobTitle { get; set; }
         public int? TrustDiviceNumber { get; set; }
         public bool IsTracking { get; set; }
+        public bool BounceBack { get; set; } = false;
         public DateTime? TrustExpiry { get; set; }
         public DateTime CreatedAt { get; set; }
     }

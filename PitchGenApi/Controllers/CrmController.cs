@@ -3020,7 +3020,11 @@ namespace PitchGenApi.Controllers
             {
                 var tracking = await _context.ClientDetails
                     .Where(c => c.Id == clientId)
-                    .Select(c => c.IsTracking)
+                    .Select(c => new
+                    {
+                        c.IsTracking,
+                        c.BounceBack
+                    })
                     .FirstOrDefaultAsync();
 
                 if (tracking == null)
@@ -3031,12 +3035,35 @@ namespace PitchGenApi.Controllers
                 return Ok(new
                 {
                     clientId = clientId,
-                    isTracking = tracking
+                    isTracking = tracking.IsTracking,
+                    bounceBack = tracking.BounceBack
                 });
             }
             catch (Exception ex)
             {
                 return StatusCode(500, new { message = "Error fetching tracking status" });
+            }
+        }
+
+        [HttpPost("updatebounceback")]
+        public async Task<IActionResult> UpdateBounceBack([FromQuery] int clientId, [FromQuery] bool bounceBack)
+        {
+            try
+            {
+                var client = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
+                if (client == null)
+                {
+                    return NotFound(new { message = "Client not found" });
+                }
+
+                client.BounceBack = bounceBack;
+                await _context.SaveChangesAsync();
+
+                return Ok("bounce back updated successfully");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Message = "An error occurred while updating bounce back", Error = ex.Message });
             }
         }
         [HttpGet("full-tracking-data")]
