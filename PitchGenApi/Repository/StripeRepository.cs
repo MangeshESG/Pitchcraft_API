@@ -45,7 +45,7 @@ namespace PitchGenApi.Repositories
                 existingCustomerId = newCustomer.Id;
             }
 
-            decimal pricePerCredit = 0.20m; // USD
+            decimal pricePerCredit = 0.10m; // USD
             decimal totalAmount = credits * pricePerCredit;
             long amountInCents = (long)(totalAmount * 100);
             var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
@@ -76,107 +76,170 @@ namespace PitchGenApi.Repositories
 
         public async Task<CreateSubscriptionResponse> CreateSubscriptionAsync(CreateSubscriptionRequest req)
         {
-            var user = await _context.StripeSubscription.FirstOrDefaultAsync(u => u.UserId == req.UserId);
+            if (req == null)
+                throw new ArgumentNullException(nameof(req));
+
+            if (string.IsNullOrWhiteSpace(req.UserId))
+                throw new ArgumentException("UserId is required.");
+
+            if (string.IsNullOrWhiteSpace(req.PriceId))
+                throw new ArgumentException("PriceId is required.");
+
+            if (!int.TryParse(req.UserId, out int userId))
+                throw new ArgumentException("Invalid UserId.");
+
+            var existingSubscription = await _context.StripeSubscription
+                .Where(x => x.UserId == req.UserId)
+                .OrderByDescending(x => x.Id)
+                .FirstOrDefaultAsync();
+
             var client = await _context.ClientDetails
-                .FirstOrDefaultAsync(u => u.Id == Convert.ToInt32(req.UserId));
+                .FirstOrDefaultAsync(x => x.Id == userId);
 
-            string customerId = user?.StripeCustomerId ?? string.Empty;
+            if (client == null)
+                throw new KeyNotFoundException($"Client not found for UserId: {req.UserId}");
 
-            if (string.IsNullOrEmpty(customerId))
+            string customerId = existingSubscription?.StripeCustomerId ?? string.Empty;
+
+            try
             {
-                var customerService = new CustomerService();
-                var customer = await customerService.CreateAsync(new CustomerCreateOptions
+                /*
+                 * Create Stripe customer when the user does not already
+                 * have a Stripe customer ID.
+                 */
+                if (string.IsNullOrWhiteSpace(customerId))
                 {
-                    Email = client?.Email ?? "noemail@example.com",
+                    var customerService = new CustomerService();
+
+                    var customer = await customerService.CreateAsync(
+                        new CustomerCreateOptions
+                        {
+                            Email = client.Email,
+                            Metadata = new Dictionary<string, string>
+                            {
+                        { "app_user_id", req.UserId }
+                            }
+                        });
+
+                    customerId = customer.Id;
+                }
+
+                /*
+                 * Generate application subscription number.
+                 */
+                var nextSubNumber =
+                    await _context.StripeSubscription.CountAsync() + 1;
+
+                var formattedSubNumber = $"SUB-{nextSubNumber:D4}";
+
+                var intervalValue = string.Equals(
+                    req.Interval,
+                    "Yearly",
+                    StringComparison.OrdinalIgnoreCase)
+                        ? "Yearly"
+                        : "Monthly";
+
+                var subscriptionOptions = new SubscriptionCreateOptions
+                {
+                    Customer = customerId,
+
+                    Items = new List<SubscriptionItemOptions>
+            {
+                new()
+                {
+                    Price = req.PriceId
+                }
+            },
+
+                    PaymentBehavior = "default_incomplete",
+
+                    Expand = new List<string>
+            {
+                "latest_invoice.payment_intent",
+                "latest_invoice.payments"
+            },
+
                     Metadata = new Dictionary<string, string>
             {
-                { "app_user_id", req.UserId }
+                { "app_user_id", req.UserId },
+                { "plan", req.PriceId },
+                { "subscription_number", formattedSubNumber },
+                { "interval", intervalValue }
             }
-                });
+                };
 
-                customerId = customer.Id;
-            }
+                var subscriptionService = new SubscriptionService();
 
-            var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
-            var formattedSubNumber = $"SUB-{nextSubNumber:D4}";
+                // Declare and create the subscription in the same usable scope.
+                Stripe.Subscription subscription =
+                    await subscriptionService.CreateAsync(subscriptionOptions);
 
-            // ✅ Use the interval from request (Monthly or Yearly)
-            var intervalValue = string.Equals(req.Interval, "Yearly", StringComparison.OrdinalIgnoreCase)
-                ? "Yearly"
-                : "Monthly";
+                string? clientSecret = null;
 
-            var subOptions = new SubscriptionCreateOptions
-            {
-                Customer = customerId,
-                Items = new List<SubscriptionItemOptions>
+                /*
+                 * Retrieve the PaymentIntent from the latest invoice payment.
+                 */
+                if (subscription.LatestInvoice is Stripe.Invoice invoice &&
+                    invoice.Payments?.Data != null &&
+                    invoice.Payments.Data.Count > 0)
                 {
-                    new SubscriptionItemOptions { Price = req.PriceId }
-                },
-                PaymentBehavior = "default_incomplete",
-                Expand = new List<string>
-                        {
-                            "latest_invoice.payment_intent",
-                            "latest_invoice.payments"
-                        },
-                Metadata = new Dictionary<string, string>
-                {
-                        { "app_user_id", req.UserId },
-                        { "plan", req.PriceId },
-                        { "subscription_number", formattedSubNumber },
-                        { "interval", intervalValue } // ✅ dynamically set interval
-                }
-            };
+                    var firstInvoicePayment = invoice.Payments.Data.FirstOrDefault();
 
-            var subService = new SubscriptionService();
-            var subscription = await subService.CreateAsync(subOptions);
+                    var paymentIntentId =
+                        firstInvoicePayment?.Payment?.PaymentIntentId;
 
-            string? clientSecret = null;
-
-            if (subscription.LatestInvoice != null && subscription.LatestInvoice is Invoice invoice)
-            {
-                if (invoice.Payments != null && invoice.Payments.Data.Count > 0)
-                {
-                    var firstPayment = invoice.Payments.Data[0];
-                    string? paymentIntentId = firstPayment.Payment?.PaymentIntentId;
-
-                    if (!string.IsNullOrEmpty(paymentIntentId))
+                    if (!string.IsNullOrWhiteSpace(paymentIntentId))
                     {
                         var paymentIntentService = new PaymentIntentService();
 
-                        var updateOptions = new PaymentIntentUpdateOptions
-                        {
-                            ReceiptEmail = client?.Email ?? "noemail@example.com"
-                        };
+                        await paymentIntentService.UpdateAsync(
+                            paymentIntentId,
+                            new PaymentIntentUpdateOptions
+                            {
+                                ReceiptEmail = client.Email
+                            });
 
-                        await paymentIntentService.UpdateAsync(paymentIntentId, updateOptions);
+                        var paymentIntent =
+                            await paymentIntentService.GetAsync(paymentIntentId);
 
-                        var paymentIntent = await paymentIntentService.GetAsync(paymentIntentId);
                         clientSecret = paymentIntent.ClientSecret;
                     }
                 }
+
+                var dbSubscription = new StripeSubscription
+                {
+                    UserId = req.UserId,
+                    StripeSubscriptionId = subscription.Id,
+                    StripeCustomerId = customerId,
+                    PlanId = req.PriceId,
+                    Status = subscription.Status,
+                    SubscriptionNumber = formattedSubNumber,
+                    StartDate = DateTime.UtcNow,
+                    Interval = intervalValue
+                };
+
+                _context.StripeSubscription.Add(dbSubscription);
+                await _context.SaveChangesAsync();
+
+                return new CreateSubscriptionResponse
+                {
+                    SubscriptionNumber = formattedSubNumber,
+                    SubscriptionId = subscription.Id,
+                    ClientSecret = clientSecret
+                };
             }
-
-            var dbSub = new StripeSubscription
+            catch (StripeException ex)
             {
-                UserId = req.UserId,
-                StripeSubscriptionId = subscription.Id,
-                StripeCustomerId = customerId,
-                PlanId = req.PriceId,
-                Status = subscription.Status,
-                SubscriptionNumber = formattedSubNumber,
-                StartDate = DateTime.UtcNow,
-                Interval = intervalValue
-            };
-
-            _context.StripeSubscription.Add(dbSub);
-            await _context.SaveChangesAsync();
-
-            return new CreateSubscriptionResponse
+                throw new InvalidOperationException(
+                    $"Stripe subscription creation failed: {ex.StripeError?.Message ?? ex.Message}",
+                    ex);
+            }
+            catch (DbUpdateException ex)
             {
-                SubscriptionNumber = formattedSubNumber,
-                SubscriptionId = subscription.Id,
-                ClientSecret = clientSecret
-            };
+                throw new InvalidOperationException(
+                    "Subscription was created, but saving it in the database failed.",
+                    ex);
+            }
         }
 
 
@@ -511,27 +574,27 @@ namespace PitchGenApi.Repositories
                         monthlyLimit = 100;
                         break;
 
-                    case "price_1SuX1aFNcXTjravQlGph5Xom":
+                    case "price_1TwJx1FNcXTjravQDi8UmC3A":
                     case "price_standard":
                         credits = 1000;
                         planName = "Standard";
                         monthlyLimit = 1000;
                         break;
 
-                    case "price_1SuX36FNcXTjravQ9pemJ0nJ":
+                    case "price_1TwK1bFNcXTjravQXHvzkT6g":
                     case "price_premium":
                         credits = 2000;
                         planName = "Premium";
                         monthlyLimit = 2000;
                         break;
 
-                    case "price_1SuX1aFNcXTjravQUEKMY8Jl":
+                    case "price_1TwJyBFNcXTjravQ3uh5gGj9":
                         credits = 12000;
                         planName = "Standard";
                         monthlyLimit = 1000;
                         break;
 
-                    case "price_1SuX36FNcXTjravQYJ6fs6i4":
+                    case "price_1TwK2SFNcXTjravQy9pQ1UXW":
                         credits = 24000;
                         planName = "Premium";
                         monthlyLimit = 2000;
