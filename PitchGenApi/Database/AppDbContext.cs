@@ -17,6 +17,7 @@ namespace PitchGenApi.Database
         public DbSet<SettingspgViewIddetails> Settingspg { get; set; }
         public DbSet<SettingspgViewIddetails> ClientId { get; set; }
         public DbSet<SettingspgViewIddetails> SettingspgViewIddetails { get; set; }
+        public DbSet<UserDateTimeSettings> UserDateTimeSettings { get; set; }
         public DbSet<EmailTrackingLog> EmailTrackingLogs { get; set; }
         public DbSet<SequenceStep> SequenceSteps { get; set; }
         public DbSet<SmtpCredentials> SmtpCredentials { get; set; }
@@ -74,6 +75,11 @@ namespace PitchGenApi.Database
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
             modelBuilder.Entity<zohoViewIddetails>().ToTable("zohoViewIddetails");
             modelBuilder.Entity<SettingspgViewIddetails>().ToTable("Settingspg");
+            modelBuilder.Entity<UserDateTimeSettings>(entity =>
+            {
+                entity.ToTable("UserDateTimeSettings");
+                entity.HasIndex(x => x.ClientId).IsUnique();
+            });
 
             modelBuilder.Entity<CrmViewExcludedDatafile>()
                  .HasKey(x => new { x.view_id, x.datafile_id });

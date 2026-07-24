@@ -755,6 +755,48 @@ namespace PitchGenApi.Controllers
             return Ok(SettingspgViewIddetails);
         }
 
+        [HttpGet("date-time-settings/{clientId}")]
+        public async Task<IActionResult> GetDateTimeSettings(int clientId)
+        {
+            var settings = await _context.UserDateTimeSettings
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.ClientId == clientId);
+
+            return Ok(new DateTimeSettingsDto
+            {
+                TimeZone = settings?.TimeZone,
+                TimeZoneLabel = settings?.TimeZoneLabel,
+                DateFormat = settings?.DateFormat ?? "DD-MM-YYYY",
+                TimeFormat = settings?.TimeFormat ?? "12"
+            });
+        }
+
+        [HttpPost("date-time-settings/{clientId}")]
+        public async Task<IActionResult> UpdateDateTimeSettings(int clientId,[FromBody] DateTimeSettingsDto updatedSettings)
+        {
+            var settings = await _context.UserDateTimeSettings
+                .FirstOrDefaultAsync(x => x.ClientId == clientId);
+
+            if (settings == null)
+            {
+                settings = new UserDateTimeSettings
+                {
+                    ClientId = clientId,
+                    CreatedAt = DateTime.UtcNow
+                };
+                _context.UserDateTimeSettings.Add(settings);
+            }
+
+            settings.TimeZone = updatedSettings.TimeZone;
+            settings.TimeZoneLabel = updatedSettings.TimeZoneLabel;
+            settings.DateFormat = updatedSettings.DateFormat;
+            settings.TimeFormat = updatedSettings.TimeFormat;
+            settings.UpdatedAt = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            return Ok(updatedSettings);
+        }
+
 
 
         [HttpPost("updateClientSettings/{clientId}")]
