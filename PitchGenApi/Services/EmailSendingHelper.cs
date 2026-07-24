@@ -9,6 +9,7 @@ using MimeKit;
 using MimeKit.Utils;
 using System.Net.Http.Headers;
 using Newtonsoft.Json;
+using System.Text.RegularExpressions;
 
 public class EmailSendingHelper
 {
@@ -42,6 +43,22 @@ public class EmailSendingHelper
             ? new List<string>()
             : NormalizeEmailList(emails.Split(new[] { ',', ';', '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries));
     }
+    /// <summary>
+    /// Removes "Sourced from" highlight markup (background color, help cursor,
+    /// tooltip) from the email HTML so prospects receive clean text.
+    /// Unwraps the span but keeps its inner text.
+    /// </summary>
+    private static string StripSourceHighlights(string html)
+    {
+        if (string.IsNullOrEmpty(html)) return html;
+
+        return Regex.Replace(
+            html,
+            @"<span[^>]*title=""Sourced from:[^""]*""[^>]*>(.*?)</span>",
+            "$1",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+    }
+
 
     public Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId, bool isFollowUp, string BccEmail = "", int SmtpID = 0)
     {
@@ -185,14 +202,19 @@ public class EmailSendingHelper
                     {emailFooter}";
 
                 }
-            
+
 
 
             if (!active)
             {
                 finalEmailBody += emailFooter;
             }
+
+            // Remove source-highlight markup before the prospect sees it
+            finalEmailBody = StripSourceHighlights(finalEmailBody);
+
             string untrackedEmailBody = finalEmailBody;
+
 
             // ?? STEP 1: Hidden tracking inject (reply ke liye)
             finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
@@ -403,10 +425,14 @@ public class EmailSendingHelper
                 finalEmailBody = $"{EmailDetails.email_body}{oldThread}{emailFooter}";
             }
 
+            // Remove source-highlight markup before the prospect sees it
+            finalEmailBody = StripSourceHighlights(finalEmailBody);
+
             string untrackedEmailBody = finalEmailBody;
 
             // ?? TRACKING
             finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
+
 
             if (user.IsTracking)
             {
@@ -608,11 +634,15 @@ public class EmailSendingHelper
                 finalEmailBody = $"{EmailDetails.email_body}{oldThread}";
             }
 
+            // Remove source-highlight markup before the prospect sees it
+            finalEmailBody = StripSourceHighlights(finalEmailBody);
+
             string untrackedEmailBody = finalEmailBody;
 
             finalEmailBody = EmailTrackingHelper.InjectinboxTracking(
                 finalEmailBody,
                 trackingId);
+
 
             if (user?.IsTracking == true)
             {
