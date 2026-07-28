@@ -17,13 +17,15 @@ namespace PitchGenApi.Controllers
     public class StripeController : ControllerBase
     {
         private readonly IStripeRepository _stripeRepository;
+        private readonly AppDbContext _context;
         private readonly string _webhookSecret;
 
-        public StripeController(IConfiguration config, IStripeRepository stripeRepository)
+        public StripeController(IConfiguration config, IStripeRepository stripeRepository, AppDbContext context)
         {
             _stripeRepository = stripeRepository;
             _webhookSecret = config["Stripe:WebhookSecret"];
             StripeConfiguration.ApiKey = config["Stripe:SecretKey"];
+            _context = context;
         }
 
         [HttpPost("create-credit-intent")]
@@ -97,6 +99,42 @@ namespace PitchGenApi.Controllers
 
             await _stripeRepository.HandleWebhookEventAsync(stripeEvent);
             return Ok();
+        }
+
+        [HttpPost("save-user-credits")]
+        public async Task<IActionResult> SaveUserCredits([FromBody] SaveUserCreditsRequest request)
+        {
+            try
+            {
+                var nextSubNumber = await _context.UserCredits.CountAsync() + 1;
+                var formattedSubNumber = $"SUB-{nextSubNumber:D4}";
+
+                await _stripeRepository.SaveUserCreditsAsync(
+                    request.UserId,
+                    request.PlanId,
+                    null,
+                    formattedSubNumber,
+                    DateTime.Now,
+                    null,
+                    null,
+                    null,
+                    request.CreditsCount
+                );
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "User credits saved successfully."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
         }
     }
 }

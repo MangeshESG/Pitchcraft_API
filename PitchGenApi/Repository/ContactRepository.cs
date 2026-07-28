@@ -59,7 +59,7 @@ public class ContactRepository
             var latestActivePlan = await _context.UserCredits
                 .Where(u => u.ClientId == clientId &&
                             u.Status.ToLower() == "active" &&
-                            u.Plane == "Custom Credit")
+                            u.Plane == "Custom Credit" || u.Plane == "Internal")
                 .OrderByDescending(u => u.CreatedAt)
                 .FirstOrDefaultAsync();
 

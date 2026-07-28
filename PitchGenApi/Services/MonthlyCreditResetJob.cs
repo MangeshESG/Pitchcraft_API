@@ -40,7 +40,10 @@ public class MonthlyCreditResetJob
 
         // ✅ Step 2 — Mark Custom Credits as "Used" if Credits == 0
         var customCredits = await _context.UserCredits
-            .Where(c => c.Plane == "Custom Credit" && c.Credits == 0)
+            .Where(c =>
+                (c.Plane.ToLower() == "custom credit" ||
+                 c.Plane.ToLower() == "internal") &&
+                c.Credits == 0)
             .ToListAsync();
 
         foreach (var plan in customCredits)
