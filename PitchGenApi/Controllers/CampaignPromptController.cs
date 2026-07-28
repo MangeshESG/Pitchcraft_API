@@ -1555,15 +1555,20 @@ namespace PitchGenApi.Controllers
                     subjectLine = ApplyPlaceholders(manualSubjectTemplate, subjectReplacements);
                 }
 
-                contact.email_body = bodyResult.Content;
-                contact.email_subject = subjectLine;
-                contact.updated_at = DateTime.UtcNow;
+                // Preview mode: generate & return only — no DB write, no credit, no history
+                if (!request.Preview)
+                {
+                    contact.email_body = bodyResult.Content;
+                    contact.email_subject = subjectLine;
+                    contact.updated_at = DateTime.UtcNow;
 
-                await _dbContext.SaveChangesAsync();
-                int clientId = int.Parse(request.ClientId);
+                    await _dbContext.SaveChangesAsync();
+                    int clientId = int.Parse(request.ClientId);
 
-                await _contactRepository.CreditDeduction(clientId);
-                await _contactRepository.SaveKraftHistoryAsync(request.ContactId, clientId, null, request.BlueprintId, "Reply");
+                    await _contactRepository.CreditDeduction(clientId);
+                    await _contactRepository.SaveKraftHistoryAsync(request.ContactId, clientId, null, request.BlueprintId, "Reply");
+                }
+
 
                 return Ok(new
                 {

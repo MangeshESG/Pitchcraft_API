@@ -6,5 +6,7 @@
         public int ContactId { get; set; }
         public string ClientId { get; set; } = "";
         public bool OverwriteExisting { get; set; } = true;
+        public bool Preview { get; set; } = false;
+
     }
 }
