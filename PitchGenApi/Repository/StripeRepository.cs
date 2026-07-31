@@ -556,7 +556,7 @@ namespace PitchGenApi.Repositories
             }
         }
 
-        public async Task SaveUserCreditsAsync(int userId, string planId, string stripeSubscriptionId, string SubcribtionNumber, DateTime StartDate, DateTime? EndDate, string interval, decimal amount, int? CreditsCount)
+        public async Task SaveUserCreditsAsync(int userId, string planId, string? stripeSubscriptionId, string SubcribtionNumber, DateTime? StartDate, DateTime? EndDate, string? interval, decimal? amount, int? CreditsCount)
         {
             try
             {
@@ -605,6 +605,11 @@ namespace PitchGenApi.Repositories
                         planName = "Custom Credit";
                         break;
 
+                    case "Jdnkdomd8585dkbsdhhnLNDKmm4&^^588400755%":
+                        credits = CreditsCount;
+                        planName = "Internal";
+                        break;
+
                     default:
                         Console.WriteLine($"⚠️ Unknown plan ID: {planId}");
                         return;
@@ -630,7 +635,8 @@ namespace PitchGenApi.Repositories
                 };
 
                 // ✅ Only set ResetDate for non-custom plans
-                if (planId != "Custom Credit")
+                if (planId != "Custom Credit" &&
+     planId != "Jdnkdomd8585dkbsdhhnLNDKmm4&^^588400755%")
                 {
                     userCredits.ResetDate = now.AddMonths(1);
                 }
@@ -642,7 +648,7 @@ namespace PitchGenApi.Repositories
                 var finalCredit = await _context.FinalUserCredit
                     .FirstOrDefaultAsync(f => f.ClientId == userId);
 
-                if (planId == "Custom Credit")
+                if (planId == "Custom Credit" || planId == "Jdnkdomd8585dkbsdhhnLNDKmm4&^^588400755%")
                 {
                     // 🔹 Custom Credit Logic: only increase total credit
                     if (finalCredit != null)
