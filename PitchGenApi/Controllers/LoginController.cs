@@ -408,7 +408,7 @@ namespace PitchGenApi.Controllers
 
         [HttpPost("admin/create-user")]
         public async Task<IActionResult> CreateUserByAdmin(
-    [FromBody] AdminCreateUserRequest request)
+        [FromBody] AdminCreateUserRequest request)
         {
             try
             {
@@ -462,7 +462,7 @@ namespace PitchGenApi.Controllers
                     0,
                     null);
 
-              
+
                 return Ok(new
                 {
                     success = true,
@@ -478,5 +478,144 @@ namespace PitchGenApi.Controllers
                 });
             }
         }
+
+        // ---------------- PROFILE ----------------
+
+        [HttpGet("profile/{clientId}")]
+        public async Task<IActionResult> GetProfile(int clientId)
+        {
+            try
+            {
+                var user = await _context.ClientDetails
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(u => u.Id == clientId);
+
+                if (user == null)
+                    return NotFound(new { message = "User not found." });
+
+                return Ok(new UserProfileDto
+                {
+                    Id = user.Id,
+                    FirstName = user.FirstName,
+                    LastName = user.LastName,
+                    Email = user.Email,
+                    Username = user.Username,
+                    CompanyName = user.CompanyName,
+                    JobTitle = user.JobTitle,
+                    IsAdmin = user.IsAdmin,
+                    CreatedAt = user.CreatedAt
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        [HttpPut("profile/{clientId}")]
+        public async Task<IActionResult> UpdateProfile(int clientId, [FromBody] UpdateProfileRequest request)
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { message = "Invalid profile details." });
+
+                if (string.IsNullOrWhiteSpace(request.FirstName) ||
+                    string.IsNullOrWhiteSpace(request.LastName))
+                    return BadRequest(new { message = "First and last name are required." });
+
+                if (string.IsNullOrWhiteSpace(request.Email) ||
+                    !request.Email.Contains("@"))
+                    return BadRequest(new { message = "Enter a valid email address." });
+
+                if (string.IsNullOrWhiteSpace(request.Username))
+                    return BadRequest(new { message = "Username is required." });
+
+                var user = await _context.ClientDetails
+                    .FirstOrDefaultAsync(u => u.Id == clientId);
+
+                if (user == null)
+                    return NotFound(new { message = "User not found." });
+
+                var email = request.Email.Trim();
+                var username = request.Username.Trim();
+
+                // Email and Username are both used to sign in, so they must stay unique.
+                if (await _context.ClientDetails.AnyAsync(u => u.Id != clientId && u.Email == email))
+                    return BadRequest(new { message = "That email is already in use." });
+
+                if (await _context.ClientDetails.AnyAsync(u => u.Id != clientId && u.Username == username))
+                    return BadRequest(new { message = "That username is already in use." });
+
+                user.FirstName = request.FirstName.Trim();
+                user.LastName = request.LastName.Trim();
+                user.Email = email;
+                user.Username = username;
+                user.CompanyName = request.CompanyName?.Trim();
+                user.JobTitle = request.JobTitle?.Trim();
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Profile updated successfully.",
+                    profile = new UserProfileDto
+                    {
+                        Id = user.Id,
+                        FirstName = user.FirstName,
+                        LastName = user.LastName,
+                        Email = user.Email,
+                        Username = user.Username,
+                        CompanyName = user.CompanyName,
+                        JobTitle = user.JobTitle,
+                        IsAdmin = user.IsAdmin,
+                        CreatedAt = user.CreatedAt
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        [HttpPost("profile/{clientId}/change-password")]
+        public async Task<IActionResult> ChangePassword(int clientId, [FromBody] ChangePasswordRequest request)
+        {
+            try
+            {
+                if (request == null ||
+                    string.IsNullOrWhiteSpace(request.CurrentPassword) ||
+                    string.IsNullOrWhiteSpace(request.NewPassword))
+                    return BadRequest(new { message = "Current and new password are required." });
+
+                if (request.NewPassword.Length < 8)
+                    return BadRequest(new { message = "New password must be at least 8 characters." });
+
+                if (request.CurrentPassword == request.NewPassword)
+                    return BadRequest(new { message = "New password must be different from the current password." });
+
+                var user = await _context.ClientDetails
+                    .FirstOrDefaultAsync(u => u.Id == clientId);
+
+                if (user == null)
+                    return NotFound(new { message = "User not found." });
+
+                // Same SHA256 check the login flow uses.
+                if (!VerifyPassword(request.CurrentPassword, user.PasswordHash))
+                    return BadRequest(new { message = "Current password is incorrect." });
+
+                user.PasswordHash = PasswordHasher.HashPassword(request.NewPassword);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { success = true, message = "Password changed successfully." });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
     }
 }

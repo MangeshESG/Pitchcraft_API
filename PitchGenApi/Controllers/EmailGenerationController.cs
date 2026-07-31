@@ -7,6 +7,7 @@ using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
 using PitchGenApi.Services;
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -38,8 +39,9 @@ namespace PitchGenApi.Controllers
 
         // ============================================
         // 🚀 SINGLE-CONTACT EMAIL GENERATION
-        //    Returns the email + web-search data + final prompt
-        //    + all resolved inputs that fed the generation.
+        //    Returns the email + every input that fed the generation:
+        //    notes, email conversation, professional (LinkedIn) summary,
+        //    web-search data and the final prompt.
         // ============================================
         [HttpPost("generate")]
         public async Task<IActionResult> GenerateSingleContactEmail(
@@ -83,8 +85,13 @@ namespace PitchGenApi.Controllers
                 if (contact == null)
                     return NotFound(new { Message = "Contact not found" });
 
+                // Already krafted → still return the personalization inputs so the
+                // UI can show Notes / Emails / Professional summary without a re-kraft.
                 if (!request.OverwriteExisting && !string.IsNullOrWhiteSpace(contact.email_body))
                 {
+                    var existingInsights = await BuildContactInsightsAsync(
+                        parsedClientId, contact.id, contact.linkedIninformation);
+
                     return Ok(new
                     {
                         Success = true,
@@ -92,7 +99,12 @@ namespace PitchGenApi.Controllers
                         Generated = false,
                         ContactId = contact.id,
                         EmailSubject = contact.email_subject,
-                        EmailBody = contact.email_body
+                        EmailBody = contact.email_body,
+
+                        Notes = existingInsights.Notes,
+                        Emails = existingInsights.EmailContext,
+                        ProfessionalSummary = existingInsights.ProfessionalSummary,
+                        EmailCount = existingInsights.EmailCount
                     });
                 }
 
@@ -115,7 +127,19 @@ namespace PitchGenApi.Controllers
                 );
 
                 var currentDate = DateTime.UtcNow.ToString("MMMM d, yyyy");
-                var generationNotes = await GetGenerationNotesAsync(parsedClientId, request.ContactId);
+
+                // ============================================================
+                // 1️⃣ RESOLVE ALL PERSONALIZATION INPUTS UP FRONT
+                //    (notes + email conversation + professional summary)
+                //    These are always resolved so they can be both USED in the
+                //    prompt and RETURNED to the UI.
+                // ============================================================
+                var insights = await BuildContactInsightsAsync(
+                    parsedClientId, contact.id, contact.linkedIninformation);
+
+                var generationNotes = insights.Notes;
+                var emailConversation = insights.EmailContext;
+                var professionalSummary = insights.ProfessionalSummary;
 
                 // ---- runtime replacements ----
                 var runtimeReplacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -129,7 +153,8 @@ namespace PitchGenApi.Controllers
                     ["location"] = contact.country_or_address ?? "",
                     ["linkedin_url"] = contact.linkedin_url ?? "",
                     ["website"] = contact.website ?? "",
-                    ["linkedin_info"] = StripHtml(contact.linkedIninformation),
+                    ["linkedin_info"] = professionalSummary,
+                    ["professional_summary"] = professionalSummary,   // alias
                     ["date"] = currentDate,
                     ["notes"] = generationNotes,
                     ["use_email"] = "",
@@ -150,18 +175,27 @@ namespace PitchGenApi.Controllers
                     campaignOnlyValues
                 );
 
-                // ---- email-conversation context (use_email / use_emails) ----
-                var emailHistoryEnabled =
-                    campaignPlaceholderValues.TryGetValue("use_email_history", out var histVal) &&
-                    (histVal ?? "").Trim().ToLower() == "yes";
-
-                if (emailHistoryEnabled ||
+                // ---- which placeholders does the blueprint actually contain? ----
+                var hasNotesPlaceholder = ContainsPlaceholder(campaignBlueprint, "notes");
+                var hasEmailPlaceholder =
                     ContainsPlaceholder(campaignBlueprint, "use_email") ||
-                    ContainsPlaceholder(campaignBlueprint, "use_emails"))
+                    ContainsPlaceholder(campaignBlueprint, "use_emails");
+                var hasSummaryPlaceholder =
+                    ContainsPlaceholder(campaignBlueprint, "linkedin_info") ||
+                    ContainsPlaceholder(campaignBlueprint, "professional_summary");
+
+                // ---- email history: only an explicit "no" turns it off ----
+                var emailHistorySetting =
+                    campaignPlaceholderValues.TryGetValue("use_email_history", out var histVal)
+                        ? (histVal ?? "").Trim().ToLower()
+                        : "";
+
+                var emailHistoryEnabled = emailHistorySetting != "no";
+
+                if (emailHistoryEnabled)
                 {
-                    var emailContext = await GetEmailConversationContextAsync(parsedClientId, request.ContactId);
-                    runtimeReplacements["use_email"] = emailContext;
-                    runtimeReplacements["use_emails"] = emailContext;
+                    runtimeReplacements["use_email"] = emailConversation;
+                    runtimeReplacements["use_emails"] = emailConversation;
                 }
 
                 // ---- model + GPT detection ----
@@ -176,14 +210,43 @@ namespace PitchGenApi.Controllers
                 // ---- body prompt ----
                 var finalPrompt = ApplyPlaceholders(campaignBlueprint, runtimeReplacements);
 
-                // Email history ON but no {use_emails} placeholder → append it
-                var pastEmails = runtimeReplacements["use_emails"];
-                if (emailHistoryEnabled &&
-                    !string.IsNullOrWhiteSpace(pastEmails) &&
-                    !ContainsPlaceholder(campaignBlueprint, "use_email") &&
-                    !ContainsPlaceholder(campaignBlueprint, "use_emails"))
+                // ============================================================
+                // 2️⃣ MAKE SURE EVERY RESOLVED INPUT REACHES THE MODEL
+                //    If the blueprint has no placeholder for a value, append it
+                //    as a labelled context block instead of dropping it.
+                // ============================================================
+                var notesUsed = false;
+                var emailsUsed = false;
+                var summaryUsed = false;
+
+                if (!string.IsNullOrWhiteSpace(generationNotes))
                 {
-                    finalPrompt = $"{finalPrompt}\n\nPrevious email conversation with this contact:\n{pastEmails}";
+                    notesUsed = true;
+                    if (!hasNotesPlaceholder)
+                        finalPrompt = AppendContextSection(
+                            finalPrompt,
+                            "Notes about this contact (use them to personalize):",
+                            generationNotes);
+                }
+
+                if (emailHistoryEnabled && !string.IsNullOrWhiteSpace(emailConversation))
+                {
+                    emailsUsed = true;
+                    if (!hasEmailPlaceholder)
+                        finalPrompt = AppendContextSection(
+                            finalPrompt,
+                            "Previous email conversation with this contact:",
+                            emailConversation);
+                }
+
+                if (!string.IsNullOrWhiteSpace(professionalSummary))
+                {
+                    summaryUsed = true;
+                    if (!hasSummaryPlaceholder)
+                        finalPrompt = AppendContextSection(
+                            finalPrompt,
+                            "Professional summary (LinkedIn) for this contact:",
+                            professionalSummary);
                 }
 
                 // ---- web / personalization search (non-GPT only) ----
@@ -262,7 +325,10 @@ namespace PitchGenApi.Controllers
                         Message = "Failed to generate email body",
                         Error = bodyResult.Content,
                         FinalPrompt = finalPrompt,
-                        WebSearchData = webSearchData
+                        WebSearchData = webSearchData,
+                        Notes = generationNotes,
+                        Emails = emailConversation,
+                        ProfessionalSummary = professionalSummary
                     });
                 }
 
@@ -333,9 +399,22 @@ namespace PitchGenApi.Controllers
                     EmailSubject = subjectLine,
                     EmailBody = bodyResult.Content,
 
-                    // 👇 THE TWO THINGS YOU WANTED TO SHOW
+                    // 👇 EVERYTHING THE UI SHOWS IN THE INSIGHTS TABS
                     WebSearchData = webSearchData,
                     FinalPrompt = finalPrompt,
+                    Notes = generationNotes,
+                    Emails = emailConversation,
+                    ProfessionalSummary = professionalSummary,
+                    EmailCount = insights.EmailCount,
+
+                    // Which inputs actually reached the model
+                    UsedInGeneration = new
+                    {
+                        Notes = notesUsed,
+                        Emails = emailsUsed,
+                        ProfessionalSummary = summaryUsed,
+                        WebSearch = !string.IsNullOrWhiteSpace(webSearchData)
+                    },
 
                     // Everything that fed the generation (for transparency/debug UI)
                     Details = new
@@ -345,7 +424,11 @@ namespace PitchGenApi.Controllers
                         SystemPrompt = systemPrompt,               // empty by design (matches frontend)
                         Notes = generationNotes,
                         UseEmails = runtimeReplacements["use_emails"],
+                        LinkedinInfo = professionalSummary,
                         EmailHistoryEnabled = emailHistoryEnabled,
+                        NotesPlaceholderFound = hasNotesPlaceholder,
+                        EmailPlaceholderFound = hasEmailPlaceholder,
+                        SummaryPlaceholderFound = hasSummaryPlaceholder,
                         FilledSearchInstructions = filledSearchInstructions,
                         SubjectMode = isAiSubject ? "ai" : "manual",
                         FilledSubjectInstruction = filledSubjectInstruction,
@@ -378,6 +461,102 @@ namespace PitchGenApi.Controllers
         }
 
         // ============================================
+        // 📄 INSIGHTS FOR AN ALREADY-KRAFTED CONTACT
+        //    Same notes / emails / professional summary the generator used,
+        //    without re-generating (no credit, no LLM call).
+        //    GET api/email-generation/insights?clientId=1&contactId=2
+        // ============================================
+        [HttpGet("insights")]
+        public async Task<IActionResult> GetContactInsights(
+            [FromQuery] int clientId,
+            [FromQuery] int contactId)
+        {
+            try
+            {
+                if (clientId <= 0)
+                    return BadRequest(new { Message = "Valid clientId is required" });
+
+                if (contactId <= 0)
+                    return BadRequest(new { Message = "Valid contactId is required" });
+
+                var contact = await _dbContext.contacts
+                    .Include(c => c.data_file)
+                    .FirstOrDefaultAsync(c =>
+                        c.id == contactId &&
+                        c.data_file.client_id == clientId);
+
+                if (contact == null)
+                    return NotFound(new { Message = "Contact not found" });
+
+                var insights = await BuildContactInsightsAsync(
+                    clientId, contactId, contact.linkedIninformation);
+
+                return Ok(new
+                {
+                    Success = true,
+                    ContactId = contactId,
+                    ClientId = clientId,
+                    HasKraftedEmail = !string.IsNullOrWhiteSpace(contact.email_body),
+                    EmailSubject = contact.email_subject ?? "",
+                    EmailBody = contact.email_body ?? "",
+
+                    Notes = insights.Notes,
+                    Emails = insights.EmailContext,
+                    ProfessionalSummary = insights.ProfessionalSummary,
+                    EmailCount = insights.EmailCount,
+
+                    HasNotes = !string.IsNullOrWhiteSpace(insights.Notes),
+                    HasEmails = !string.IsNullOrWhiteSpace(insights.EmailContext),
+                    HasProfessionalSummary = !string.IsNullOrWhiteSpace(insights.ProfessionalSummary)
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Message = "Error fetching contact insights",
+                    Error = ex.Message
+                });
+            }
+        }
+
+        // ============================================
+        // Insight resolution
+        // ============================================
+
+        private sealed class ContactInsights
+        {
+            public string Notes { get; set; } = "";
+            public string EmailContext { get; set; } = "";
+            public int EmailCount { get; set; }
+            public string ProfessionalSummary { get; set; } = "";
+        }
+
+        // Resolves the three personalization inputs for a contact. Notes and the
+        // email conversation come from their repositories; the professional
+        // summary is the contact's stored LinkedIn summary, HTML-stripped.
+        private async Task<ContactInsights> BuildContactInsightsAsync(
+            int clientId,
+            int contactId,
+            string? linkedinInformation)
+        {
+            var notesTask = GetGenerationNotesAsync(clientId, contactId);
+            var emailTask = GetEmailConversationContextAsync(clientId, contactId);
+
+            await Task.WhenAll(notesTask, emailTask);
+
+            var emailContext = emailTask.Result;
+
+            return new ContactInsights
+            {
+                Notes = notesTask.Result,
+                EmailContext = emailContext.Text,
+                EmailCount = emailContext.Count,
+                ProfessionalSummary = StripHtml(linkedinInformation)
+            };
+        }
+
+        // ============================================
         // Helpers (self-contained copies)
         // ============================================
 
@@ -394,10 +573,15 @@ namespace PitchGenApi.Controllers
             string result = blueprint;
             foreach (var (key, value) in values)
             {
+                var replacement = value ?? "";
+
+                // MatchEvaluator (not the string overload) so "$" inside notes,
+                // email bodies or LinkedIn summaries isn't treated as a regex
+                // substitution token.
                 result = Regex.Replace(
                     result,
                     $"{{{Regex.Escape(key)}}}",
-                    value ?? "",
+                    _ => replacement,
                     RegexOptions.IgnoreCase
                 );
             }
@@ -408,40 +592,128 @@ namespace PitchGenApi.Controllers
             => !string.IsNullOrEmpty(text) &&
                text.Contains("{" + key + "}", StringComparison.OrdinalIgnoreCase);
 
+        private static string AppendContextSection(string prompt, string label, string content)
+            => string.IsNullOrWhiteSpace(content)
+                ? prompt
+                : $"{prompt}\n\n{label}\n{content.Trim()}";
+
+        // Strips markup but keeps paragraph breaks, so multi-line LinkedIn
+        // summaries and notes stay readable in the prompt and in the UI.
         private static string StripHtml(string? input)
         {
             if (string.IsNullOrWhiteSpace(input))
                 return "";
-            return Regex.Replace(input, "<.*?>", "").Trim();
+
+            var text = Regex.Replace(input, @"<br\s*/?>", "\n", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, @"</(p|div|li|tr|h[1-6])\s*>", "\n", RegexOptions.IgnoreCase);
+            text = Regex.Replace(text, "<[^>]*>", "");
+            text = WebUtility.HtmlDecode(text);
+            text = text.Replace('\u00A0', ' ');   // non-breaking space
+            text = Regex.Replace(text, @"[ \t]+", " ");
+            text = Regex.Replace(text, @"\n{3,}", "\n\n");
+
+            return text.Trim();
         }
 
-        private async Task<string> GetEmailConversationContextAsync(int clientId, int contactId)
+        private sealed class EmailContextResult
         {
+            public string Text { get; set; } = "";
+            public int Count { get; set; }
+        }
+
+        private async Task<EmailContextResult> GetEmailConversationContextAsync(int clientId, int contactId)
+        {
+            var empty = new EmailContextResult();
+
             try
             {
                 var result = await _contactRepository.GetEmailConversationContextAsync(clientId, contactId);
                 if (result == null)
-                    return "";
+                    return empty;
 
                 var rawJson = JsonSerializer.Serialize(result, CamelCaseJson);
                 using var doc = JsonDocument.Parse(rawJson);
                 var root = doc.RootElement;
 
                 if (root.ValueKind != JsonValueKind.Object)
-                    return "";
+                    return empty;
 
+                var emailCount = 0;
+                var hasEmailsArray =
+                    root.TryGetProperty("emails", out var emailsProp) &&
+                    emailsProp.ValueKind == JsonValueKind.Array;
+
+                if (hasEmailsArray)
+                    emailCount = emailsProp.GetArrayLength();
+
+                // Preferred: the repository's ready-made prompt context.
                 if (root.TryGetProperty("promptContext", out var pc) &&
                     pc.ValueKind == JsonValueKind.String)
                 {
-                    return (pc.GetString() ?? "").Trim();
+                    var promptContext = (pc.GetString() ?? "").Trim();
+                    if (!string.IsNullOrWhiteSpace(promptContext))
+                        return new EmailContextResult { Text = promptContext, Count = emailCount };
                 }
 
-                return "";
+                // Fallback: build a readable thread from the raw emails.
+                if (!hasEmailsArray || emailCount == 0)
+                    return empty;
+
+                var builder = new StringBuilder();
+                var index = 0;
+
+                foreach (var email in emailsProp.EnumerateArray())
+                {
+                    index++;
+
+                    if (builder.Length > 0)
+                        builder.Append("\n\n---\n\n");
+
+                    builder.Append($"Conversation {index}");
+
+                    AppendEmailLine(builder, email, "sentAt", "Sent");
+                    AppendEmailLine(builder, email, "senderEmailId", "From");
+                    AppendEmailLine(builder, email, "toEmail", "To");
+                    AppendEmailLine(builder, email, "subject", "Subject");
+
+                    var body = ReadStringProperty(email, "body");
+                    if (!string.IsNullOrWhiteSpace(body))
+                        builder.Append($"\nEmail Body:\n{StripHtml(body)}");
+                }
+
+                return new EmailContextResult
+                {
+                    Text = builder.ToString().Trim(),
+                    Count = emailCount
+                };
             }
             catch
             {
-                return "";
+                return empty;
             }
+        }
+
+        private static void AppendEmailLine(StringBuilder builder, JsonElement email, string property, string label)
+        {
+            var value = ReadStringProperty(email, property);
+            if (!string.IsNullOrWhiteSpace(value))
+                builder.Append($"\n{label}: {value.Trim()}");
+        }
+
+        private static string ReadStringProperty(JsonElement element, string property)
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+                return "";
+
+            if (!element.TryGetProperty(property, out var prop))
+                return "";
+
+            return prop.ValueKind switch
+            {
+                JsonValueKind.String => prop.GetString() ?? "",
+                JsonValueKind.Number => prop.ToString(),
+                _ => ""
+            };
         }
 
         private async Task<string> GetGenerationNotesAsync(int clientId, int contactId)
@@ -479,9 +751,7 @@ namespace PitchGenApi.Controllers
                     if (string.IsNullOrWhiteSpace(note))
                         continue;
 
-                    var cleaned = WebUtility.HtmlDecode(note);
-                    cleaned = Regex.Replace(cleaned, "<[^>]*>", " ");
-                    cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+                    var cleaned = StripHtml(note);
 
                     if (!string.IsNullOrWhiteSpace(cleaned))
                         usableNotes.Add(cleaned);

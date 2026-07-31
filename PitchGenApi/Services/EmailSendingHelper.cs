@@ -48,16 +48,59 @@ public class EmailSendingHelper
     /// tooltip) from the email HTML so prospects receive clean text.
     /// Unwraps the span but keeps its inner text.
     /// </summary>
+    private static readonly Regex SpanOpenTagRegex = new(
+        @"<span\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex StyleAttrRegex = new(
+        @"style\s*=\s*(?<q>[""'])(?<val>[^""']*)\k<q>",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // background, background-color and the help cursor that comes with them
+    private static readonly Regex HighlightDeclRegex = new(
+        @"(?:background(?:-color)?|cursor)\s*:[^;]*;?",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    // marks a span as generated, so hand-applied highlights are left alone
+    private static readonly Regex GeneratedMarkerRegex = new(
+        @"cursor\s*:\s*help|title\s*=\s*[""']",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex TooltipTitleRegex = new(
+        @"\s+title\s*=\s*([""'])[^""']*\1",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     private static string StripSourceHighlights(string html)
     {
         if (string.IsNullOrEmpty(html)) return html;
 
-        return Regex.Replace(
-            html,
-            @"<span[^>]*title=""Sourced from:[^""]*""[^>]*>(.*?)</span>",
-            "$1",
-            RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        const RegexOptions opts = RegexOptions.IgnoreCase;
+
+        return Regex.Replace(html, @"<span\b[^>]*>", m =>
+        {
+            var tag = m.Value;
+
+            // only touch generated highlight spans; hand-applied ones stay
+            if (!Regex.IsMatch(tag, @"cursor\s*:\s*help|title\s*=\s*[""']", opts))
+                return tag;
+
+            // strip background/cursor declarations, keep the rest of the style
+            tag = Regex.Replace(tag, @"style\s*=\s*([""'])([^""']*)\1", sm =>
+            {
+                var q = sm.Groups[1].Value;
+                var cleaned = Regex.Replace(
+                        sm.Groups[2].Value,
+                        @"(?:background(?:-color)?|cursor)\s*:[^;]*;?", "", opts)
+                    .Trim().Trim(';').Trim();
+                return cleaned.Length == 0 ? "" : $"style={q}{cleaned}{q}";
+            }, opts);
+
+            tag = Regex.Replace(tag, @"\s+title\s*=\s*([""'])[^""']*\1", "", opts);
+            tag = Regex.Replace(tag, @"\s{2,}", " ");
+            return Regex.Replace(tag, @"\s+>", ">");
+        }, opts);
     }
+
+
 
 
     public Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId, bool isFollowUp, string BccEmail = "", int SmtpID = 0)
