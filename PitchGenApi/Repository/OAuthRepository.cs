@@ -180,7 +180,7 @@ namespace PitchGenApi.Repository
             };
 
             var response = await client.PostAsync(
-        $"https://login.microsoftonline.com/{cfg["TenantId"]}/oauth2/v2.0/token",
+                $"https://login.microsoftonline.com/{cfg["TenantId"]}/oauth2/v2.0/token",
                 new FormUrlEncodedContent(values));
 
             var json = await response.Content.ReadAsStringAsync();
@@ -201,9 +201,12 @@ namespace PitchGenApi.Repository
 
             // 🔥 SAVE DB
             var existing = await _context.EmailOAuthTokens
-                .FirstOrDefaultAsync(x => x.Email == email);
+                .FirstOrDefaultAsync(x => x.Email == email && x.ClientId == clientId);
+
+            var userid = clientId.ToString();
+
             var smtp = await _context.SmtpCredentials
-               .FirstOrDefaultAsync(x => x.FromEmail == email);
+               .FirstOrDefaultAsync(x => x.FromEmail == email && x.ClientId == userid);
 
             if (smtp != null)
             {
