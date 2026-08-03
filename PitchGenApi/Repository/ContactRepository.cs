@@ -5,8 +5,10 @@ using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
 using Serilog;
+using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using static ContactRepository;
 
 public class ContactRepository
@@ -791,6 +793,13 @@ public class ContactRepository
         });
     }
 
+    // Every email that belongs to a contact — what we sent (EmailLogs), the
+    // replies that came back (EmailReplies) and everything the mailbox sync
+    // picked up (InboxEmails) — merged into one chronological conversation.
+    // Messages are matched by contact id OR by the contact's address, then the
+    // match is expanded along tracking id / thread id / In-Reply-To links so a
+    // message that was stored without a contact id (thread replies, forwards,
+    // externally started threads) still travels with the rest of its thread.
     public async Task<ContactEmailConversationContextDto?> GetEmailConversationContextAsync(int clientId, int contactId)
     {
         Log.Information("Step 1: Fetch contact. ClientId={ClientId}, ContactId={ContactId}", clientId, contactId);
@@ -813,77 +822,275 @@ public class ContactRepository
             return null;
         }
 
-        Log.Information("Step 2: Fetch email logs");
-        var emailLogs = await _context.EmailLogs
+        var contactEmail = (contact.email ?? string.Empty).Trim().ToLower();
+        var hasContactEmail = !string.IsNullOrWhiteSpace(contactEmail);
+
+        // ---------------------------------------------------------------
+        // Step 2: seeds — anything already tied to this contact
+        // ---------------------------------------------------------------
+        var sentLogs = await _context.EmailLogs
             .AsNoTracking()
             .Where(x =>
                 x.ClientId == clientId &&
-                x.ContactId == contactId &&
-                x.IsSuccess == true)
-            .OrderBy(x => x.SentAt)
+                x.IsSuccess &&
+                !x.IsDeleted &&
+                (
+                    x.ContactId == contactId ||
+                    (hasContactEmail && x.ToEmail != null && x.ToEmail.ToLower() == contactEmail)
+                ))
             .ToListAsync();
 
-        Log.Information("Email logs count: {Count}", emailLogs.Count);
-
-        var trackingIds = emailLogs
-            .Where(x => x.TrackingId != null)
-            .Select(x => x.TrackingId)
-            .Distinct()
-            .ToList();
-
-        var messageIds = emailLogs
-            .Where(x => !string.IsNullOrEmpty(x.MessageId))
-            .Select(x => x.MessageId)
-            .Distinct()
-            .ToList();
-
-        Log.Information("Step 3: Fetch replies");
         var replies = await _context.EmailReplies
             .AsNoTracking()
             .Where(x =>
                 x.ClientId == clientId &&
-                x.ContactId == contactId &&
+                (x.IsDeleted == null || x.IsDeleted == false) &&
                 (
-                    (x.TrackingId != null && trackingIds.Contains(x.TrackingId))
-                    ||
-                    (x.InReplyTo != null && messageIds.Contains(x.InReplyTo))
+                    x.ContactId == contactId ||
+                    (hasContactEmail && x.FromEmail != null && x.FromEmail.ToLower() == contactEmail) ||
+                    (hasContactEmail && x.ToEmail != null && x.ToEmail.ToLower() == contactEmail)
                 ))
-            .OrderBy(x => x.Date)
             .ToListAsync();
 
-        Log.Information("Replies count: {Count}", replies.Count);
+        var inboxEmails = await _context.InboxEmails
+            .AsNoTracking()
+            .Where(x =>
+                x.ClientId == clientId &&
+                !x.IsDeleted &&
+                (
+                    x.Contactid == contactId ||
+                    (hasContactEmail && x.FromEmail != null && x.FromEmail.ToLower() == contactEmail) ||
+                    (hasContactEmail && x.ToEmail != null && x.ToEmail.ToLower() == contactEmail)
+                ))
+            .ToListAsync();
 
-        var emails = emailLogs
-            .Select(log => new ConversationEmailDto
+        Log.Information(
+            "Seeds — sent: {Sent}, replies: {Replies}, inbox: {Inbox}",
+            sentLogs.Count, replies.Count, inboxEmails.Count);
+
+        // ---------------------------------------------------------------
+        // Step 3: expand along thread links
+        // ---------------------------------------------------------------
+        var trackingIds = new HashSet<Guid>();
+        var threadIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var messageIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void CollectKeys(Guid? trackingId, string? threadId, params string?[] ids)
+        {
+            if (trackingId.HasValue && trackingId.Value != Guid.Empty)
+                trackingIds.Add(trackingId.Value);
+
+            if (!string.IsNullOrWhiteSpace(threadId))
+                threadIds.Add(threadId.Trim());
+
+            foreach (var id in ids)
+                foreach (var variant in MessageIdVariants(id))
+                    messageIds.Add(variant);
+        }
+
+        foreach (var log in sentLogs)
+            CollectKeys(log.TrackingId, log.ThreadId, log.MessageId);
+
+        foreach (var reply in replies)
+            CollectKeys(reply.TrackingId, reply.ThreadId, reply.MessageId, reply.InReplyTo);
+
+        foreach (var inbox in inboxEmails)
+            CollectKeys(inbox.TrackingId, inbox.ThreadId, inbox.MessageId, inbox.InReplyTo);
+
+        var trackingIdList = trackingIds.ToList();
+        var threadIdList = threadIds.ToList();
+        var messageIdList = messageIds.ToList();
+
+        if (trackingIdList.Any() || threadIdList.Any() || messageIdList.Any())
+        {
+            var knownLogIds = sentLogs.Select(x => x.Id).ToHashSet();
+            var knownReplyIds = replies.Select(x => x.Id).ToHashSet();
+            var knownInboxIds = inboxEmails.Select(x => x.Id).ToHashSet();
+
+            var extraLogs = await _context.EmailLogs
+                .AsNoTracking()
+                .Where(x =>
+                    x.ClientId == clientId &&
+                    x.IsSuccess &&
+                    !x.IsDeleted &&
+                    (
+                        (x.TrackingId.HasValue && trackingIdList.Contains(x.TrackingId.Value)) ||
+                        (x.ThreadId != null && threadIdList.Contains(x.ThreadId)) ||
+                        (x.MessageId != null && messageIdList.Contains(x.MessageId))
+                    ))
+                .ToListAsync();
+
+            var extraReplies = await _context.EmailReplies
+                .AsNoTracking()
+                .Where(x =>
+                    x.ClientId == clientId &&
+                    (x.IsDeleted == null || x.IsDeleted == false) &&
+                    (
+                        (x.TrackingId.HasValue && trackingIdList.Contains(x.TrackingId.Value)) ||
+                        (x.ThreadId != null && threadIdList.Contains(x.ThreadId)) ||
+                        (x.MessageId != null && messageIdList.Contains(x.MessageId)) ||
+                        (x.InReplyTo != null && messageIdList.Contains(x.InReplyTo))
+                    ))
+                .ToListAsync();
+
+            var extraInbox = await _context.InboxEmails
+                .AsNoTracking()
+                .Where(x =>
+                    x.ClientId == clientId &&
+                    !x.IsDeleted &&
+                    (
+                        (x.TrackingId.HasValue && trackingIdList.Contains(x.TrackingId.Value)) ||
+                        (x.ThreadId != null && threadIdList.Contains(x.ThreadId)) ||
+                        (x.MessageId != null && messageIdList.Contains(x.MessageId)) ||
+                        (x.InReplyTo != null && messageIdList.Contains(x.InReplyTo))
+                    ))
+                .ToListAsync();
+
+            sentLogs.AddRange(extraLogs.Where(x => !knownLogIds.Contains(x.Id)));
+            replies.AddRange(extraReplies.Where(x => !knownReplyIds.Contains(x.Id)));
+            inboxEmails.AddRange(extraInbox.Where(x => !knownInboxIds.Contains(x.Id)));
+        }
+
+        Log.Information(
+            "After expansion — sent: {Sent}, replies: {Replies}, inbox: {Inbox}",
+            sentLogs.Count, replies.Count, inboxEmails.Count);
+
+        // ---------------------------------------------------------------
+        // Step 4: merge into one de-duplicated, chronological conversation
+        // ---------------------------------------------------------------
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var messages = new List<ConversationEmailDto>();
+
+        void AddMessage(ConversationEmailDto message)
+        {
+            var keys = new List<string>(2);
+
+            var idKey = NormalizeMessageId(message.MessageId);
+            if (!string.IsNullOrEmpty(idKey))
+                keys.Add("id:" + idKey);
+
+            // The same mail can be stored twice under different ids — the send
+            // keeps the provider's id while the mailbox sync keeps the RFC
+            // Message-Id header — so also key it by its content.
+            var subject = (message.Subject ?? "").Trim().ToLower();
+            var body = (message.Body ?? "").Trim();
+
+            if (subject.Length > 0 || body.Length > 0)
+            {
+                keys.Add("content:" + string.Join("|",
+                    message.Direction,
+                    subject,
+                    message.SentAt?.ToString("yyyyMMddHHmm") ?? "",
+                    body.Length > 200 ? body[..200] : body));
+            }
+
+            if (!keys.Any())
+                keys.Add("row:" + message.Source + ":" + message.SourceId);
+
+            if (keys.Any(seen.Contains))
+                return;
+
+            foreach (var key in keys)
+                seen.Add(key);
+
+            messages.Add(message);
+        }
+
+        // Our own sends win over a mailbox copy of the same mail: they carry
+        // the campaign/blueprint metadata and the body we actually generated.
+        foreach (var log in sentLogs)
+        {
+            AddMessage(new ConversationEmailDto
             {
                 EmailLogId = log.Id,
+                Source = "EmailLog",
+                SourceId = log.Id,
+                Direction = "Sent",
                 MessageId = log.MessageId,
+                ThreadId = log.ThreadId,
+                TrackingId = log.TrackingId,
                 SentAt = log.SentAt,
                 SenderName = log.EmailSenderName,
                 SenderEmailId = log.SenderEmailId,
                 RecipientName = log.EmailRecipientName,
                 ToEmail = log.ToEmail,
                 Subject = log.Subject,
-                Body = log.Body,
-                Replies = replies
-                    .Where(r => r.TrackingId == log.TrackingId || r.InReplyTo == log.MessageId)
-                    .OrderBy(r => r.Date)
-                    .Select(r => new EmailReplyDto
-                    {
-                        Id = r.Id,
-                        MessageId = r.MessageId,
-                        InReplyTo = r.InReplyTo,
-                        FromEmail = r.FromEmail,
-                        Subject = r.Subject,
-                        Body = r.Body,
-                        Date = r.Date,
-                        IsRead = r.IsRead ?? false
-                    })
-                    .ToList()
-            })
+                Body = log.Body
+            });
+        }
+
+        foreach (var reply in replies)
+        {
+            AddMessage(new ConversationEmailDto
+            {
+                Source = "EmailReply",
+                SourceId = reply.Id,
+                Direction = DirectionFor(reply.FromEmail, "Received"),
+                MessageId = reply.MessageId,
+                InReplyTo = reply.InReplyTo,
+                ThreadId = reply.ThreadId,
+                TrackingId = reply.TrackingId,
+                SentAt = reply.Date,
+                SenderName = reply.FromName,
+                SenderEmailId = reply.FromEmail,
+                ToEmail = reply.ToEmail,
+                Subject = reply.Subject,
+                Body = reply.Body
+            });
+        }
+
+        foreach (var inbox in inboxEmails)
+        {
+            AddMessage(new ConversationEmailDto
+            {
+                Source = "InboxEmail",
+                SourceId = inbox.Id,
+                Direction = DirectionFor(inbox.FromEmail, "Received"),
+                MessageId = inbox.MessageId,
+                InReplyTo = inbox.InReplyTo,
+                ThreadId = inbox.ThreadId,
+                TrackingId = inbox.TrackingId,
+                SentAt = inbox.Date,
+                SenderName = inbox.FromName,
+                SenderEmailId = inbox.FromEmail,
+                ToEmail = inbox.ToEmail,
+                Subject = inbox.Subject,
+                Body = inbox.Body
+            });
+        }
+
+        messages = messages
+            .OrderBy(x => x.SentAt ?? DateTime.MaxValue)
+            .ThenBy(x => x.SourceId)
             .ToList();
 
-        Log.Information("Step 4: Build response");
+        // Old shape: hang every inbound message off the outbound one it answers.
+        var inboundMessages = messages.Where(x => x.Direction == "Received").ToList();
+
+        foreach (var sent in messages.Where(x => x.Direction == "Sent"))
+        {
+            var sentMessageId = NormalizeMessageId(sent.MessageId);
+
+            sent.Replies = inboundMessages
+                .Where(r =>
+                    (sent.TrackingId.HasValue && r.TrackingId == sent.TrackingId) ||
+                    (!string.IsNullOrEmpty(sentMessageId) &&
+                     NormalizeMessageId(r.InReplyTo) == sentMessageId))
+                .Select(r => new EmailReplyDto
+                {
+                    Id = (int)r.SourceId,
+                    MessageId = r.MessageId,
+                    InReplyTo = r.InReplyTo,
+                    FromEmail = r.SenderEmailId,
+                    Subject = r.Subject,
+                    Body = r.Body,
+                    Date = r.SentAt,
+                    IsRead = true
+                })
+                .ToList();
+        }
+
+        Log.Information("Step 5: Build response. Messages={Count}", messages.Count);
 
         return new ContactEmailConversationContextDto
         {
@@ -892,9 +1099,42 @@ public class ContactRepository
             FullName = contact.full_name,
             Email = contact.email,
             ContactCreatedAt = contact.created_at,
-            Emails = emails,
-            PromptContext = BuildPromptContext(contact.full_name, contact.email, contact.created_at, emails)
+            Emails = messages,
+            TotalCount = messages.Count,
+            SentCount = messages.Count(x => x.Direction == "Sent"),
+            ReceivedCount = messages.Count(x => x.Direction == "Received"),
+            PromptContext = BuildPromptContext(contact.full_name, contact.email, contact.created_at, messages)
         };
+
+        // A mailbox-synced message is inbound when it comes from the contact;
+        // anything else on the thread is one of ours that the sync pulled back.
+        string DirectionFor(string? fromEmail, string fallback)
+        {
+            if (!hasContactEmail)
+                return fallback;
+
+            return (fromEmail ?? "").Trim().ToLower() == contactEmail
+                ? "Received"
+                : "Sent";
+        }
+    }
+
+    // Message-Ids are stored with and without angle brackets depending on the
+    // provider, so compare on the bare value.
+    private static string NormalizeMessageId(string? messageId)
+        => string.IsNullOrWhiteSpace(messageId)
+            ? ""
+            : messageId.Trim().Trim('<', '>').Trim().ToLowerInvariant();
+
+    private static IEnumerable<string> MessageIdVariants(string? messageId)
+    {
+        var bare = NormalizeMessageId(messageId);
+
+        if (string.IsNullOrEmpty(bare))
+            yield break;
+
+        yield return bare;
+        yield return $"<{bare}>";
     }
 
     public async Task<InboxContactSaveDTO> SaveConversationContactAsync(string fullName, string email, int clientId)
@@ -1266,10 +1506,16 @@ public class ContactRepository
     }
 
 
+    // One flat, chronological transcript — every message, inbound and
+    // outbound, labelled with who sent it. Bodies are HTML-stripped so the
+    // model reads the text and not the markup.
     private static string BuildPromptContext(string? fullName, string? email, DateTime? contactCreatedAt, List<ConversationEmailDto> emails)
     {
         if (emails == null || !emails.Any())
             return string.Empty;
+
+        var sentCount = emails.Count(x => x.Direction == "Sent");
+        var receivedCount = emails.Count - sentCount;
 
         var sb = new StringBuilder();
 
@@ -1279,43 +1525,62 @@ public class ContactRepository
         if (contactCreatedAt.HasValue)
             sb.AppendLine($"Contact Created At: {contactCreatedAt.Value:dddd, MMMM d, yyyy h:mm tt}");
 
+        sb.AppendLine($"Total messages: {emails.Count} ({sentCount} sent by us, {receivedCount} received from the contact)");
         sb.AppendLine();
 
         for (int i = 0; i < emails.Count; i++)
         {
             var item = emails[i];
 
-            sb.AppendLine($"Email #{i + 1}");
-            sb.AppendLine($"Sent At: {item.SentAt:dddd, MMMM d, yyyy h:mm tt}");
-            sb.AppendLine($"From: {item.SenderName} <{item.SenderEmailId}>");
-            sb.AppendLine($"To: {item.RecipientName} <{item.ToEmail}>");
+            var direction = item.Direction == "Sent"
+                ? "SENT BY US"
+                : "RECEIVED FROM CONTACT";
+
+            sb.AppendLine($"Message #{i + 1} - {direction}");
+            sb.AppendLine($"Date: {item.SentAt:dddd, MMMM d, yyyy h:mm tt}");
+            sb.AppendLine($"From: {FormatParticipant(item.SenderName, item.SenderEmailId)}");
+            sb.AppendLine($"To: {FormatParticipant(item.RecipientName, item.ToEmail)}");
             sb.AppendLine($"Subject: {item.Subject}");
             sb.AppendLine("Body:");
-            sb.AppendLine(item.Body);
+            sb.AppendLine(StripHtml(item.Body));
             sb.AppendLine();
-
-            if (item.Replies != null && item.Replies.Any())
-            {
-                sb.AppendLine("Replies:");
-                foreach (var reply in item.Replies.OrderBy(x => x.Date))
-                {
-                    sb.AppendLine($"- Reply At: {reply.Date:dddd, MMMM d, yyyy h:mm tt}");
-                    sb.AppendLine($"  From: {reply.FromEmail}");
-                    sb.AppendLine($"  Subject: {reply.Subject}");
-                    sb.AppendLine($"  Body: {reply.Body}");
-                    sb.AppendLine();
-                }
-            }
-            else
-            {
-                sb.AppendLine("Replies: None");
-                sb.AppendLine();
-            }
-
             sb.AppendLine("--------------------------------------------------");
         }
 
         return sb.ToString();
+    }
+
+    private static string FormatParticipant(string? name, string? address)
+    {
+        var hasName = !string.IsNullOrWhiteSpace(name);
+        var hasAddress = !string.IsNullOrWhiteSpace(address);
+
+        if (hasName && hasAddress)
+            return $"{name.Trim()} <{address.Trim()}>";
+
+        if (hasAddress)
+            return address.Trim();
+
+        return hasName ? name.Trim() : "(unknown)";
+    }
+
+    // Strips markup but keeps paragraph breaks, so the transcript stays
+    // readable instead of being a wall of HTML.
+    private static string StripHtml(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return "";
+
+        var text = Regex.Replace(input, @"<(script|style)[^>]*>.*?</\1>", " ", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        text = Regex.Replace(text, @"<br\s*/?>", "\n", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, @"</(p|div|li|tr|h[1-6])\s*>", "\n", RegexOptions.IgnoreCase);
+        text = Regex.Replace(text, "<[^>]*>", "");
+        text = WebUtility.HtmlDecode(text);
+        text = text.Replace('\u00A0', ' ');   // non-breaking space
+        text = Regex.Replace(text, @"[ \t]+", " ");
+        text = Regex.Replace(text, @"\n{3,}", "\n\n");
+
+        return text.Trim();
     }
 
     //-----------------------------------------------------------------------------

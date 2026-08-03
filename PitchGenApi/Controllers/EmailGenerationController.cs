@@ -669,7 +669,11 @@ namespace PitchGenApi.Controllers
                     if (builder.Length > 0)
                         builder.Append("\n\n---\n\n");
 
-                    builder.Append($"Conversation {index}");
+                    var direction = ReadStringProperty(email, "direction") == "Sent"
+                        ? "SENT BY US"
+                        : "RECEIVED FROM CONTACT";
+
+                    builder.Append($"Message {index} - {direction}");
 
                     AppendEmailLine(builder, email, "sentAt", "Sent");
                     AppendEmailLine(builder, email, "senderEmailId", "From");
