@@ -512,7 +512,7 @@ namespace PitchGenApi.Controllers
             }
         }
 
-        [HttpPut("profile/{clientId}")]
+        [HttpPost("profile/{clientId}")]
         public async Task<IActionResult> UpdateProfile(int clientId, [FromBody] UpdateProfileRequest request)
         {
             try

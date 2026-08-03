@@ -223,11 +223,52 @@ namespace PitchGenApi.Controllers
                         }
                     }
 
+                    var previousFieldName = field.field_name;
+
                     field.field_name = dto.FieldName;
                     field.field_type = dto.FieldType;
                     field.options_json = dto.FieldType == "dropdown"
                         ? JsonSerializer.Serialize(newOptions)
                         : "[]";
+
+                    // The list-view layout stores custom columns under the field name,
+                    // so a rename has to carry the saved column across with it.
+                    if (!string.Equals(previousFieldName, dto.FieldName, StringComparison.Ordinal))
+                    {
+                        var layoutRows = await _context.crm_column_preferences
+                            .Where(p => p.client_id == field.client_id &&
+                                        (p.custom_field_id == field.id ||
+                                         p.column_key == previousFieldName ||
+                                         p.column_key == dto.FieldName))
+                            .ToListAsync();
+
+                        var rowUnderNewName = layoutRows
+                            .FirstOrDefault(p => p.column_key == dto.FieldName);
+
+                        foreach (var row in layoutRows)
+                        {
+                            if (row == rowUnderNewName)
+                            {
+                                row.label = dto.FieldName;
+                                row.custom_field_id = field.id;
+                                row.updated_at = DateTime.UtcNow;
+                                continue;
+                            }
+
+                            // A column already sits under the new name — keep that one
+                            // rather than breaking the (client_id, column_key) unique index.
+                            if (rowUnderNewName != null)
+                            {
+                                _context.crm_column_preferences.Remove(row);
+                                continue;
+                            }
+
+                            row.column_key = dto.FieldName;
+                            row.label = dto.FieldName;
+                            row.custom_field_id = field.id;
+                            row.updated_at = DateTime.UtcNow;
+                        }
+                    }
 
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
@@ -262,9 +303,256 @@ namespace PitchGenApi.Controllers
             _context.contact_custom_field_values.RemoveRange(values);
             _context.crm_custom_fields.Remove(field);
 
+            // Drop the column from the saved list-view layout so a deleted
+            // attribute cannot linger as a dead column.
+            var deadPreferences = _context.crm_column_preferences
+                .Where(p => p.client_id == field.client_id &&
+                            (p.custom_field_id == id || p.column_key == field.field_name));
+
+            _context.crm_column_preferences.RemoveRange(deadPreferences);
+
             await _context.SaveChangesAsync();
 
             return Ok("Field deleted");
+        }
+
+        // ===========================================================
+        // LIST-VIEW COLUMN LAYOUT (client level)
+        //
+        // One layout per client, shared by every list view / segment /
+        // saved view: which columns are visible and in what order.
+        // The table is a pure store — it does not own the column
+        // catalogue. Columns the client has never arranged are simply
+        // absent, and the UI appends them after the stored ones.
+        // ===========================================================
+
+        [HttpGet("column-preferences")]
+        public async Task<IActionResult> GetColumnPreferences([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+                return BadRequest(new { success = false, message = "clientId must be greater than 0." });
+
+            try
+            {
+                var saved = await _context.crm_column_preferences
+                    .AsNoTracking()
+                    .Where(p => p.client_id == clientId)
+                    .OrderBy(p => p.sort_order)
+                    .ThenBy(p => p.id)
+                    .ToListAsync();
+
+                // A custom attribute can be removed by another session; never hand
+                // back a column that no longer exists.
+                var liveCustomFieldIds = await _context.crm_custom_fields
+                    .Where(f => f.client_id == clientId)
+                    .Select(f => f.id)
+                    .ToListAsync();
+
+                var liveCustomFieldIdSet = new HashSet<int>(liveCustomFieldIds);
+
+                var columns = saved
+                    .Where(p => !p.custom_field_id.HasValue || liveCustomFieldIdSet.Contains(p.custom_field_id.Value))
+                    .Select((p, index) => new ColumnPreferenceDto
+                    {
+                        ColumnKey = p.column_key,
+                        Label = p.label,
+                        IsVisible = p.is_visible,
+                        SortOrder = index,
+                        CustomFieldId = p.custom_field_id,
+                        IsCustomField = p.custom_field_id.HasValue
+                    })
+                    .ToList();
+
+                return Ok(new
+                {
+                    success = true,
+                    hasSavedLayout = columns.Any(),
+                    columns
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to load column preferences.",
+                    error = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Replaces the client's whole layout. The position of each entry in
+        /// <c>Columns</c> is the column sequence, so a drag-and-drop reorder and a
+        /// show/hide toggle both post the same payload.
+        /// </summary>
+        [HttpPost("column-preferences")]
+        public async Task<IActionResult> SaveColumnPreferences([FromBody] SaveColumnPreferencesDto dto)
+        {
+            if (dto == null || dto.ClientId <= 0)
+                return BadRequest(new { success = false, message = "clientId must be greater than 0." });
+
+            if (dto.Columns == null)
+                return BadRequest(new { success = false, message = "columns is required." });
+
+            if (dto.Columns.Count > 200)
+                return BadRequest(new { success = false, message = "A layout cannot hold more than 200 columns." });
+
+            // The selection checkbox is a table control, not a data column.
+            var incoming = new List<ColumnPreferenceDto>();
+            var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var column in dto.Columns)
+            {
+                var key = column?.ColumnKey?.Trim();
+
+                if (string.IsNullOrWhiteSpace(key)) continue;
+                if (string.Equals(key, "checkbox", StringComparison.OrdinalIgnoreCase)) continue;
+                if (key.Length > 200)
+                    return BadRequest(new { success = false, message = $"Column key '{key}' exceeds 200 characters." });
+                if (!seenKeys.Add(key)) continue;
+
+                incoming.Add(new ColumnPreferenceDto
+                {
+                    ColumnKey = key,
+                    Label = string.IsNullOrWhiteSpace(column!.Label) ? null : column.Label.Trim(),
+                    IsVisible = column.IsVisible,
+                    CustomFieldId = column.CustomFieldId,
+                    SortOrder = incoming.Count
+                });
+            }
+
+            var strategy = _context.Database.CreateExecutionStrategy();
+
+            return await strategy.ExecuteAsync<IActionResult>(async () =>
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+
+                try
+                {
+                    // Only accept custom-field ids that belong to this client.
+                    var ownedCustomFieldIds = await _context.crm_custom_fields
+                        .Where(f => f.client_id == dto.ClientId)
+                        .Select(f => f.id)
+                        .ToListAsync();
+
+                    var ownedCustomFieldIdSet = new HashSet<int>(ownedCustomFieldIds);
+
+                    var existing = await _context.crm_column_preferences
+                        .Where(p => p.client_id == dto.ClientId)
+                        .ToListAsync();
+
+                    var existingByKey = existing.ToDictionary(
+                        p => p.column_key,
+                        p => p,
+                        StringComparer.OrdinalIgnoreCase);
+
+                    var now = DateTime.UtcNow;
+
+                    foreach (var column in incoming)
+                    {
+                        var customFieldId = column.CustomFieldId.HasValue &&
+                                            ownedCustomFieldIdSet.Contains(column.CustomFieldId.Value)
+                            ? column.CustomFieldId
+                            : null;
+
+                        if (existingByKey.TryGetValue(column.ColumnKey, out var row))
+                        {
+                            row.label = column.Label ?? row.label;
+                            row.is_visible = column.IsVisible;
+                            row.sort_order = column.SortOrder;
+                            row.custom_field_id = customFieldId;
+                            row.updated_at = now;
+                        }
+                        else
+                        {
+                            _context.crm_column_preferences.Add(new CrmColumnPreference
+                            {
+                                client_id = dto.ClientId,
+                                column_key = column.ColumnKey,
+                                label = column.Label,
+                                is_visible = column.IsVisible,
+                                sort_order = column.SortOrder,
+                                custom_field_id = customFieldId,
+                                created_at = now
+                            });
+                        }
+                    }
+
+                    // Anything the client no longer knows about drops out of the layout.
+                    var removed = existing.Where(p => !seenKeys.Contains(p.column_key)).ToList();
+
+                    if (removed.Any())
+                        _context.crm_column_preferences.RemoveRange(removed);
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+
+                    return Ok(new
+                    {
+                        success = true,
+                        message = "Column layout saved successfully.",
+                        columnCount = incoming.Count,
+                        columns = incoming.Select(c => new ColumnPreferenceDto
+                        {
+                            ColumnKey = c.ColumnKey,
+                            Label = c.Label,
+                            IsVisible = c.IsVisible,
+                            SortOrder = c.SortOrder,
+                            CustomFieldId = c.CustomFieldId,
+                            IsCustomField = c.CustomFieldId.HasValue
+                        })
+                    });
+                }
+                catch (Exception ex)
+                {
+                    await transaction.RollbackAsync();
+
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Failed to save column layout.",
+                        error = ex.InnerException?.Message ?? ex.Message
+                    });
+                }
+            });
+        }
+
+        /// <summary>Clears the stored layout so the client falls back to UI defaults.</summary>
+        [HttpPost("column-preferences/reset")]
+        public async Task<IActionResult> ResetColumnPreferences([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+                return BadRequest(new { success = false, message = "clientId must be greater than 0." });
+
+            try
+            {
+                var rows = await _context.crm_column_preferences
+                    .Where(p => p.client_id == clientId)
+                    .ToListAsync();
+
+                if (rows.Any())
+                {
+                    _context.crm_column_preferences.RemoveRange(rows);
+                    await _context.SaveChangesAsync();
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Column layout reset to defaults.",
+                    removedCount = rows.Count
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = "Failed to reset column layout.",
+                    error = ex.Message
+                });
+            }
         }
 
         [HttpPost("uploadcontacts")]

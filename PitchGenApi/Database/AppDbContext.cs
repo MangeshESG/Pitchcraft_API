@@ -53,6 +53,7 @@ namespace PitchGenApi.Database
         public DbSet<ContactAttachments> ContactAttachments { get; set; }
         public DbSet<CrmCustomField> crm_custom_fields { get; set; }
         public DbSet<ContactCustomFieldValue> contact_custom_field_values { get; set; }
+        public DbSet<CrmColumnPreference> crm_column_preferences { get; set; }
 
         public DbSet<CrmView> crm_views { get; set; }
 
@@ -83,6 +84,21 @@ namespace PitchGenApi.Database
 
             modelBuilder.Entity<CrmViewExcludedDatafile>()
                  .HasKey(x => new { x.view_id, x.datafile_id });
+
+            // ✅ Client-level list-view column layout (show/hide + sequence)
+            modelBuilder.Entity<CrmColumnPreference>(entity =>
+            {
+                entity.ToTable("crm_column_preferences");
+                entity.HasKey(e => e.id);
+                entity.Property(e => e.column_key).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.label).HasMaxLength(300);
+                entity.Property(e => e.is_visible).HasDefaultValue(true);
+                entity.Property(e => e.created_at).HasDefaultValueSql("GETUTCDATE()");
+
+                // One row per column per client — the layout is shared across all list views.
+                entity.HasIndex(e => new { e.client_id, e.column_key }).IsUnique();
+                entity.HasIndex(e => new { e.client_id, e.sort_order });
+            });
 
             modelBuilder.Entity<Campaign>()
                 .HasIndex(c => c.ClientId);
