@@ -158,7 +158,6 @@ namespace PitchGenApi.Repository
                 $"&redirect_uri={Uri.EscapeDataString(cfg["RedirectUri"])}" +
                 $"&response_mode=query" +
                 $"&scope={scope}" +
-                $"&prompt=consent" +
                 $"&state={clientId}|{senderName}|{FullInboxSync}";
 
             return Task.FromResult(url);
