@@ -366,12 +366,14 @@ namespace PitchGenApi.Services
                                         inputPayload = sbInput.ToString();
             }
 
+            const int maxOutputTokens = 15000;
+
             var requestBody = new Dictionary<string, object>
                         {
                             { "model", model },
                             { "input", inputPayload },
                             { "temperature", 1.0 },
-                            { "max_output_tokens", 15000 },
+                            { "max_output_tokens", maxOutputTokens },
                             { "tools", new object[] { new { type = "web_search_preview" } } }
                         };
 
@@ -386,15 +388,6 @@ namespace PitchGenApi.Services
                 var endpoint = "https://api.openai.com/v1/responses";
                 var httpResponse = await _httpClient.PostAsync(endpoint, httpContent);
                 var raw = await httpResponse.Content.ReadAsStringAsync();
-
-                if (int.TryParse(userId, out int clientId))
-                {
-                    await _contactRepository.CreditDeduction(clientId);
-                }
-                else
-                {
-                    Console.WriteLine($"Invalid userId for credit deduction: {userId}");
-                }
 
                 if (!httpResponse.IsSuccessStatusCode)
                 {
@@ -416,8 +409,28 @@ namespace PitchGenApi.Services
                     aiResponse = ExtractTextFromOutputs(parsed);
                 }
 
-                if (string.IsNullOrWhiteSpace(aiResponse))
-                    aiResponse = "⚠️ No response from GPT (empty content).";
+                // A 200 can still be a truncated generation, and reasoning models burn the
+                // output budget before writing any text. Fail before spending a credit.
+                var incompleteReason = OpenAiResponseGuard.GetIncompleteReason(parsed);
+
+                if (incompleteReason != null || string.IsNullOrWhiteSpace(aiResponse))
+                {
+                    return new
+                    {
+                        assistantText = OpenAiResponseGuard.DescribeEmptyOutput(incompleteReason, maxOutputTokens),
+                        rawResponse = raw,
+                        error = true
+                    };
+                }
+
+                if (int.TryParse(userId, out int clientId))
+                {
+                    await _contactRepository.CreditDeduction(clientId);
+                }
+                else
+                {
+                    Console.WriteLine($"Invalid userId for credit deduction: {userId}");
+                }
 
 
                 // ============================================================

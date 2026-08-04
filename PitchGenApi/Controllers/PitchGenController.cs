@@ -1451,7 +1451,7 @@ namespace PitchGenApi.Controllers
                 {
                     Prompt = request.Instructions,
                     ScrappedData = "",
-                    ModelName = "gpt-4o-mini-search-preview"
+                    ModelName = AiModelDefaults.WebSearchModel
                 };
 
                 var result = await _pitchservice.GenerateWebSearchAsync(enquiryRequest, request.Clientid);

@@ -1480,7 +1480,7 @@ namespace PitchGenApi.Controllers
                             {
                                 Prompt = filledInstructions,
                                 ScrappedData = "",
-                                ModelName = "gpt-4o-mini-search-preview"
+                                ModelName = AiModelDefaults.WebSearchModel
                             }, parsedClientId);
 
                             if (searchResult != null && searchResult.IsSuccess)

@@ -61,7 +61,7 @@ namespace PitchGenApi.Services
             sbInput.AppendLine($"user: {request.Prompt}");
 
             bool isSearchPreviewModel =
-                request.ModelName.Contains("search-preview");
+                AiModelDefaults.IsSearchPreviewModel(request.ModelName);
 
             var requestData = new Dictionary<string, object>
 {
@@ -144,7 +144,22 @@ namespace PitchGenApi.Services
                     outputCost +
                     webSearchCost;
 
+                // A 200 can still be a truncated generation, and reasoning models burn the
+                // output budget before writing any text. Report the spend, but not as success.
+                string? incompleteReason = OpenAiResponseGuard.GetIncompleteReason(parsed);
 
+                if (incompleteReason != null || string.IsNullOrWhiteSpace(output))
+                {
+                    return new PitchResult
+                    {
+                        Content = OpenAiResponseGuard.DescribeEmptyOutput(incompleteReason, rate.MaxTokens),
+                        PromptTokens = promptTokens,
+                        CompletionTokens = completionTokens,
+                        TotalTokens = totalTokens,
+                        CurrentCost = currentCost,
+                        IsSuccess = false
+                    };
+                }
 
                 return new PitchResult
                 {
@@ -175,6 +190,9 @@ namespace PitchGenApi.Services
                     IsSuccess = false
                 };
 
+            if (string.IsNullOrWhiteSpace(request.ModelName))
+                request.ModelName = AiModelDefaults.WebSearchModel;
+
             var rate = await _context.ModelRates
                 .FirstOrDefaultAsync(m => m.ModelName == request.ModelName);
 
@@ -182,35 +200,80 @@ namespace PitchGenApi.Services
             {
                 return new PitchResult
                 {
-                    Content = "Model pricing not found.",
+                    Content = $"Model pricing not found for '{request.ModelName}'.",
                     IsSuccess = false
                 };
             }
 
-            var messages = new List<object>();
+            // Web search reaches OpenAI two different ways depending on the model,
+            // so build the request for whichever family we were handed.
+            bool isSearchPreviewModel =
+                AiModelDefaults.IsSearchPreviewModel(request.ModelName);
 
-            if (!string.IsNullOrWhiteSpace(request.ScrappedData))
+            string endpoint;
+            object requestData;
+
+            if (isSearchPreviewModel)
             {
+                // Chat Completions — these models search natively.
+                var messages = new List<object>();
+
+                if (!string.IsNullOrWhiteSpace(request.ScrappedData))
+                {
+                    messages.Add(new
+                    {
+                        role = "system",
+                        content = request.ScrappedData
+                    });
+                }
+
                 messages.Add(new
                 {
-                    role = "system",
-                    content = request.ScrappedData
+                    role = "user",
+                    content = request.Prompt
                 });
+
+                endpoint = "https://api.openai.com/v1/chat/completions";
+                requestData = new
+                {
+                    model = request.ModelName,
+                    messages = messages,
+                    max_tokens = rate.MaxTokens,
+                    web_search_options = new { }
+                };
             }
-
-            messages.Add(new
+            else
             {
-                role = "user",
-                content = request.Prompt
-            });
+                // Responses API — search has to be attached as an explicit tool.
+                var input = new List<object>();
 
-            var requestData = new
-            {
-                model = request.ModelName,
-                messages = messages,
-                max_tokens = rate.MaxTokens,
-                web_search_options = new { }
-            };
+                if (!string.IsNullOrWhiteSpace(request.ScrappedData))
+                {
+                    input.Add(new
+                    {
+                        role = "system",
+                        content = request.ScrappedData
+                    });
+                }
+
+                input.Add(new
+                {
+                    role = "user",
+                    content = request.Prompt
+                });
+
+                endpoint = "https://api.openai.com/v1/responses";
+                requestData = new
+                {
+                    model = request.ModelName,
+                    input = input,
+                    max_output_tokens = rate.MaxTokens,
+                    tools = new object[]
+                    {
+                        new { type = "web_search_preview" }
+                    }
+                };
+            }
 
             var requestBody =
                 JsonConvert.SerializeObject(requestData);
@@ -223,9 +286,7 @@ namespace PitchGenApi.Services
 
             try
             {
-                var response = await _httpClient.PostAsync(
-                    "https://api.openai.com/v1/chat/completions",
-                    content);
+                var response = await _httpClient.PostAsync(endpoint, content);
 
                 var json = await response.Content.ReadAsStringAsync();
 
@@ -240,15 +301,43 @@ namespace PitchGenApi.Services
 
                 var parsed = JsonConvert.DeserializeObject<JObject>(json)!;
 
-                string output =
-                    parsed["choices"]?[0]?["message"]?["content"]?.ToString()
-                    ?? "";
+                string output;
+                int promptTokens;
+                int completionTokens;
+                decimal webSearchCost = 0m;
 
-                int promptTokens =
-                    parsed["usage"]?["prompt_tokens"]?.Value<int>() ?? 0;
+                if (isSearchPreviewModel)
+                {
+                    output =
+                        parsed["choices"]?[0]?["message"]?["content"]?.ToString()
+                        ?? "";
 
-                int completionTokens =
-                    parsed["usage"]?["completion_tokens"]?.Value<int>() ?? 0;
+                    promptTokens =
+                        parsed["usage"]?["prompt_tokens"]?.Value<int>() ?? 0;
+
+                    completionTokens =
+                        parsed["usage"]?["completion_tokens"]?.Value<int>() ?? 0;
+                }
+                else
+                {
+                    output = parsed["output_text"]?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(output))
+                        output = ExtractText(parsed);
+
+                    promptTokens =
+                        parsed["usage"]?["input_tokens"]?.Value<int>() ?? 0;
+
+                    completionTokens =
+                        parsed["usage"]?["output_tokens"]?.Value<int>() ?? 0;
+
+                    // Tool-based search is billed per call on top of tokens,
+                    // matching the accounting in GeneratePitchAsync.
+                    bool usedWebSearch =
+                        parsed["output"]?
+                            .Any(o => o["type"]?.ToString() == "web_search_call") ?? false;
+
+                    webSearchCost = usedWebSearch ? 0.025m : 0m;
+                }
 
                 int totalTokens =
                     parsed["usage"]?["total_tokens"]?.Value<int>()
@@ -261,7 +350,7 @@ namespace PitchGenApi.Services
                     completionTokens * rate.OutputPrice / 1_000_000m;
 
                 decimal currentCost =
-                    inputCost + outputCost;
+                    inputCost + outputCost + webSearchCost;
 
                 await _contactRepository.CreditDeduction(clientid);
 

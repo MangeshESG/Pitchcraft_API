@@ -280,6 +280,23 @@
                 (promptTokens * rate.InputPrice / 1_000_000m) +
                 (completionTokens * rate.OutputPrice / 1_000_000m);
 
+            // A 200 can still be a truncated generation, and reasoning models burn the output
+            // budget before writing any text. Fail before spending the client's credit.
+            var incompleteReason = OpenAiResponseGuard.GetIncompleteReason(parsed);
+
+            if (incompleteReason != null || string.IsNullOrWhiteSpace(output))
+            {
+                return new ContactQAResponse
+                {
+                    IsSuccess = false,
+                    Answer = OpenAiResponseGuard.DescribeEmptyOutput(incompleteReason, rate.MaxTokens),
+                    PromptTokens = promptTokens,
+                    CompletionTokens = completionTokens,
+                    TotalTokens = totalTokens,
+                    CurrentCost = currentCost
+                };
+            }
+
             await _contactRepository.CreditDeduction(request.ClientId);
 
             return new ContactQAResponse
