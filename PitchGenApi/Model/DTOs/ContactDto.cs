@@ -21,5 +21,6 @@
         public string? firstName { get; set; }
         public string? lastName { get; set; }
         public Dictionary<string, string>? customFields { get; set; }
+        public int? sourceRowNumber { get; set; }
     }
 }
