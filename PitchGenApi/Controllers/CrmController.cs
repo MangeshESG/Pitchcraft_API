@@ -584,6 +584,81 @@ namespace PitchGenApi.Controllers
                         });
                     }
 
+                    var clientDataFileIds = await _context.data_files
+                        .Where(df => df.client_id == request.clientId)
+                        .Select(df => df.id)
+                        .ToListAsync();
+
+                    var existingEmails = await _context.contacts
+                        .Where(c => c.DataFileId.HasValue &&
+                                    clientDataFileIds.Contains(c.DataFileId.Value) &&
+                                    c.email != null && c.email != "")
+                        .Select(c => c.email!.Trim().ToLower())
+                        .Distinct()
+                        .ToListAsync();
+
+                    var existingEmailSet = existingEmails.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var incomingEmailSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var acceptedContactDtos = new List<ContactDto>();
+                    var skippedContacts = new List<object>();
+
+                    for (var index = 0; index < request.contacts.Count; index++)
+                    {
+                        var candidate = request.contacts[index];
+                        var normalizedEmail = candidate.email?.Trim().ToLowerInvariant();
+
+                        if (string.IsNullOrWhiteSpace(normalizedEmail))
+                        {
+                            skippedContacts.Add(new
+                            {
+                                rowNumber = candidate.sourceRowNumber ?? index + 2,
+                                email = candidate.email,
+                                fullName = candidate.fullName,
+                                reason = "Email is required"
+                            });
+                            continue;
+                        }
+
+                        if (existingEmailSet.Contains(normalizedEmail))
+                        {
+                            skippedContacts.Add(new
+                            {
+                                rowNumber = candidate.sourceRowNumber ?? index + 2,
+                                email = candidate.email,
+                                fullName = candidate.fullName,
+                                reason = "Email already exists in this client's contacts"
+                            });
+                            continue;
+                        }
+
+                        if (!incomingEmailSet.Add(normalizedEmail))
+                        {
+                            skippedContacts.Add(new
+                            {
+                                rowNumber = candidate.sourceRowNumber ?? index + 2,
+                                email = candidate.email,
+                                fullName = candidate.fullName,
+                                reason = "Duplicate email in the imported file"
+                            });
+                            continue;
+                        }
+
+                        acceptedContactDtos.Add(candidate);
+                    }
+
+                    if (!acceptedContactDtos.Any())
+                    {
+                        return Ok(new
+                        {
+                            success = true,
+                            message = "No contacts were imported because all rows were duplicates or invalid",
+                            dataFileId = (int?)null,
+                            contactCount = 0,
+                            skippedCount = skippedContacts.Count,
+                            skippedContacts
+                        });
+                    }
+
                     var dataFile = new DataFile
                     {
                         client_id = request.clientId,
@@ -602,7 +677,7 @@ namespace PitchGenApi.Controllers
 
                     var contacts = new List<Contact>();
 
-                    foreach (var c in request.contacts)
+                    foreach (var c in acceptedContactDtos)
                     {
                         var firstName = c.firstName?.Trim();
                         var lastName = c.lastName?.Trim();
@@ -652,7 +727,7 @@ namespace PitchGenApi.Controllers
                     for (int i = 0; i < contacts.Count; i++)
                     {
                         var contact = contacts[i];
-                        var dto = request.contacts[i];
+                        var dto = acceptedContactDtos[i];
 
                         if (dto.customFields == null) continue;
 
@@ -687,7 +762,9 @@ namespace PitchGenApi.Controllers
                         success = true,
                         message = "Contacts uploaded successfully",
                         dataFileId = dataFile.id,
-                        contactCount = contacts.Count
+                        contactCount = contacts.Count,
+                        skippedCount = skippedContacts.Count,
+                        skippedContacts
                     });
                 }
                 catch (Exception ex)
@@ -709,6 +786,38 @@ namespace PitchGenApi.Controllers
         {
             try
             {
+                if (request.clientId <= 0 || string.IsNullOrWhiteSpace(request.email))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "A valid clientId and email are required"
+                    });
+                }
+
+                var normalizedEmail = request.email.Trim().ToLowerInvariant();
+                var duplicateContact = await (
+                    from existingContactRow in _context.contacts
+                    join file in _context.data_files on existingContactRow.DataFileId equals (int?)file.id
+                    where file.client_id == request.clientId &&
+                          existingContactRow.email != null &&
+                          existingContactRow.email.Trim().ToLower() == normalizedEmail
+                    select new { existingContactRow.id, existingContactRow.DataFileId }
+                ).FirstOrDefaultAsync();
+
+                if (duplicateContact != null)
+                {
+                    return Conflict(new
+                    {
+                        success = false,
+                        code = "DUPLICATE_EMAIL",
+                        message = "A contact with this email address already exists",
+                        email = request.email.Trim(),
+                        contactId = duplicateContact.id,
+                        dataFileId = duplicateContact.DataFileId
+                    });
+                }
+
                 DataFile dataFile = null;
 
                 // CASE 1: Create/find manual DataFile
@@ -738,7 +847,9 @@ namespace PitchGenApi.Controllers
                 else
                 {
                     dataFile = await _context.data_files
-                        .FirstOrDefaultAsync(df => df.id == DataFileId);
+                        .FirstOrDefaultAsync(df =>
+                            df.id == DataFileId &&
+                            df.client_id == request.clientId);
 
                     if (dataFile == null)
                     {
@@ -4275,7 +4386,9 @@ namespace PitchGenApi.Controllers
                     c.job_title,
                     c.linkedin_url,
                     c.company_name,
-                    c.country_or_address
+                    c.country_or_address,
+                    df.name,
+                    df.data_file_name
                 }).ToListAsync();
 
             // linkedin_url is a SQL Server text column. Normalize it in memory because
@@ -4298,7 +4411,17 @@ namespace PitchGenApi.Controllers
                 {
                     matched = true,
                     contactId = matchedContact.id,
-                    dataFileId = matchedContact.DataFileId
+                    dataFileId = matchedContact.DataFileId,
+                    dataFileName = !string.IsNullOrWhiteSpace(matchedContact.name)
+                        ? matchedContact.name
+                        : matchedContact.data_file_name,
+                    existingData = new
+                    {
+                        contactName = matchedContact.full_name,
+                        jobTitle = matchedContact.job_title,
+                        companyName = matchedContact.company_name,
+                        location = matchedContact.country_or_address
+                    }
                 });
 
             var existingContact = contacts[0];
@@ -4321,6 +4444,16 @@ namespace PitchGenApi.Controllers
                 matched = false,
                 contactId = existingContact.id,
                 dataFileId = existingContact.DataFileId,
+                dataFileName = !string.IsNullOrWhiteSpace(existingContact.name)
+                    ? existingContact.name
+                    : existingContact.data_file_name,
+                existingData = new
+                {
+                    contactName = existingContact.full_name,
+                    jobTitle = existingContact.job_title,
+                    companyName = existingContact.company_name,
+                    location = existingContact.country_or_address
+                },
                 unmatchedData = unmatchedFields
             });
         }
@@ -4350,6 +4483,29 @@ namespace PitchGenApi.Controllers
                 {
                     dataFileId = request.DataFileId,
                     message = "DataFile was not found for the given client."
+                });
+            }
+
+            static string NormalizeUrl(string? value) =>
+                (value ?? string.Empty).Trim().TrimEnd('/').ToLowerInvariant();
+
+            var requestedLinkedInUrl = NormalizeUrl(request.LinkedInUrl);
+            var existingUrls = await (
+                from c in _context.contacts.AsNoTracking()
+                join df in _context.data_files.AsNoTracking()
+                    on c.DataFileId equals (int?)df.id
+                where df.client_id == request.ClientId && c.linkedin_url != null
+                select new { c.id, c.DataFileId, c.linkedin_url })
+                .ToListAsync();
+            var duplicate = existingUrls.FirstOrDefault(c =>
+                NormalizeUrl(c.linkedin_url) == requestedLinkedInUrl);
+            if (duplicate != null)
+            {
+                return Conflict(new
+                {
+                    message = "This LinkedIn contact already exists in another Pitchkraft list.",
+                    contactId = duplicate.id,
+                    dataFileId = duplicate.DataFileId
                 });
             }
 
