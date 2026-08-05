@@ -36,6 +36,7 @@ namespace PitchGenApi.Controllers
         private readonly ILogger<AuthController> _logger; // Add ILogger field
         private readonly IContactQAService _contactQAService;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly IAiModelSettingsService _aiModelSettings;
 
 
 
@@ -52,7 +53,8 @@ namespace PitchGenApi.Controllers
             ZohoService zohoService,
             ILogger<AuthController> logger,
             IContactQAService contactQAService,
-            DeepSeekPitchService deepSeekService)
+            DeepSeekPitchService deepSeekService,
+            IAiModelSettingsService aiModelSettings)
 
         {
             _reg = registeredServices;
@@ -66,6 +68,7 @@ namespace PitchGenApi.Controllers
             _logger = logger;
             _contactQAService = contactQAService;
             _deepSeekService = deepSeekService;
+            _aiModelSettings = aiModelSettings;
 
 
         }
@@ -369,6 +372,10 @@ namespace PitchGenApi.Controllers
         {
             if (request == null || string.IsNullOrWhiteSpace(request.Question))
                 return BadRequest(new { message = "Question is required." });
+
+            // The Q&A model is admin-controlled (Settings > AI models), so the
+            // caller doesn't get to choose it.
+            request.ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.ContactQA);
 
             var result = await _contactQAService.AskAsync(request);
 
@@ -1288,7 +1295,7 @@ namespace PitchGenApi.Controllers
                 {
                     Prompt = request.TavilySearchTerm,
                     ScrappedData = "",
-                    ModelName = "gpt-4o-mini"
+                    ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
                 };
 
                 var webSearchResult = await _pitchservice.GeneratePitchAsync(webSearchRequest);
@@ -1451,7 +1458,7 @@ namespace PitchGenApi.Controllers
                 {
                     Prompt = request.Instructions,
                     ScrappedData = "",
-                    ModelName = AiModelDefaults.WebSearchModel
+                    ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
                 };
 
                 var result = await _pitchservice.GenerateWebSearchAsync(enquiryRequest, request.Clientid);

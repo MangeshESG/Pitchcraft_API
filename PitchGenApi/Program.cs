@@ -190,6 +190,9 @@ builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
 builder.Services.AddScoped<IForwardRepository, ForwardRepository>();
 builder.Services.AddScoped<DefaultCustomFieldSeeder>();
 
+// Admin-controlled model per AI purpose (Settings > AI models)
+builder.Services.AddScoped<IAiModelSettingsService, AiModelSettingsService>();
+
 builder.Services.Configure<DeepSeekSettings>(
     builder.Configuration.GetSection("DeepSeekSettings"));
 
