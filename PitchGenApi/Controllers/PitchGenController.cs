@@ -1288,7 +1288,7 @@ namespace PitchGenApi.Controllers
                 }
 
                 // =====================================
-                // GPT WEB SEARCH
+                // WEB SEARCH
                 // =====================================
 
                 var webSearchRequest = new EnquiryRequest
@@ -1298,13 +1298,18 @@ namespace PitchGenApi.Controllers
                     ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
                 };
 
-                var webSearchResult = await _pitchservice.GeneratePitchAsync(webSearchRequest);
+                // This endpoint carries no client to bill, so the OpenAI branch stays
+                // on GeneratePitchAsync (which searches but doesn't deduct credits) and
+                // the DeepSeek branch is called with clientId 0 for the same reason.
+                var webSearchResult = IsDeepSeekModel(webSearchRequest.ModelName)
+                    ? await _deepSeekService.GenerateWebSearchAsync(webSearchRequest, 0)
+                    : await _pitchservice.GeneratePitchAsync(webSearchRequest);
 
                 if (!webSearchResult.IsSuccess)
                 {
                     return StatusCode(500, new
                     {
-                        Message = "GPT web search failed",
+                        Message = "Web search failed",
                         Error = webSearchResult.Content
                     });
                 }
@@ -1413,6 +1418,13 @@ namespace PitchGenApi.Controllers
                 : _pitchservice.GeneratePitchAsync(request);
         }
 
+        private Task<PitchResult> GenerateWebSearchByProviderAsync(EnquiryRequest request, int clientId)
+        {
+            return IsDeepSeekModel(request.ModelName)
+                ? _deepSeekService.GenerateWebSearchAsync(request, clientId)
+                : _pitchservice.GenerateWebSearchAsync(request, clientId);
+        }
+
 
         [HttpPost("websearch")]
         public async Task<IActionResult> WebSearch([FromBody] WebSearchRequest request)
@@ -1461,7 +1473,7 @@ namespace PitchGenApi.Controllers
                     ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
                 };
 
-                var result = await _pitchservice.GenerateWebSearchAsync(enquiryRequest, request.Clientid);
+                var result = await GenerateWebSearchByProviderAsync(enquiryRequest, request.Clientid);
                 
 
                 if (!result.IsSuccess)

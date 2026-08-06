@@ -300,7 +300,7 @@ namespace PitchGenApi.Controllers
                         }
                         else
                         {
-                            searchResult = await _pitchService.GenerateWebSearchAsync(new EnquiryRequest
+                            searchResult = await GenerateWebSearchByProviderAsync(new EnquiryRequest
                             {
                                 Prompt = filledSearchInstructions,
                                 ScrappedData = "",
@@ -795,5 +795,10 @@ namespace PitchGenApi.Controllers
             => IsDeepSeekModel(request.ModelName)
                 ? _deepSeekService.GeneratePitchAsync(request)
                 : _pitchService.GeneratePitchAsync(request);
+
+        private Task<PitchResult> GenerateWebSearchByProviderAsync(EnquiryRequest request, int clientId)
+            => IsDeepSeekModel(request.ModelName)
+                ? _deepSeekService.GenerateWebSearchAsync(request, clientId)
+                : _pitchService.GenerateWebSearchAsync(request, clientId);
     }
 }
