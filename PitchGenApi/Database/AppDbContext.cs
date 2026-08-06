@@ -74,9 +74,24 @@ namespace PitchGenApi.Database
         public DbSet<EmailBounce> EmailBounces { get; set; }
         public DbSet<UnlockedContacts> UnlockedContacts { get; set; }
         public DbSet<EmailPattern> EmailPattern { get; set; }
+        // ✅ Admin-controlled model per AI purpose (Settings > AI models)
+        public DbSet<AiModelSetting> ai_model_settings { get; set; }
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
+
+            modelBuilder.Entity<AiModelSetting>(entity =>
+            {
+                entity.ToTable("ai_model_settings");
+                entity.HasKey(e => e.id);
+                entity.Property(e => e.purpose_key).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.model_name).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.updated_by).HasMaxLength(200);
+                entity.Property(e => e.updated_at).HasDefaultValueSql("GETUTCDATE()");
+
+                // One row per purpose — the settings are application-wide.
+                entity.HasIndex(e => e.purpose_key).IsUnique();
+            });
             modelBuilder.Entity<zohoViewIddetails>().ToTable("zohoViewIddetails");
             modelBuilder.Entity<SettingspgViewIddetails>().ToTable("Settingspg");
             modelBuilder.Entity<UserDateTimeSettings>(entity =>

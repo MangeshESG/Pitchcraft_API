@@ -28,6 +28,7 @@ namespace PitchGenApi.Controllers
         private readonly ContactRepository _contactRepository;
         private readonly INoteRepository _noteRepository;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly IAiModelSettingsService _aiModelSettings;
 
 
 
@@ -37,7 +38,8 @@ namespace PitchGenApi.Controllers
             IPitchService pitchService,
             ContactRepository contactRepository,
             INoteRepository noteRepository,
-            DeepSeekPitchService deepSeekService)
+            DeepSeekPitchService deepSeekService,
+            IAiModelSettingsService aiModelSettings)
         {
             _campaignService = campaignService;
             _dbContext = dbContext;
@@ -45,6 +47,7 @@ namespace PitchGenApi.Controllers
             _contactRepository = contactRepository;
             _noteRepository = noteRepository;
             _deepSeekService = deepSeekService;
+            _aiModelSettings = aiModelSettings;
         }
 
 
@@ -519,7 +522,8 @@ namespace PitchGenApi.Controllers
             if (string.IsNullOrWhiteSpace(request.UserId))
                 return BadRequest(new { Message = "UserId is required" });
 
-            var model = string.IsNullOrWhiteSpace(request.Model) ? "gpt-5" : request.Model;
+            // Blueprint builder conversation — model is admin-controlled.
+            var model = await _aiModelSettings.GetModelAsync(AiModelPurposes.BlueprintGeneration);
 
             var result = await _campaignService.ProcessChatAsync(
                 request.UserId,
@@ -597,11 +601,15 @@ namespace PitchGenApi.Controllers
             if (string.IsNullOrWhiteSpace(masterBlueprint))
                 return StatusCode(500, new { Message = "Master blueprint is empty" });
 
+            // Blueprint example output — model is admin-controlled.
+            var blueprintModel = await _aiModelSettings.GetModelAsync(
+                AiModelPurposes.BlueprintGeneration);
+
             // 5️⃣ Generate FILLED TEMPLATE (placeholder replacement via AI)
             var rawResult = await _campaignService.GenerateExampleOutputAsync(
                 runtimeVals,
                 masterBlueprint,
-                req.Model ?? "gpt-5.1"
+                blueprintModel
             );
 
             if (!string.IsNullOrWhiteSpace(rawResult))
@@ -636,7 +644,7 @@ namespace PitchGenApi.Controllers
                 {
                     Prompt = filledTemplate,
                     ScrappedData = "Generate a professional example email",
-                    ModelName = req.Model
+                    ModelName = blueprintModel
                 }
             );
 
@@ -781,6 +789,9 @@ namespace PitchGenApi.Controllers
         [HttpPost("edit/start")]
         public async Task<IActionResult> StartEditConversation([FromBody] StartEditConversationRequest req)
         {
+            // Blueprint edit conversation — model is admin-controlled.
+            req.Model = await _aiModelSettings.GetModelAsync(AiModelPurposes.BlueprintGeneration);
+
             var result = await _campaignService.StartEditModeAsync(req);
             return Ok(new { response = result });
         }
@@ -790,6 +801,9 @@ namespace PitchGenApi.Controllers
         {
             try
             {
+                // Blueprint edit conversation — model is admin-controlled.
+                req.Model = await _aiModelSettings.GetModelAsync(AiModelPurposes.BlueprintGeneration);
+
                 var result = await _campaignService.ContinueEditModeAsync(req);
                 return Ok(new { response = result });
             }
@@ -1414,11 +1428,18 @@ namespace PitchGenApi.Controllers
                 }
 
                 // ---- model + GPT detection ----
-                var selectedModel = !string.IsNullOrWhiteSpace(template.SelectedModel)
-                    ? template.SelectedModel
-                    : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
-                        ? template.TemplateDefinition.SelectedModel
-                        : "gpt-5.1");
+                // Application-wide email-generation model (Settings > AI models);
+                // the blueprint's own model only fills in if none is configured.
+                var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.EmailGeneration);
+
+                if (string.IsNullOrWhiteSpace(selectedModel))
+                {
+                    selectedModel = !string.IsNullOrWhiteSpace(template.SelectedModel)
+                        ? template.SelectedModel
+                        : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
+                            ? template.TemplateDefinition.SelectedModel
+                            : AiModelDefaults.EmailGenerationModel);
+                }
 
                 var isGptModel = selectedModel.Trim().StartsWith("gpt", StringComparison.OrdinalIgnoreCase);
 
@@ -1480,7 +1501,7 @@ namespace PitchGenApi.Controllers
                             {
                                 Prompt = filledInstructions,
                                 ScrappedData = "",
-                                ModelName = AiModelDefaults.WebSearchModel
+                                ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
                             }, parsedClientId);
 
                             if (searchResult != null && searchResult.IsSuccess)
@@ -1560,6 +1581,14 @@ namespace PitchGenApi.Controllers
                 {
                     contact.email_body = bodyResult.Content;
                     contact.email_subject = subjectLine;
+
+                    // Persist the research the same way the Generate-insights
+                    // endpoint does, so the profile Insights panel always shows
+                    // the latest data. Only overwrite on a successful search —
+                    // a skipped or failed one must not wipe what's stored.
+                    if (!string.IsNullOrWhiteSpace(webSearchData))
+                        contact.web_search_data = webSearchData;
+
                     contact.updated_at = DateTime.UtcNow;
 
                     await _dbContext.SaveChangesAsync();

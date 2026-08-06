@@ -22,19 +22,22 @@ namespace PitchGenApi.Controllers
         private readonly ContactRepository _contactRepository;
         private readonly INoteRepository _noteRepository;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly IAiModelSettingsService _aiModelSettings;
 
         public EmailGenerationController(
             AppDbContext dbContext,
             IPitchService pitchService,
             ContactRepository contactRepository,
             INoteRepository noteRepository,
-            DeepSeekPitchService deepSeekService)
+            DeepSeekPitchService deepSeekService,
+            IAiModelSettingsService aiModelSettings)
         {
             _dbContext = dbContext;
             _pitchService = pitchService;
             _contactRepository = contactRepository;
             _noteRepository = noteRepository;
             _deepSeekService = deepSeekService;
+            _aiModelSettings = aiModelSettings;
         }
 
         // ============================================
@@ -199,11 +202,19 @@ namespace PitchGenApi.Controllers
                 }
 
                 // ---- model + GPT detection ----
-                var selectedModel = !string.IsNullOrWhiteSpace(template.SelectedModel)
-                    ? template.SelectedModel
-                    : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
-                        ? template.TemplateDefinition.SelectedModel
-                        : "gpt-5.1");
+                // The email-generation model is set application-wide by an admin
+                // (Settings > AI models); the blueprint's own model is only a
+                // fallback for installs that haven't configured one.
+                var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.EmailGeneration);
+
+                if (string.IsNullOrWhiteSpace(selectedModel))
+                {
+                    selectedModel = !string.IsNullOrWhiteSpace(template.SelectedModel)
+                        ? template.SelectedModel
+                        : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
+                            ? template.TemplateDefinition.SelectedModel
+                            : AiModelDefaults.EmailGenerationModel);
+                }
 
                 var isGptModel = selectedModel.Trim().StartsWith("gpt", StringComparison.OrdinalIgnoreCase);
 
@@ -293,7 +304,7 @@ namespace PitchGenApi.Controllers
                             {
                                 Prompt = filledSearchInstructions,
                                 ScrappedData = "",
-                                ModelName = AiModelDefaults.WebSearchModel
+                                ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
                             }, parsedClientId);
 
                             if (searchResult != null && searchResult.IsSuccess)
@@ -379,6 +390,14 @@ namespace PitchGenApi.Controllers
                 {
                     contact.email_body = bodyResult.Content;
                     contact.email_subject = subjectLine;
+
+                    // Persist the research the same way the Generate-insights
+                    // endpoint does, so the profile Insights panel always shows
+                    // the latest data. Only overwrite on a successful search —
+                    // a skipped or failed one must not wipe what's stored.
+                    if (!string.IsNullOrWhiteSpace(webSearchData))
+                        contact.web_search_data = webSearchData;
+
                     contact.updated_at = DateTime.UtcNow;
 
                     await _dbContext.SaveChangesAsync();
