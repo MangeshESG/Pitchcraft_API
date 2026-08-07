@@ -540,10 +540,7 @@ namespace PitchGenApi.Repository
 
             var placeholders = new Dictionary<string, string>
             {
-                ["FirstName"] = firstName,
-                ["UserEmail"] = email,
-                ["ContactID"] = contactId ?? string.Empty,
-                ["DateTime"] = DateTime.UtcNow.ToString("dd MMM yyyy, hh:mm tt 'UTC'")
+                ["first_name"] = firstName,
             };
             string subject = _emailTemplateHelper.ReplacePlaceholders(
                 template.Subject,
