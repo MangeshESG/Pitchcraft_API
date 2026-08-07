@@ -16,18 +16,14 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpPost]
-        public async Task<IActionResult> GetUnlockedEmail(
-            GetUnlockedEmailRequest request,
-            CancellationToken cancellationToken)
+        public async Task<IActionResult> GetUnlockedEmail (GetUnlockedEmailRequest request, CancellationToken cancellationToken)
         {
             return Ok(await UnlockAsync(request, cancellationToken));
         }
 
         [HttpPost("multiple")]
         [HttpPost("GetMulitpleUnlockResults")]
-        public async Task<IActionResult> GetMultipleUnlockResults(
-            List<GetUnlockedEmailRequest> requests,
-            CancellationToken cancellationToken)
+        public async Task<IActionResult> GetMultipleUnlockResults( List<GetUnlockedEmailRequest> requests, CancellationToken cancellationToken)
         {
             if (requests == null || requests.Count == 0)
                 return BadRequest(new { success = false, message = "At least one contact is required." });
@@ -42,20 +38,76 @@ namespace PitchGenApi.Controllers
             return Ok(new { data = results });
         }
 
-        private async Task<UnlockEmailResult> UnlockAsync(
-            GetUnlockedEmailRequest request,
-            CancellationToken cancellationToken)
+        [HttpPost("EX_match-contact")]
+        public async Task<IActionResult> MatchContact([FromBody] ContactMatchRequestDto request)
+        {
+            if (request.ClientId <= 0)
+                return BadRequest(new { message = "A valid ClientId is required." });
+
+            if (string.IsNullOrWhiteSpace(request.LinkedInUrl))
+                return BadRequest(new { message = "LinkedInUrl is required." });
+
+            var result = await _extensionRepository.MatchContactAsync(request);
+            return StatusCode(result.StatusCode, result.Body);
+        }
+
+        [HttpPost("EX_add-contact-to-datafile")]
+        public async Task<IActionResult> AddContactToDataFile([FromBody] AddContactToDataFileRequestDto request)
+        {
+            if (request.ClientId <= 0)
+                return BadRequest(new { message = "A valid ClientId is required." });
+
+            if (request.DataFileId <= 0)
+                return BadRequest(new { message = "A valid DataFileId is required." });
+
+            if (string.IsNullOrWhiteSpace(request.LinkedInUrl))
+                return BadRequest(new { message = "LinkedInUrl is required." });
+
+            if (string.IsNullOrWhiteSpace(request.Email))
+                return BadRequest(new { message = "Email is required." });
+
+            var result = await _extensionRepository.AddContactToDataFileAsync(request);
+            return StatusCode(result.StatusCode, result.Body);
+        }
+
+        [HttpPost("EX_update-contact-fields")]
+        public async Task<IActionResult> UpdateContactFields([FromBody] UpdateContactFieldsRequestDto request)
+        {
+            if (request.ClientId <= 0 || request.DataFileId <= 0 || request.ContactId <= 0)
+            {
+                return BadRequest(new
+                {
+                    message = "Valid ClientId, DataFileId and ContactId are required."
+                });
+            }
+
+            var result = await _extensionRepository.UpdateContactFieldsAsync(request);
+            return StatusCode(result.StatusCode, result.Body);
+        }
+        //------------------------------------------------------------------------Private Mathods---------------------------------------------------------------------------------
+
+
+        private async Task<UnlockEmailResult> UnlockAsync( GetUnlockedEmailRequest request, CancellationToken cancellationToken)
         {
             if (request == null ||
-                string.IsNullOrWhiteSpace(request.ContactID) ||
                 request.ClientID <= 0 ||
                 string.IsNullOrWhiteSpace(request.Name) ||
                 string.IsNullOrWhiteSpace(request.Domain))
             {
                 return UnlockEmailResult.Failed(
                     request?.ContactID,
-                    "ContactID, ClientID, Name and Domain are required.");
+                    "ClientID, Name and Domain are required.");
             }
+
+            var normalizedDomain = NormalizeDomain(request.Domain);
+            if (string.IsNullOrWhiteSpace(normalizedDomain))
+            {
+                return UnlockEmailResult.Failed(
+                    request.ContactID,
+                    "Domain must be a valid domain name or website URL.");
+            }
+
+            request.Domain = normalizedDomain;
 
             var status = new List<string>
             {
@@ -63,8 +115,7 @@ namespace PitchGenApi.Controllers
             };
 
             var email = await _extensionRepository.GetUnlockedEmailAsync(
-                request.ContactID,
-                request.ClientID,
+                request.Domain,
                 request.LinkedInUrl);
 
             if (!string.IsNullOrWhiteSpace(email))
@@ -81,7 +132,8 @@ namespace PitchGenApi.Controllers
 
             status.Add("Contact was not unlocked within 30 days.");
             var savedPatterns = await _extensionRepository.GetEmailPatternsAsync(request.Domain);
-            var search = await FindValidEmailAsync(request, savedPatterns, status, cancellationToken);
+            var search = await FindValidEmailAsync(
+                request, savedPatterns, status, requireExactlyOneStage3Result: false, cancellationToken);
 
             if (search.VerificationUnavailable)
                 return UnlockEmailResult.Failed(request.ContactID, string.Join("\n", status));
@@ -94,6 +146,7 @@ namespace PitchGenApi.Controllers
                     request,
                     _extensionRepository.GetAllEmailPatterns(),
                     status,
+                    requireExactlyOneStage3Result: true,
                     cancellationToken);
 
                 if (search.VerificationUnavailable)
@@ -108,25 +161,25 @@ namespace PitchGenApi.Controllers
             return await CompleteUnlockAsync(request, email, status);
         }
 
-        private async Task<EmailSearchResult> FindValidEmailAsync(
-            GetUnlockedEmailRequest request,
-            IEnumerable<string> patterns,
-            List<string> status,
-            CancellationToken cancellationToken)
+        private async Task<EmailSearchResult> FindValidEmailAsync( GetUnlockedEmailRequest request,  IEnumerable<string> patterns, List<string> status, bool requireExactlyOneStage3Result, CancellationToken cancellationToken)
         {
-            foreach (var pattern in patterns.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var generatedEmail = _extensionRepository.GenerateEmail(
+            var generatedEmails = patterns
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(pattern => _extensionRepository.GenerateEmail(
                     request.Name,
                     request.Domain,
-                    pattern);
+                    pattern))
+                .Where(email => !string.IsNullOrWhiteSpace(email))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
-                Console.WriteLine($"Genrated Email = {generatedEmail}");
+            status.Add($"Generated {generatedEmails.Count} distinct email candidates.");
+            var stage2PassedEmails = new List<string>();
+            bool stage2Unavailable = false;
 
-                if (string.IsNullOrWhiteSpace(generatedEmail))
-                    continue;
-
+            foreach (var generatedEmail in generatedEmails)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
                 var validation = await _extensionRepository.Stage2Async(
                     generatedEmail,
                     cancellationToken);
@@ -135,45 +188,59 @@ namespace PitchGenApi.Controllers
                 Console.WriteLine($"[EmailUnlock] VerificationStatus={validation.Status}");
                 status.Add($"{generatedEmail}: {validation.Status.Trim()}");
 
-                Console.WriteLine($"Email Status = {validation}");
-
-
                 if (validation.State == EmailVerificationState.Valid)
-                {
-                    var firstName = request.Name
-                        .Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                        .FirstOrDefault() ?? request.Name;
-                    var stage3 = await _extensionRepository.Stage3Async(
-                        generatedEmail,
-                        firstName,
-                        request.ContactID,
-                        request.ClientID,
-                        cancellationToken);
-                    status.Add($"{generatedEmail}: {stage3.Status.Trim()}");
-                    Console.WriteLine($"[EmailUnlock] Stage3State={stage3.State}");
-                    Console.WriteLine($"[EmailUnlock] Stage3Status={stage3.Status}");
+                    stage2PassedEmails.Add(generatedEmail);
+                else if (validation.State == EmailVerificationState.VerificationUnavailable)
+                    stage2Unavailable = true;
+            }
 
-                    if (stage3.State == EmailVerificationState.Valid)
-                        return new EmailSearchResult(generatedEmail, false);
+            status.Add($"Stage 2 accepted {stage2PassedEmails.Count} candidate(s).");
 
-                    if (stage3.State == EmailVerificationState.VerificationUnavailable)
-                        return new EmailSearchResult(null, true);
+            if (stage2PassedEmails.Count > 2)
+            {
+                status.Add("More than two candidates were accepted by Stage 2; the domain appears catch-all, so Stage 3 was skipped.");
+                return new EmailSearchResult(null, false);
+            }
 
-                    // A hard bounce means this candidate is invalid; try the next pattern.
-                    continue;
-                }
+            if (stage2PassedEmails.Count == 0)
+                return new EmailSearchResult(null, stage2Unavailable);
 
-                if (validation.State == EmailVerificationState.VerificationUnavailable)
+            var firstName = request.Name
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault() ?? request.Name;
+            var stage3PassedEmails = new List<string>();
+
+            foreach (var stage2Email in stage2PassedEmails)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var stage3 = await _extensionRepository.Stage3Async(
+                    stage2Email,
+                    firstName,
+                    request.ContactID,
+                    request.ClientID,
+                    cancellationToken);
+                status.Add($"{stage2Email}: {stage3.Status.Trim()}");
+                Console.WriteLine($"[EmailUnlock] Stage3Email={stage2Email}");
+                Console.WriteLine($"[EmailUnlock] Stage3State={stage3.State}");
+                Console.WriteLine($"[EmailUnlock] Stage3Status={stage3.Status}");
+
+                if (stage3.State == EmailVerificationState.Valid)
+                    stage3PassedEmails.Add(stage2Email);
+                else if (stage3.State == EmailVerificationState.VerificationUnavailable)
                     return new EmailSearchResult(null, true);
             }
 
-            return new EmailSearchResult(null, false);
+            status.Add($"Stage 3 accepted {stage3PassedEmails.Count} candidate(s).");
+            if (requireExactlyOneStage3Result && stage3PassedEmails.Count != 1)
+            {
+                status.Add("Predefined-pattern search requires exactly one Stage 3 result.");
+                return new EmailSearchResult(null, false);
+            }
+
+            return new EmailSearchResult(stage3PassedEmails.FirstOrDefault(), false);
         }
 
-        private async Task<UnlockEmailResult> CompleteUnlockAsync(
-            GetUnlockedEmailRequest request,
-            string email,
-            List<string> status)
+        private async Task<UnlockEmailResult> CompleteUnlockAsync(GetUnlockedEmailRequest request, string email, List<string> status)
         {
             var completed = await _extensionRepository.CompleteUnlockAsync(
                 request.ContactID,
@@ -189,10 +256,35 @@ namespace PitchGenApi.Controllers
                 return UnlockEmailResult.Failed(request.ContactID, string.Join("\n", status));
             }
 
-            status.Add("Email found, contact updated, unlock history saved and one credit deducted.");
+            status.Add("Email found, unlock history saved and one credit deducted.");
             return UnlockEmailResult.Succeeded(request.ContactID, email, string.Join("\n", status));
         }
 
         private sealed record EmailSearchResult(string? Email, bool VerificationUnavailable);
+
+        private static string? NormalizeDomain(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return null;
+
+            string input = value.Trim();
+            if (!input.Contains("://", StringComparison.Ordinal))
+                input = "https://" + input;
+
+            if (!Uri.TryCreate(input, UriKind.Absolute, out var uri) ||
+                string.IsNullOrWhiteSpace(uri.Host))
+            {
+                return null;
+            }
+
+            string host = uri.IdnHost.Trim().TrimEnd('.').ToLowerInvariant();
+            if (host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
+                host = host[4..];
+
+            return host.Contains('.') ? host : null;
+        }
+
+
+
     }
 }

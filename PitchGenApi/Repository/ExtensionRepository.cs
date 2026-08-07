@@ -9,6 +9,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Helpers;
+using PitchGenApi.Models;
 using System.Net.Mail;
 using System.Net.Sockets;
 
@@ -22,35 +23,9 @@ namespace PitchGenApi.Repository
         private readonly EmailTemplateHelper _emailTemplateHelper;
         private readonly IConfiguration _configuration;
 
-        private static readonly string[] AllEmailPatterns =
-        {
-            "FirstNameOnly",
-            "FirstNamedotlastname",
-            "FirstInitialandlastname",
-            "FirstInitialdotlastname",
-            "FirstInitialunderscorelastname",
-            "FirstNamedotlastInitial",
-            "Firstnameandlastname",
-            "FirstnameUnderscorelastInitial",
-            "LastInitialdotfirstname",
-            "LastInitialAndfirstname",
-            "LastInitialUnderscorefirstname",
-            "Lastnamedotfirstname",
-            "LastNameUnderscoreFirstName",
-            "LastNameAndFirstName",
-            "LastNamedotFirstInitial",
-            "LastNameUnderscoreFirstInitial",
-            "LastNameAndFirstInitial",
-            "FirstNameAndLastInitial",
-            "FirstNameUnderscoreLastname"
-        };
+        
 
-        public ExtensionRepository(
-            AppDbContext context,
-            CalculateEmailRepository calculateEmailRepository,
-            ContactRepository contactRepository,
-            EmailTemplateHelper emailTemplateHelper,
-            IConfiguration configuration)
+        public ExtensionRepository(AppDbContext context, CalculateEmailRepository calculateEmailRepository, ContactRepository contactRepository, EmailTemplateHelper emailTemplateHelper, IConfiguration configuration)
         {
             _context = context;
             _calculateEmailRepository = calculateEmailRepository;
@@ -60,6 +35,228 @@ namespace PitchGenApi.Repository
         }
 
         public IReadOnlyList<string> GetAllEmailPatterns() => AllEmailPatterns;
+
+        public async Task<ExtensionOperationResult> MatchContactAsync(ContactMatchRequestDto request)
+        {
+            static string Normalize(string? value) =>
+                (value ?? string.Empty).Trim().ToLowerInvariant();
+
+            static string NormalizeUrl(string? value) =>
+                Normalize(value).TrimEnd('/');
+
+            var normalizedLinkedInUrl = NormalizeUrl(request.LinkedInUrl);
+            var clientContacts = await (
+                from c in _context.contacts.AsNoTracking()
+                join df in _context.data_files.AsNoTracking()
+                    on c.DataFileId equals (int?)df.id
+                where df.client_id == request.ClientId && c.linkedin_url != null
+                select new
+                {
+                    c.id,
+                    c.DataFileId,
+                    c.full_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.company_name,
+                    c.country_or_address,
+                    df.name,
+                    df.data_file_name
+                }).ToListAsync();
+
+            var contacts = clientContacts
+                .Where(contact => NormalizeUrl(contact.linkedin_url) == normalizedLinkedInUrl)
+                .ToList();
+
+            if (contacts.Count == 0)
+                return new ExtensionOperationResult(200, new { matched = false });
+
+            var matchedContact = contacts.FirstOrDefault(contact =>
+                Normalize(contact.full_name) == Normalize(request.ContactName) &&
+                Normalize(contact.job_title) == Normalize(request.JobTitle) &&
+                Normalize(contact.company_name) == Normalize(request.CompanyName) &&
+                Normalize(contact.country_or_address) == Normalize(request.Location));
+
+            if (matchedContact != null)
+            {
+                return new ExtensionOperationResult(200, new
+                {
+                    matched = true,
+                    contactId = matchedContact.id,
+                    dataFileId = matchedContact.DataFileId,
+                    dataFileName = !string.IsNullOrWhiteSpace(matchedContact.name)
+                        ? matchedContact.name
+                        : matchedContact.data_file_name,
+                    existingData = new
+                    {
+                        contactName = matchedContact.full_name,
+                        jobTitle = matchedContact.job_title,
+                        companyName = matchedContact.company_name,
+                        location = matchedContact.country_or_address
+                    }
+                });
+            }
+
+            var existingContact = contacts[0];
+            var unmatchedFields = new Dictionary<string, object?>();
+
+            if (Normalize(existingContact.full_name) != Normalize(request.ContactName))
+                unmatchedFields["contactName"] = request.ContactName;
+            if (Normalize(existingContact.job_title) != Normalize(request.JobTitle))
+                unmatchedFields["jobTitle"] = request.JobTitle;
+            if (Normalize(existingContact.company_name) != Normalize(request.CompanyName))
+                unmatchedFields["companyName"] = request.CompanyName;
+            if (Normalize(existingContact.country_or_address) != Normalize(request.Location))
+                unmatchedFields["location"] = request.Location;
+
+            return new ExtensionOperationResult(200, new
+            {
+                matched = false,
+                contactId = existingContact.id,
+                dataFileId = existingContact.DataFileId,
+                dataFileName = !string.IsNullOrWhiteSpace(existingContact.name)
+                    ? existingContact.name
+                    : existingContact.data_file_name,
+                existingData = new
+                {
+                    contactName = existingContact.full_name,
+                    jobTitle = existingContact.job_title,
+                    companyName = existingContact.company_name,
+                    location = existingContact.country_or_address
+                },
+                unmatchedData = unmatchedFields
+            });
+        }
+
+        public async Task<ExtensionOperationResult> AddContactToDataFileAsync(AddContactToDataFileRequestDto request)
+        {
+            var dataFileExists = await _context.data_files.AsNoTracking().AnyAsync(df =>
+                df.id == request.DataFileId && df.client_id == request.ClientId);
+
+            if (!dataFileExists)
+            {
+                return new ExtensionOperationResult(404, new
+                {
+                    dataFileId = request.DataFileId,
+                    message = "DataFile was not found for the given client."
+                });
+            }
+
+            static string NormalizeUrl(string? value) =>
+                (value ?? string.Empty).Trim().TrimEnd('/').ToLowerInvariant();
+
+            var requestedLinkedInUrl = NormalizeUrl(request.LinkedInUrl);
+            var existingUrls = await (
+                from c in _context.contacts.AsNoTracking()
+                join df in _context.data_files.AsNoTracking()
+                    on c.DataFileId equals (int?)df.id
+                where df.client_id == request.ClientId && c.linkedin_url != null
+                select new { c.id, c.DataFileId, c.linkedin_url })
+                .ToListAsync();
+            var duplicate = existingUrls.FirstOrDefault(c =>
+                NormalizeUrl(c.linkedin_url) == requestedLinkedInUrl);
+
+            if (duplicate != null)
+            {
+                return new ExtensionOperationResult(409, new
+                {
+                    message = "This LinkedIn contact already exists in another Pitchkraft list.",
+                    contactId = duplicate.id,
+                    dataFileId = duplicate.DataFileId
+                });
+            }
+
+            var contact = new Contact
+            {
+                DataFileId = request.DataFileId,
+                full_name = request.ContactName?.Trim(),
+                job_title = request.JobTitle?.Trim(),
+                linkedin_url = request.LinkedInUrl!.Trim(),
+                email = request.Email?.Trim(),
+                company_name = request.CompanyName?.Trim(),
+                country_or_address = request.Location?.Trim(),
+                created_at = DateTime.UtcNow
+            };
+
+            _context.contacts.Add(contact);
+            await _context.SaveChangesAsync();
+
+            return new ExtensionOperationResult(200, new
+            {
+                success = true,
+                contactId = contact.id,
+                dataFileId = request.DataFileId
+            });
+        }
+
+        public async Task<ExtensionOperationResult> UpdateContactFieldsAsync(UpdateContactFieldsRequestDto request)
+        {
+            var contact = await (
+                from c in _context.contacts
+                join df in _context.data_files on c.DataFileId equals (int?)df.id
+                where c.id == request.ContactId &&
+                      df.id == request.DataFileId &&
+                      df.client_id == request.ClientId
+                select c).FirstOrDefaultAsync();
+
+            if (contact == null)
+            {
+                return new ExtensionOperationResult(404, new
+                {
+                    contactId = request.ContactId,
+                    dataFileId = request.DataFileId,
+                    message = "Contact was not found in the given client's DataFile."
+                });
+            }
+
+            var updatedFields = new List<string>();
+            if (request.ContactName != null)
+            {
+                contact.full_name = request.ContactName.Trim();
+                updatedFields.Add("contactName");
+            }
+            if (request.JobTitle != null)
+            {
+                contact.job_title = request.JobTitle.Trim();
+                updatedFields.Add("jobTitle");
+            }
+            if (request.LinkedInUrl != null)
+            {
+                contact.linkedin_url = request.LinkedInUrl.Trim();
+                updatedFields.Add("linkedInUrl");
+            }
+            if (request.Email != null)
+            {
+                contact.email = request.Email.Trim();
+                updatedFields.Add("email");
+            }
+            if (request.CompanyName != null)
+            {
+                contact.company_name = request.CompanyName.Trim();
+                updatedFields.Add("companyName");
+            }
+            if (request.Location != null)
+            {
+                contact.country_or_address = request.Location.Trim();
+                updatedFields.Add("location");
+            }
+
+            if (updatedFields.Count == 0)
+            {
+                return new ExtensionOperationResult(400,
+                    new { message = "At least one field is required for update." });
+            }
+
+            contact.updated_at = DateTime.UtcNow;
+            await _context.SaveChangesAsync();
+
+            return new ExtensionOperationResult(200, new
+            {
+                success = true,
+                contactId = contact.id,
+                dataFileId = contact.DataFileId,
+                updatedFields
+            });
+        }
 
         public async Task<List<string>> GetEmailPatternsAsync(string domain)
         {
@@ -120,28 +317,27 @@ namespace PitchGenApi.Repository
 
             return email.ToLower();
         }
-        public async Task<string?> GetUnlockedEmailAsync(
-            string contactId,
-            int clientId,
-            string? linkedInUrl)
+
+        public async Task<string?> GetUnlockedEmailAsync(string domain, string? linkedInUrl)
         {
+            if (string.IsNullOrWhiteSpace(domain) || string.IsNullOrWhiteSpace(linkedInUrl))
+                return null;
+
             DateTime last30Days = DateTime.UtcNow.AddDays(-30);
-            string normalizedClientId = clientId.ToString();
-            string normalizedContactId = contactId.Trim();
+            string normalizedDomain = "@" + domain.Trim().TrimStart('@').ToLowerInvariant();
+            string normalizedLinkedInUrl = linkedInUrl.Trim();
 
             return await _context.UnlockedContacts
-                .Where(x => x.ClientId == normalizedClientId &&
-                            (x.ContactId == normalizedContactId ||
-                             (!string.IsNullOrWhiteSpace(linkedInUrl) && x.LinkedInUrl == linkedInUrl)) &&
+                .Where(x => x.LinkedInUrl == normalizedLinkedInUrl &&
+                            x.EmailId != null &&
+                            x.EmailId.ToLower().EndsWith(normalizedDomain) &&
                             x.UnlockedOn >= last30Days)
                 .OrderByDescending(x => x.UnlockedOn)
                 .Select(x => x.EmailId)
                 .FirstOrDefaultAsync();
         }
 
-        public async Task<EmailVerificationResult> Stage2Async(
-            string email,
-            CancellationToken cancellationToken = default)
+        public async Task<EmailVerificationResult> Stage2Async(string email,CancellationToken cancellationToken = default)
         {
             const int smtpTimeoutSeconds = 10;
             const string stage2Prefix = "Stage 2 - Verifying by MX. ";
@@ -311,35 +507,9 @@ namespace PitchGenApi.Repository
             }
         }
 
-        private static async Task<string?> ReadLineWithTimeoutAsync(
-            StreamReader reader,
-            CancellationToken cancellationToken)
-        {
-            return await reader.ReadLineAsync(cancellationToken)
-                .AsTask()
-                .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
-        }
+        
 
-        private static bool IsDefinitiveMailboxNotFound(int responseCode, string? response)
-        {
-            if (responseCode is not (550 or 551 or 553) || string.IsNullOrWhiteSpace(response))
-                return false;
-
-            return response.Contains("5.1.1", StringComparison.OrdinalIgnoreCase) ||
-                   response.Contains("5.1.10", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string FormatSmtpReason(string? response) =>
-            string.IsNullOrWhiteSpace(response)
-                ? string.Empty
-                : $" SMTP response: {response.Trim()}";
-
-        public async Task<EmailVerificationResult> Stage3Async(
-            string email,
-            string firstName,
-            string contactId,
-            int clientId,
-            CancellationToken cancellationToken = default)
+        public async Task<EmailVerificationResult> Stage3Async(string email, string firstName, string? contactId, int clientId, CancellationToken cancellationToken = default)
         {
             const string prefix = "Stage 3 - Verifying by sending an actual email. ";
             var smtpCredential = GetConfiguredStage3Smtp();
@@ -372,7 +542,7 @@ namespace PitchGenApi.Repository
             {
                 ["FirstName"] = firstName,
                 ["UserEmail"] = email,
-                ["ContactID"] = contactId,
+                ["ContactID"] = contactId ?? string.Empty,
                 ["DateTime"] = DateTime.UtcNow.ToString("dd MMM yyyy, hh:mm tt 'UTC'")
             };
             string subject = _emailTemplateHelper.ReplacePlaceholders(
@@ -452,52 +622,92 @@ namespace PitchGenApi.Repository
             }
         }
 
-        private static SecureSocketOptions GetStage3SocketOption(string? securityType, bool useSsl) =>
-            securityType?.ToUpperInvariant() switch
-            {
-                "SSL/TLS" => SecureSocketOptions.SslOnConnect,
-                "STARTTLS" => SecureSocketOptions.StartTls,
-                "NONE" => SecureSocketOptions.None,
-                "AUTO" => SecureSocketOptions.Auto,
-                _ => useSsl ? SecureSocketOptions.Auto : SecureSocketOptions.None
-            };
+        
 
-        private Model.SmtpCredentials? GetConfiguredStage3Smtp()
+        public async Task<bool> CompleteUnlockAsync(string? contactId, int clientId, string? linkedInUrl, string email, string name, string domain)
         {
-            var section = _configuration.GetSection("EmailUnlockStage3:Smtp");
-            string? server = section["Server"];
-            string? username = section["Username"];
-            string? password = section["Password"];
-            string? fromEmail = section["FromEmail"];
+            var executionStrategy = _context.Database.CreateExecutionStrategy();
 
-            if (string.IsNullOrWhiteSpace(server) ||
-                string.IsNullOrWhiteSpace(username) ||
-                string.IsNullOrWhiteSpace(password) ||
-                string.IsNullOrWhiteSpace(fromEmail))
+            return await executionStrategy.ExecuteAsync(async () =>
             {
-                return null;
-            }
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    if (!await _contactRepository.CreditDeduction(clientId))
+                    {
+                        await transaction.RollbackAsync();
+                        return false;
+                    }
 
-            return new Model.SmtpCredentials
-            {
-                Id = 0,
-                ClientId = "Stage3",
-                Server = server,
-                Port = int.TryParse(section["Port"], out int port) ? port : 587,
-                Username = username,
-                Password = password,
-                FromEmail = fromEmail,
-                SenderName = section["SenderName"] ?? "Pitchkraft",
-                SecurityType = section["SecurityType"] ?? "STARTTLS",
-                UseSsl = !bool.TryParse(section["UseSsl"], out bool useSsl) || useSsl
-            };
+                    _context.UnlockedContacts.Add(new Model.UnlockedContacts
+                    {
+                        ClientId = clientId.ToString(),
+                        ContactId = contactId?.Trim() ?? string.Empty,
+                        EmailId = email,
+                        LinkedInUrl = linkedInUrl?.Trim() ?? string.Empty,
+                        UnlockedOn = DateTime.UtcNow
+                    });
+
+                    await SaveLearnedPatternAsync(name, email, domain);
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                    return true;
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw;
+                }
+            });
         }
 
-        private async Task<bool?> CheckStage3BounceDirectlyAsync(
-            string recipientEmail,
-            string originalMessageId,
-            DateTime sentAt,
-            CancellationToken cancellationToken)
+        
+        //------------------------------------------------------------------------Private Mathods---------------------------------------------------------------------------------
+
+        private int GetResponseCode(string responseString)
+        {
+            if (string.IsNullOrWhiteSpace(responseString) || responseString.Length < 3)
+                return 0;
+
+            return int.TryParse(responseString.Substring(0, 3), out int code)
+                ? code
+                : 0;
+        }
+
+        private async Task SaveLearnedPatternAsync(string name, string email, string domain)
+        {
+            string pattern = _calculateEmailRepository.FindEmailPattern(name, email);
+            if (string.IsNullOrWhiteSpace(pattern) || string.IsNullOrWhiteSpace(domain))
+                return;
+
+            string normalizedDomain = domain.Trim().ToLowerInvariant();
+            var domainEntity = await _context.Domain
+                .FirstOrDefaultAsync(x => x.domain.ToLower() == normalizedDomain);
+
+            if (domainEntity == null)
+            {
+                domainEntity = new Model.Domain { domain = normalizedDomain };
+                _context.Domain.Add(domainEntity);
+                await _context.SaveChangesAsync();
+            }
+
+            bool patternExists = await _context.EmailPattern.AnyAsync(x =>
+                x.DomainId == domainEntity.id && x.EmailPatternName == pattern);
+
+            if (!patternExists)
+            {
+                _context.EmailPattern.Add(new Model.EmailPattern
+                {
+                    DomainId = domainEntity.id,
+                    EmailPatternName = pattern
+                });
+            }
+        }
+
+        private static string NormalizeMessageId(string? value) =>
+           (value ?? string.Empty).Trim().Trim('<', '>').ToLowerInvariant();
+
+        private async Task<bool?> CheckStage3BounceDirectlyAsync(string recipientEmail, string originalMessageId, DateTime sentAt, CancellationToken cancellationToken)
         {
             var section = _configuration.GetSection("EmailUnlockStage3:Inbox");
             string? host = section["Host"];
@@ -562,108 +772,89 @@ namespace PitchGenApi.Repository
             return false;
         }
 
-        private static string NormalizeMessageId(string? value) =>
-            (value ?? string.Empty).Trim().Trim('<', '>').ToLowerInvariant();
-
-        public async Task<bool> CompleteUnlockAsync(
-            string contactId,
-            int clientId,
-            string? linkedInUrl,
-            string email,
-            string name,
-            string domain)
-        {
-            var executionStrategy = _context.Database.CreateExecutionStrategy();
-
-            return await executionStrategy.ExecuteAsync(async () =>
+        private static SecureSocketOptions GetStage3SocketOption(string? securityType, bool useSsl) =>
+            securityType?.ToUpperInvariant() switch
             {
-                await using var transaction = await _context.Database.BeginTransactionAsync();
-                try
-                {
-                    if (!await _contactRepository.CreditDeduction(clientId))
-                    {
-                        await transaction.RollbackAsync();
-                        return false;
-                    }
+                "SSL/TLS" => SecureSocketOptions.SslOnConnect,
+                "STARTTLS" => SecureSocketOptions.StartTls,
+                "NONE" => SecureSocketOptions.None,
+                "AUTO" => SecureSocketOptions.Auto,
+                _ => useSsl ? SecureSocketOptions.Auto : SecureSocketOptions.None
+            };
 
-                    int? parsedContactId = int.TryParse(contactId, out int id) ? id : null;
-                    var contact = await (
-                        from c in _context.contacts
-                        join d in _context.data_files
-                            on c.DataFileId equals d.id
-                        where d.client_id == clientId &&
-                              ((parsedContactId.HasValue && c.id == parsedContactId.Value) ||
-                               (!string.IsNullOrWhiteSpace(linkedInUrl) && c.linkedin_url == linkedInUrl))
-                        select c
-                    ).FirstOrDefaultAsync();
-
-                    if (contact == null)
-                        throw new InvalidOperationException("Contact was not found for this client.");
-
-                    contact.email = email;
-                    contact.updated_at = DateTime.UtcNow;
-
-                    _context.UnlockedContacts.Add(new Model.UnlockedContacts
-                    {
-                        ClientId = clientId.ToString(),
-                        ContactId = contactId.Trim(),
-                        EmailId = email,
-                        LinkedInUrl = linkedInUrl ?? contact.linkedin_url ?? string.Empty,
-                        UnlockedOn = DateTime.UtcNow
-                    });
-
-                    await SaveLearnedPatternAsync(name, email, domain);
-                    await _context.SaveChangesAsync();
-                    await transaction.CommitAsync();
-                    return true;
-                }
-                catch
-                {
-                    await transaction.RollbackAsync();
-                    throw;
-                }
-            });
-        }
-
-        private async Task SaveLearnedPatternAsync(string name, string email, string domain)
+        private Model.SmtpCredentials? GetConfiguredStage3Smtp()
         {
-            string pattern = _calculateEmailRepository.FindEmailPattern(name, email);
-            if (string.IsNullOrWhiteSpace(pattern) || string.IsNullOrWhiteSpace(domain))
-                return;
+            var section = _configuration.GetSection("EmailUnlockStage3:Smtp");
+            string? server = section["Server"];
+            string? username = section["Username"];
+            string? password = section["Password"];
+            string? fromEmail = section["FromEmail"];
 
-            string normalizedDomain = domain.Trim().ToLowerInvariant();
-            var domainEntity = await _context.Domain
-                .FirstOrDefaultAsync(x => x.domain.ToLower() == normalizedDomain);
-
-            if (domainEntity == null)
+            if (string.IsNullOrWhiteSpace(server) ||
+                string.IsNullOrWhiteSpace(username) ||
+                string.IsNullOrWhiteSpace(password) ||
+                string.IsNullOrWhiteSpace(fromEmail))
             {
-                domainEntity = new Model.Domain { domain = normalizedDomain };
-                _context.Domain.Add(domainEntity);
-                await _context.SaveChangesAsync();
+                return null;
             }
 
-            bool patternExists = await _context.EmailPattern.AnyAsync(x =>
-                x.DomainId == domainEntity.id && x.EmailPatternName == pattern);
-
-            if (!patternExists)
+            return new Model.SmtpCredentials
             {
-                _context.EmailPattern.Add(new Model.EmailPattern
-                {
-                    DomainId = domainEntity.id,
-                    EmailPatternName = pattern
-                });
-            }
+                Id = 0,
+                ClientId = "Stage3",
+                Server = server,
+                Port = int.TryParse(section["Port"], out int port) ? port : 587,
+                Username = username,
+                Password = password,
+                FromEmail = fromEmail,
+                SenderName = section["SenderName"] ?? "Pitchkraft",
+                SecurityType = section["SecurityType"] ?? "STARTTLS",
+                UseSsl = !bool.TryParse(section["UseSsl"], out bool useSsl) || useSsl
+            };
         }
-        //------------------------------------------------------------------------Private Mathods---------------------------------------------------------------------------------
 
-        private int GetResponseCode(string responseString)
+        private static async Task<string?> ReadLineWithTimeoutAsync(StreamReader reader, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(responseString) || responseString.Length < 3)
-                return 0;
-
-            return int.TryParse(responseString.Substring(0, 3), out int code)
-                ? code
-                : 0;
+            return await reader.ReadLineAsync(cancellationToken)
+                .AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
         }
+
+        private static bool IsDefinitiveMailboxNotFound(int responseCode, string? response)
+        {
+            if (responseCode is not (550 or 551 or 553) || string.IsNullOrWhiteSpace(response))
+                return false;
+
+            return response.Contains("5.1.1", StringComparison.OrdinalIgnoreCase) ||
+                   response.Contains("5.1.10", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string FormatSmtpReason(string? response) =>
+            string.IsNullOrWhiteSpace(response)
+                ? string.Empty
+                : $" SMTP response: {response.Trim()}";
+
+        private static readonly string[] AllEmailPatterns =
+        {
+            "FirstNameOnly",
+            "FirstNamedotlastname",
+            "FirstInitialandlastname",
+            "FirstInitialdotlastname",
+            "FirstInitialunderscorelastname",
+            "FirstNamedotlastInitial",
+            "Firstnameandlastname",
+            "FirstnameUnderscorelastInitial",
+            "LastInitialdotfirstname",
+            "LastInitialAndfirstname",
+            "LastInitialUnderscorefirstname",
+            "Lastnamedotfirstname",
+            "LastNameUnderscoreFirstName",
+            "LastNameAndFirstName",
+            "LastNamedotFirstInitial",
+            "LastNameUnderscoreFirstInitial",
+            "LastNameAndFirstInitial",
+            "FirstNameAndLastInitial",
+            "FirstNameUnderscoreLastname"
+        };
     }
 }
