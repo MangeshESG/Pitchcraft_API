@@ -70,8 +70,10 @@ namespace PitchGenApi.Database
         public DbSet<EmailSignatures> EmailSignatures { get; set; }
         public DbSet<PinnedEmails> PinnedEmails { get; set; }
         public DbSet<KraftHistory> KraftHistory { get; set; }
+        public DbSet<Domain> Domain { get; set; }
         public DbSet<EmailBounce> EmailBounces { get; set; }
-
+        public DbSet<UnlockedContacts> UnlockedContacts { get; set; }
+        public DbSet<EmailPattern> EmailPattern { get; set; }
         // ✅ Admin-controlled model per AI purpose (Settings > AI models)
         public DbSet<AiModelSetting> ai_model_settings { get; set; }
         protected override void OnModelCreating(ModelBuilder modelBuilder)

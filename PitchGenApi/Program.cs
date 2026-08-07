@@ -188,6 +188,8 @@ builder.Services.AddScoped<IOAuthRepository, OAuthRepository>();
 builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
 builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
 builder.Services.AddScoped<IForwardRepository, ForwardRepository>();
+builder.Services.AddScoped<IExtensionRepository, ExtensionRepository>();
+builder.Services.AddScoped<CalculateEmailRepository>();
 builder.Services.AddScoped<DefaultCustomFieldSeeder>();
 
 // Admin-controlled model per AI purpose (Settings > AI models)
