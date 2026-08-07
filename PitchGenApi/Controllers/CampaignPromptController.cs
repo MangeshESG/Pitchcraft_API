@@ -1363,17 +1363,28 @@ namespace PitchGenApi.Controllers
                         : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
                           ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-                var customFields = await (
+                // Scoped to THIS client's field definitions — see the matching
+                // note in EmailGenerationController. A contact carrying another
+                // client's values would otherwise collide on shared field names
+                // ("Status", "Contact type", …) when keyed by name below.
+                var customFieldRows = await (
                     from value in _dbContext.contact_custom_field_values
                     join field in _dbContext.crm_custom_fields
                         on value.field_id equals field.id
                     where value.contact_id == request.ContactId
+                       && field.client_id == parsedClientId
                     select new { field.field_name, value.value }
-                ).ToDictionaryAsync(
-                    x => x.field_name,
-                    x => x.value ?? "",
-                    StringComparer.OrdinalIgnoreCase
-                );
+                ).ToListAsync();
+
+                // Grouped rather than ToDictionary so a client holding two
+                // same-named fields degrades to one value instead of a 500.
+                var customFields = customFieldRows
+                    .GroupBy(x => x.field_name, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g.Select(x => x.value).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? "",
+                        StringComparer.OrdinalIgnoreCase
+                    );
 
                 var currentDate = DateTime.UtcNow.ToString("MMMM d, yyyy");
                 var generationNotes = await GetGenerationNotesAsync(parsedClientId, request.ContactId);

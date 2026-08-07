@@ -6,6 +6,7 @@ using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
 using PitchGenApi.Services;
+using Serilog;
 using System.Net;
 using System.Text;
 using System.Text.Json;
@@ -117,17 +118,30 @@ namespace PitchGenApi.Controllers
                         : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
                           ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-                var customFields = await (
+                // Scoped to THIS client's field definitions. A contact that has
+                // moved between clients keeps the old client's values, and two
+                // clients' seeded fields share names ("Status", "Contact type",
+                // …) — without the client filter those collide when keyed by
+                // name below.
+                var customFieldRows = await (
                     from value in _dbContext.contact_custom_field_values
                     join field in _dbContext.crm_custom_fields
                         on value.field_id equals field.id
                     where value.contact_id == request.ContactId
+                       && field.client_id == parsedClientId
                     select new { field.field_name, value.value }
-                ).ToDictionaryAsync(
-                    x => x.field_name,
-                    x => x.value ?? "",
-                    StringComparer.OrdinalIgnoreCase
-                );
+                ).ToListAsync();
+
+                // Grouped rather than ToDictionary: nothing stops one client
+                // holding two fields of the same name, and a duplicate must not
+                // fail the whole generation. First non-empty value wins.
+                var customFields = customFieldRows
+                    .GroupBy(x => x.field_name, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(
+                        g => g.Key,
+                        g => g.Select(x => x.value).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v)) ?? "",
+                        StringComparer.OrdinalIgnoreCase
+                    );
 
                 var currentDate = DateTime.UtcNow.ToString("MMMM d, yyyy");
 
@@ -171,7 +185,7 @@ namespace PitchGenApi.Controllers
                 // runtime keys must SURVIVE the campaign-level pass
                 var campaignOnlyValues = campaignPlaceholderValues
                     .Where(kv => !runtimeReplacements.ContainsKey(kv.Key))
-                    .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+                    .ToDictionary(kv => kv.Key, kv => CleanPlaceholderValue(kv.Key, kv.Value), StringComparer.OrdinalIgnoreCase);
 
                 var campaignBlueprint = ApplyPlaceholders(
                     template.TemplateDefinition.MasterBlueprintUnpopulated ?? "",
@@ -318,13 +332,25 @@ namespace PitchGenApi.Controllers
 
                     runtimeReplacements["search_output_summary"] = webSearchData;
                 }
+                else
+                {
+                    // GPT models do their own research, so the search block above
+                    // is skipped — but the blueprint's {web_searched_data} slot
+                    // still has to go, or the literal token is sent to the model.
+                    finalPrompt = finalPrompt.Replace("{web_searched_data}", "");
+                }
 
                 // ---- system prompt is EMPTY (matches frontend) ----
                 var systemPrompt = "";
 
+                // From here on the prompt is frozen. Everything the response
+                // reports as the final prompt reads this variable, so what the
+                // UI shows is byte-for-byte what the model received.
+                var promptSentToAi = finalPrompt;
+
                 var bodyResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                 {
-                    Prompt = finalPrompt,
+                    Prompt = promptSentToAi,
                     ScrappedData = systemPrompt,
                     ModelName = selectedModel
                 });
@@ -335,7 +361,7 @@ namespace PitchGenApi.Controllers
                     {
                         Message = "Failed to generate email body",
                         Error = bodyResult.Content,
-                        FinalPrompt = finalPrompt,
+                        FinalPrompt = promptSentToAi,
                         WebSearchData = webSearchData,
                         Notes = generationNotes,
                         Emails = emailConversation,
@@ -420,19 +446,22 @@ namespace PitchGenApi.Controllers
 
                     // 👇 EVERYTHING THE UI SHOWS IN THE INSIGHTS TABS
                     WebSearchData = webSearchData,
-                    FinalPrompt = finalPrompt,
+                    FinalPrompt = promptSentToAi,
                     Notes = generationNotes,
                     Emails = emailConversation,
                     ProfessionalSummary = professionalSummary,
                     EmailCount = insights.EmailCount,
 
-                    // Which inputs actually reached the model
+                    // Which inputs actually reached the model. These are not
+                    // "we intended to add it" flags — each one is verified
+                    // against the prompt string that was sent.
                     UsedInGeneration = new
                     {
-                        Notes = notesUsed,
-                        Emails = emailsUsed,
-                        ProfessionalSummary = summaryUsed,
+                        Notes = notesUsed && PromptContains(promptSentToAi, generationNotes),
+                        Emails = emailsUsed && PromptContains(promptSentToAi, emailConversation),
+                        ProfessionalSummary = summaryUsed && PromptContains(promptSentToAi, professionalSummary),
                         WebSearch = !string.IsNullOrWhiteSpace(webSearchData)
+                                    && PromptContains(promptSentToAi, webSearchData)
                     },
 
                     // Everything that fed the generation (for transparency/debug UI)
@@ -453,7 +482,23 @@ namespace PitchGenApi.Controllers
                         FilledSubjectInstruction = filledSubjectInstruction,
                         ManualSubjectTemplate = manualSubjectTemplate,
                         RuntimeReplacements = runtimeReplacements,
-                        CampaignPlaceholderValues = campaignPlaceholderValues
+                        CampaignPlaceholderValues = campaignPlaceholderValues,
+
+                        // Enough to answer "did the past emails make it into the
+                        // prompt?" without eyeballing a 20k-character string.
+                        PromptDiagnostics = new
+                        {
+                            PromptLength = promptSentToAi.Length,
+                            EmailContextLength = emailConversation.Length,
+                            EmailMessageCount = insights.EmailCount,
+                            EmailsInPrompt = PromptContains(promptSentToAi, emailConversation),
+                            EmailsInjectedVia = !emailHistoryEnabled
+                                ? "disabled"
+                                : string.IsNullOrWhiteSpace(emailConversation)
+                                    ? "no-email-history-found"
+                                    : hasEmailPlaceholder ? "placeholder" : "appended-section",
+                            UnresolvedPlaceholders = FindUnresolvedPlaceholders(promptSentToAi)
+                        }
                     },
 
                     Usage = new
@@ -559,16 +604,18 @@ namespace PitchGenApi.Controllers
             int contactId,
             string? linkedinInformation)
         {
-            var notesTask = GetGenerationNotesAsync(clientId, contactId);
-            var emailTask = GetEmailConversationContextAsync(clientId, contactId);
-
-            await Task.WhenAll(notesTask, emailTask);
-
-            var emailContext = emailTask.Result;
+            // Sequential, not Task.WhenAll: both repositories are handed the same
+            // scoped AppDbContext, and EF Core allows only one operation on a
+            // context at a time. Run in parallel and the loser throws "a second
+            // operation was started on this context instance", which the catch
+            // blocks below turn into an empty result — the email history then
+            // silently vanishes from the prompt.
+            var notes = await GetGenerationNotesAsync(clientId, contactId);
+            var emailContext = await GetEmailConversationContextAsync(clientId, contactId);
 
             return new ContactInsights
             {
-                Notes = notesTask.Result,
+                Notes = notes,
                 EmailContext = emailContext.Text,
                 EmailCount = emailContext.Count,
                 ProfessionalSummary = StripHtml(linkedinInformation)
@@ -611,28 +658,67 @@ namespace PitchGenApi.Controllers
             => !string.IsNullOrEmpty(text) &&
                text.Contains("{" + key + "}", StringComparison.OrdinalIgnoreCase);
 
+        // Campaign placeholder values are authored in rich-text fields, so they
+        // arrive as HTML. The model only needs the words — sending the markup
+        // burns tokens and buries the instruction. The example output email is
+        // the worst offender (a whole styled email), so it also gets the
+        // mail-specific cleanup: no footers, no tracking links, no quoted trail.
+        private static readonly HashSet<string> ExampleOutputKeys =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                "example_output_email",
+                "example_output"
+            };
+
+        private static string CleanPlaceholderValue(string key, string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return value ?? "";
+
+            if (ExampleOutputKeys.Contains(key))
+                return PromptTextCleaner.CleanEmailBody(value, maxChars: 0);
+
+            return PromptTextCleaner.LooksLikeHtml(value)
+                ? PromptTextCleaner.StripHtml(value)
+                : value;
+        }
+
         private static string AppendContextSection(string prompt, string label, string content)
             => string.IsNullOrWhiteSpace(content)
                 ? prompt
                 : $"{prompt}\n\n{label}\n{content.Trim()}";
 
+        // Did a resolved input really land in the prompt? Compared on a slice
+        // rather than the whole value, because placeholder substitution trims
+        // and re-wraps what it inserts.
+        private static bool PromptContains(string prompt, string? value)
+        {
+            var probe = (value ?? "").Trim();
+
+            if (probe.Length == 0)
+                return false;
+
+            if (probe.Length > 120)
+                probe = probe[..120];
+
+            return prompt.Contains(probe, StringComparison.Ordinal);
+        }
+
+        // Placeholders the blueprint asked for that nothing filled in. A literal
+        // {something} reaching the model is always a bug, so surface it.
+        private static readonly Regex PlaceholderPattern =
+            new(@"\{([a-z0-9_\-]{2,60})\}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static List<string> FindUnresolvedPlaceholders(string prompt)
+            => PlaceholderPattern.Matches(prompt)
+                .Select(m => m.Groups[1].Value)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
         // Strips markup but keeps paragraph breaks, so multi-line LinkedIn
         // summaries and notes stay readable in the prompt and in the UI.
         private static string StripHtml(string? input)
-        {
-            if (string.IsNullOrWhiteSpace(input))
-                return "";
-
-            var text = Regex.Replace(input, @"<br\s*/?>", "\n", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, @"</(p|div|li|tr|h[1-6])\s*>", "\n", RegexOptions.IgnoreCase);
-            text = Regex.Replace(text, "<[^>]*>", "");
-            text = WebUtility.HtmlDecode(text);
-            text = text.Replace('\u00A0', ' ');   // non-breaking space
-            text = Regex.Replace(text, @"[ \t]+", " ");
-            text = Regex.Replace(text, @"\n{3,}", "\n\n");
-
-            return text.Trim();
-        }
+            => PromptTextCleaner.StripHtml(input);
 
         private sealed class EmailContextResult
         {
@@ -699,9 +785,9 @@ namespace PitchGenApi.Controllers
                     AppendEmailLine(builder, email, "toEmail", "To");
                     AppendEmailLine(builder, email, "subject", "Subject");
 
-                    var body = ReadStringProperty(email, "body");
+                    var body = PromptTextCleaner.CleanEmailBody(ReadStringProperty(email, "body"));
                     if (!string.IsNullOrWhiteSpace(body))
-                        builder.Append($"\nEmail Body:\n{StripHtml(body)}");
+                        builder.Append($"\nEmail Body:\n{body}");
                 }
 
                 return new EmailContextResult
@@ -710,8 +796,13 @@ namespace PitchGenApi.Controllers
                     Count = emailCount
                 };
             }
-            catch
+            catch (Exception ex)
             {
+                // Swallowing this quietly makes a failure look identical to
+                // "this contact has no past emails", so it gets logged.
+                Log.Error(ex,
+                    "Failed to build email conversation context. ClientId={ClientId}, ContactId={ContactId}",
+                    clientId, contactId);
                 return empty;
             }
         }
@@ -782,8 +873,11 @@ namespace PitchGenApi.Controllers
 
                 return string.Join("\n", usableNotes);
             }
-            catch
+            catch (Exception ex)
             {
+                Log.Error(ex,
+                    "Failed to build generation notes. ClientId={ClientId}, ContactId={ContactId}",
+                    clientId, contactId);
                 return "";
             }
         }

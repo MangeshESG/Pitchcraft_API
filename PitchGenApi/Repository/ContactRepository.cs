@@ -4,6 +4,7 @@ using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
+using PitchGenApi.Services;
 using Serilog;
 using System.Net;
 using System.Runtime.CompilerServices;
@@ -1509,6 +1510,12 @@ public class ContactRepository
     // One flat, chronological transcript — every message, inbound and
     // outbound, labelled with who sent it. Bodies are HTML-stripped so the
     // model reads the text and not the markup.
+    // The transcript that gets embedded in a generation prompt. Bodies go
+    // through PromptTextCleaner, which drops the markup, the footers and the
+    // quoted trail — that trail is every earlier message repeated inside the
+    // later ones, and they are already listed here in their own right.
+    private const int PromptContextMessageLimit = 15;
+
     private static string BuildPromptContext(string? fullName, string? email, DateTime? contactCreatedAt, List<ConversationEmailDto> emails)
     {
         if (emails == null || !emails.Any())
@@ -1516,6 +1523,13 @@ public class ContactRepository
 
         var sentCount = emails.Count(x => x.Direction == "Sent");
         var receivedCount = emails.Count - sentCount;
+
+        // Oldest messages are the least useful and the most likely to blow the
+        // context budget, so only the most recent ones are written out in full.
+        var omitted = Math.Max(0, emails.Count - PromptContextMessageLimit);
+        var included = omitted == 0
+            ? emails
+            : emails.Skip(omitted).ToList();
 
         var sb = new StringBuilder();
 
@@ -1526,23 +1540,29 @@ public class ContactRepository
             sb.AppendLine($"Contact Created At: {contactCreatedAt.Value:dddd, MMMM d, yyyy h:mm tt}");
 
         sb.AppendLine($"Total messages: {emails.Count} ({sentCount} sent by us, {receivedCount} received from the contact)");
+
+        if (omitted > 0)
+            sb.AppendLine($"Showing the {included.Count} most recent messages; {omitted} older message(s) omitted.");
+
         sb.AppendLine();
 
-        for (int i = 0; i < emails.Count; i++)
+        for (int i = 0; i < included.Count; i++)
         {
-            var item = emails[i];
+            var item = included[i];
 
             var direction = item.Direction == "Sent"
                 ? "SENT BY US"
                 : "RECEIVED FROM CONTACT";
 
-            sb.AppendLine($"Message #{i + 1} - {direction}");
+            var body = PromptTextCleaner.CleanEmailBody(item.Body);
+
+            sb.AppendLine($"Message #{omitted + i + 1} - {direction}");
             sb.AppendLine($"Date: {item.SentAt:dddd, MMMM d, yyyy h:mm tt}");
             sb.AppendLine($"From: {FormatParticipant(item.SenderName, item.SenderEmailId)}");
             sb.AppendLine($"To: {FormatParticipant(item.RecipientName, item.ToEmail)}");
-            sb.AppendLine($"Subject: {item.Subject}");
+            sb.AppendLine($"Subject: {PromptTextCleaner.StripHtml(item.Subject)}");
             sb.AppendLine("Body:");
-            sb.AppendLine(StripHtml(item.Body));
+            sb.AppendLine(string.IsNullOrWhiteSpace(body) ? "(no readable text)" : body);
             sb.AppendLine();
             sb.AppendLine("--------------------------------------------------");
         }
@@ -1564,24 +1584,8 @@ public class ContactRepository
         return hasName ? name.Trim() : "(unknown)";
     }
 
-    // Strips markup but keeps paragraph breaks, so the transcript stays
-    // readable instead of being a wall of HTML.
-    private static string StripHtml(string? input)
-    {
-        if (string.IsNullOrWhiteSpace(input))
-            return "";
-
-        var text = Regex.Replace(input, @"<(script|style)[^>]*>.*?</\1>", " ", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        text = Regex.Replace(text, @"<br\s*/?>", "\n", RegexOptions.IgnoreCase);
-        text = Regex.Replace(text, @"</(p|div|li|tr|h[1-6])\s*>", "\n", RegexOptions.IgnoreCase);
-        text = Regex.Replace(text, "<[^>]*>", "");
-        text = WebUtility.HtmlDecode(text);
-        text = text.Replace('\u00A0', ' ');   // non-breaking space
-        text = Regex.Replace(text, @"[ \t]+", " ");
-        text = Regex.Replace(text, @"\n{3,}", "\n\n");
-
-        return text.Trim();
-    }
+    // Text cleaning for prompts lives in PromptTextCleaner so the repository
+    // and the generation controllers all treat stored HTML the same way.
 
     //-----------------------------------------------------------------------------
 
