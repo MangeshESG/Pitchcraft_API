@@ -189,6 +189,7 @@ builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
 builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
 builder.Services.AddScoped<IForwardRepository, ForwardRepository>();
 builder.Services.AddScoped<IExtensionRepository, ExtensionRepository>();
+builder.Services.AddHttpClient<IExtensionProfileService, ExtensionProfileService>();
 builder.Services.AddScoped<CalculateEmailRepository>();
 builder.Services.AddScoped<DefaultCustomFieldSeeder>();
 

@@ -9,10 +9,14 @@ namespace PitchGenApi.Controllers
     public class ExtensionController : ControllerBase
     {
         private readonly IExtensionRepository _extensionRepository;
+        private readonly IExtensionProfileService _extensionProfileService;
 
-        public ExtensionController(IExtensionRepository extensionRepository)
+        public ExtensionController(
+            IExtensionRepository extensionRepository,
+            IExtensionProfileService extensionProfileService)
         {
             _extensionRepository = extensionRepository;
+            _extensionProfileService = extensionProfileService;
         }
 
         [HttpPost]
@@ -84,6 +88,58 @@ namespace PitchGenApi.Controllers
             var result = await _extensionRepository.UpdateContactFieldsAsync(request);
             return StatusCode(result.StatusCode, result.Body);
         }
+
+        /// <summary>
+        /// One call for the extension panel on open: does this LinkedIn URL exist
+        /// in any of the client's lists, and what lists are available to save into.
+        /// </summary>
+        [HttpPost("EX_profile-context")]
+        public async Task<IActionResult> GetProfileContext(
+            [FromBody] ExtensionProfileContextRequestDto request)
+        {
+            if (request == null || request.ClientId <= 0)
+                return BadRequest(new { message = "A valid ClientId is required." });
+
+            if (string.IsNullOrWhiteSpace(request.LinkedInUrl))
+                return BadRequest(new { message = "LinkedInUrl is required." });
+
+            var result = await _extensionProfileService.GetProfileContextAsync(request);
+            return StatusCode(result.StatusCode, result.Body);
+        }
+
+        /// <summary>
+        /// Creates the contact in the chosen list, or patches the fields the user
+        /// ticked on a contact that already exists.
+        /// </summary>
+        [HttpPost("EX_save-profile")]
+        public async Task<IActionResult> SaveProfile(
+            [FromBody] ExtensionSaveProfileRequestDto request)
+        {
+            if (request == null || request.ClientId <= 0)
+                return BadRequest(new { message = "A valid ClientId is required." });
+
+            var result = await _extensionProfileService.SaveProfileAsync(request);
+            return StatusCode(result.StatusCode, result.Body);
+        }
+
+        /// <summary>
+        /// Summarises the scraped LinkedIn profile with the LLM and stores it in
+        /// the contact's LinkedIn information field.
+        /// </summary>
+        [HttpPost("EX_profile-summary")]
+        public async Task<IActionResult> GenerateProfileSummary(
+            [FromBody] ExtensionProfileSummaryRequestDto request,
+            CancellationToken cancellationToken)
+        {
+            if (request == null || request.ClientId <= 0)
+                return BadRequest(new { message = "A valid ClientId is required." });
+
+            var result = await _extensionProfileService.GenerateProfileSummaryAsync(
+                request,
+                cancellationToken);
+            return StatusCode(result.StatusCode, result.Body);
+        }
+
         //------------------------------------------------------------------------Private Mathods---------------------------------------------------------------------------------
 
 
