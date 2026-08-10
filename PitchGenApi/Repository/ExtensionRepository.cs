@@ -337,6 +337,25 @@ namespace PitchGenApi.Repository
                 .FirstOrDefaultAsync();
         }
 
+        public async Task<string?> GetProspeoUnlockedEmailAsync(string linkedInUrl)
+        {
+            if (string.IsNullOrWhiteSpace(linkedInUrl))
+                return null;
+
+            var canonicalUrl = NormalizeLinkedInUrl(linkedInUrl);
+            var withoutSlash = canonicalUrl.TrimEnd('/');
+            var last30Days = DateTime.UtcNow.AddDays(-30);
+
+            return await _context.UnlockedContacts
+                .Where(x => (x.LinkedInUrl == canonicalUrl || x.LinkedInUrl == withoutSlash) &&
+                            x.EmailId != null &&
+                            x.EmailId != string.Empty &&
+                            x.UnlockedOn >= last30Days)
+                .OrderByDescending(x => x.UnlockedOn)
+                .Select(x => x.EmailId)
+                .FirstOrDefaultAsync();
+        }
+
         public async Task<EmailVerificationResult> Stage2Async(string email,CancellationToken cancellationToken = default)
         {
             const int smtpTimeoutSeconds = 10;
@@ -658,8 +677,75 @@ namespace PitchGenApi.Repository
             });
         }
 
+        public async Task<bool> CompleteProspeoUnlockAsync(
+            string? contactId,
+            int clientId,
+            string linkedInUrl,
+            string email)
+        {
+            var executionStrategy = _context.Database.CreateExecutionStrategy();
+
+            return await executionStrategy.ExecuteAsync(async () =>
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+                try
+                {
+                    if (!await _contactRepository.CreditDeduction(clientId))
+                    {
+                        await transaction.RollbackAsync();
+                        return false;
+                    }
+
+                    var canonicalUrl = NormalizeLinkedInUrl(linkedInUrl);
+                    var withoutSlash = canonicalUrl.TrimEnd('/');
+                    var clientIdText = clientId.ToString();
+                    var existing = await _context.UnlockedContacts
+                        .Where(x => x.LinkedInUrl == canonicalUrl || x.LinkedInUrl == withoutSlash)
+                        .OrderByDescending(x => x.UnlockedOn)
+                        .FirstOrDefaultAsync();
+
+                    if (existing == null)
+                    {
+                        _context.UnlockedContacts.Add(new Model.UnlockedContacts
+                        {
+                            ClientId = clientIdText,
+                            ContactId = contactId?.Trim() ?? string.Empty,
+                            EmailId = email.Trim(),
+                            LinkedInUrl = canonicalUrl,
+                            UnlockedOn = DateTime.UtcNow
+                        });
+                    }
+                    else
+                    {
+                        existing.EmailId = email.Trim();
+                        existing.LinkedInUrl = canonicalUrl;
+                        existing.UnlockedOn = DateTime.UtcNow;
+                    }
+
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                    return true;
+                }
+                catch
+                {
+                    await transaction.RollbackAsync();
+                    throw;
+                }
+            });
+        }
+
         
         //------------------------------------------------------------------------Private Mathods---------------------------------------------------------------------------------
+
+        private static string NormalizeLinkedInUrl(string value)
+        {
+            var input = value.Trim();
+            if (!Uri.TryCreate(input, UriKind.Absolute, out var uri))
+                return input.TrimEnd('/') + "/";
+
+            return $"{uri.Scheme.ToLowerInvariant()}://{uri.Host.ToLowerInvariant()}" +
+                   uri.AbsolutePath.TrimEnd('/') + "/";
+        }
 
         private int GetResponseCode(string responseString)
         {
