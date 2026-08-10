@@ -1,6 +1,8 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model.DTOs;
+using System.Net.Http.Json;
 
 namespace PitchGenApi.Controllers
 {
@@ -10,13 +12,145 @@ namespace PitchGenApi.Controllers
     {
         private readonly IExtensionRepository _extensionRepository;
         private readonly IExtensionProfileService _extensionProfileService;
+        private readonly IHttpClientFactory _httpClientFactory;
+        private readonly IConfiguration _configuration;
+        private readonly ContactRepository _contactRepository;
 
         public ExtensionController(
             IExtensionRepository extensionRepository,
-            IExtensionProfileService extensionProfileService)
+            IExtensionProfileService extensionProfileService,
+            IHttpClientFactory httpClientFactory,
+            IConfiguration configuration,
+            ContactRepository contactRepository)
         {
             _extensionRepository = extensionRepository;
             _extensionProfileService = extensionProfileService;
+            _httpClientFactory = httpClientFactory;
+            _configuration = configuration;
+            _contactRepository = contactRepository;
+        }
+
+        [HttpPost("EX_prospeo-unlock")]
+        public async Task<IActionResult> UnlockWithProspeo([FromBody] ProspeoUnlockRequestDto request,CancellationToken cancellationToken)
+        {
+            if (request == null || request.ClientID <= 0 ||
+                string.IsNullOrWhiteSpace(request.LinkedInUrl))
+            {
+                return BadRequest(UnlockEmailResult.Failed(
+                    request?.ContactID,
+                    "ClientID and LinkedInUrl are required."));
+            }
+
+            if (!int.TryParse(User.FindFirst("UserId")?.Value, out var authenticatedClientId) ||
+                authenticatedClientId != request.ClientID)
+            {
+                return Forbid();
+            }
+
+            if (!await _contactRepository.HasAvailableCreditAsync(request.ClientID))
+            {
+                return Ok(UnlockEmailResult.Failed(
+                    request.ContactID,
+                    "No unlock credit is available. Please buy credits to unlock this email."));
+            }
+
+            var cachedEmail = await _extensionRepository.GetProspeoUnlockedEmailAsync(
+                request.LinkedInUrl);
+            if (!string.IsNullOrWhiteSpace(cachedEmail))
+            {
+                var cachedCompleted = await _extensionRepository.CompleteProspeoUnlockAsync(
+                    request.ContactID,
+                    request.ClientID,
+                    request.LinkedInUrl,
+                    cachedEmail);
+
+                return Ok(cachedCompleted
+                    ? UnlockEmailResult.Succeeded(
+                        request.ContactID,
+                        cachedEmail,
+                        "Email reused from the 30-day unlock cache and one credit deducted.")
+                    : UnlockEmailResult.Failed(
+                        request.ContactID,
+                        "No unlock credit is available. Please buy credits to unlock this email."));
+            }
+
+            var apiKey = _configuration["Prospeo:ApiKey"];
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                    UnlockEmailResult.Failed(
+                        request.ContactID,
+                        "Email enrichment is not configured."));
+            }
+
+            try
+            {
+                using var httpRequest = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    "https://api.prospeo.io/enrich-person");
+                httpRequest.Headers.Add("X-KEY", apiKey);
+                httpRequest.Content = JsonContent.Create(new
+                {
+                    only_verified_email = true,
+                    enrich_mobile = false,
+                    data = new { linkedin_url = request.LinkedInUrl.Trim() }
+                });
+
+                var client = _httpClientFactory.CreateClient();
+                using var response = await client.SendAsync(httpRequest, cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    return StatusCode(StatusCodes.Status502BadGateway,
+                        UnlockEmailResult.Failed(
+                            request.ContactID,
+                            "The email enrichment provider could not complete the request."));
+                }
+
+                var result = await response.Content.ReadFromJsonAsync<ProspeoEnrichResponseDto>(
+                    cancellationToken: cancellationToken);
+                var emailResult = result?.Person?.Email;
+                var email = emailResult?.Email?.Trim();
+
+                if (result?.Error == true || emailResult == null ||
+                    !emailResult.Revealed ||
+                    !string.Equals(emailResult.Status, "VERIFIED", StringComparison.OrdinalIgnoreCase) ||
+                    string.IsNullOrWhiteSpace(email))
+                {
+                    return Ok(UnlockEmailResult.Failed(
+                        request.ContactID,
+                        "No verified email address was found for this LinkedIn profile."));
+                }
+
+                var completed = await _extensionRepository.CompleteProspeoUnlockAsync(
+                    request.ContactID,
+                    request.ClientID,
+                    request.LinkedInUrl,
+                    email);
+
+                if (!completed)
+                {
+                    return Ok(UnlockEmailResult.Failed(
+                        request.ContactID,
+                        "No unlock credit is available. Please buy credits to unlock this email."));
+                }
+
+                return Ok(UnlockEmailResult.Succeeded(
+                    request.ContactID,
+                    email,
+                    "Verified email unlocked and one credit deducted."));
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return StatusCode(StatusCodes.Status504GatewayTimeout,
+                    UnlockEmailResult.Failed(request.ContactID, "Email enrichment timed out."));
+            }
+            catch (HttpRequestException)
+            {
+                return StatusCode(StatusCodes.Status502BadGateway,
+                    UnlockEmailResult.Failed(
+                        request.ContactID,
+                        "The email enrichment provider is unavailable."));
+            }
         }
 
         [HttpPost]

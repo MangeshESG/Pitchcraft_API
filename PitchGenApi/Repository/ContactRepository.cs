@@ -82,6 +82,32 @@ public class ContactRepository
         return true;
     }
 
+    public async Task<bool> HasAvailableCreditAsync(int clientId)
+    {
+        var finalCredit = await _context.FinalUserCredit
+            .AsNoTracking()
+            .FirstOrDefaultAsync(f => f.ClientId == clientId);
+
+        if (finalCredit == null)
+            return false;
+
+        if ((finalCredit.TotalCredit ?? 0) > 0 &&
+            (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
+        {
+            return true;
+        }
+
+        if ((finalCredit.CustomLimit ?? 0) <= 0)
+            return false;
+
+        return await _context.UserCredits
+            .AsNoTracking()
+            .AnyAsync(u => u.ClientId == clientId &&
+                           u.Status.ToLower() == "active" &&
+                           (u.Plane == "Custom Credit" || u.Plane == "Internal") &&
+                           (u.Credits ?? 0) > 0);
+    }
+
     public async Task<ContactWithNextDto> GetContactWithNextAsync(int dataFileId, int? contactId = null)
     {
         Contact currentContact;
