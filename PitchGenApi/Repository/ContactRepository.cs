@@ -56,19 +56,22 @@ public class ContactRepository
         // Case 2: Use CustomLimit
         else if ((finalCredit.CustomLimit ?? 0) > 0)
         {
-            var latestActivePlan = await _context.UserCredits
-                .Where(u => u.ClientId == clientId &&
-                            u.Status.ToLower() == "active" &&
-                            (u.Plane == "Custom Credit" || u.Plane == "Internal"))
-                .OrderByDescending(u => u.CreatedAt)
-                .FirstOrDefaultAsync();
+            var activePlan = await _context.UserCredits
+                .FirstOrDefaultAsync(u =>
+                    u.ClientId == clientId &&
+                    u.Status.ToLower() == "active" &&
+                    (u.Plane == "Custom Credit" || u.Plane == "Internal") &&
+                    (u.Credits ?? 0) > 0);
 
-            if (latestActivePlan != null && latestActivePlan.Credits > 0)
+            if (activePlan != null)
             {
                 finalCredit.CustomLimit -= 1;
                 finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + 1;
-                latestActivePlan.Credits -= 1;
-                _context.UserCredits.Update(latestActivePlan);
+
+                activePlan.Credits -= 1;
+
+                _context.UserCredits.Update(activePlan);
+
                 isDeducted = true;
             }
         }
