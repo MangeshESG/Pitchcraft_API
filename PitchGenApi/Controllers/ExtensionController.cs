@@ -41,12 +41,6 @@ namespace PitchGenApi.Controllers
                     "ClientID and LinkedInUrl are required."));
             }
 
-            if (!int.TryParse(User.FindFirst("UserId")?.Value, out var authenticatedClientId) ||
-                authenticatedClientId != request.ClientID)
-            {
-                return Forbid();
-            }
-
             if (!await _contactRepository.HasAvailableCreditAsync(request.ClientID))
             {
                 return Ok(UnlockEmailResult.Failed(
