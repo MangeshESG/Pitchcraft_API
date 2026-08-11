@@ -1,7 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using PitchGenApi.Interfaces;
+using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
+using PitchGenApi.Services;
 using System.Net.Http.Json;
 
 namespace PitchGenApi.Controllers
@@ -15,19 +19,28 @@ namespace PitchGenApi.Controllers
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IConfiguration _configuration;
         private readonly ContactRepository _contactRepository;
+        private readonly IPitchService _pitchService;
+        private readonly DeepSeekPitchService _deepSeekService;
+        private readonly IAiModelSettingsService _aiModelSettings;
 
         public ExtensionController(
             IExtensionRepository extensionRepository,
             IExtensionProfileService extensionProfileService,
             IHttpClientFactory httpClientFactory,
             IConfiguration configuration,
-            ContactRepository contactRepository)
+            ContactRepository contactRepository,
+            IPitchService pitchService,
+            DeepSeekPitchService deepSeekService,
+            IAiModelSettingsService aiModelSettings)
         {
             _extensionRepository = extensionRepository;
             _extensionProfileService = extensionProfileService;
             _httpClientFactory = httpClientFactory;
             _configuration = configuration;
             _contactRepository = contactRepository;
+            _pitchService = pitchService;
+            _deepSeekService = deepSeekService;
+            _aiModelSettings = aiModelSettings;
         }
 
         [HttpPost("EX_prospeo-unlock")]
@@ -274,7 +287,214 @@ namespace PitchGenApi.Controllers
             return StatusCode(result.StatusCode, result.Body);
         }
 
+        /// <summary>
+        /// Researches a person's professional email address with the AI model an
+        /// admin picked for the "find_email" purpose (Settings &gt; AI models),
+        /// running the same web-search call the research step uses.
+        ///
+        /// Every identifying field is optional: whatever is missing is passed to
+        /// the model as "Not provided", so a request with only a name and a
+        /// company domain still works.
+        ///
+        /// The search is billed: one credit is deducted from the client. The
+        /// client comes from the authenticated token when it carries a UserId
+        /// claim, otherwise from ClientId in the body; when both are present they
+        /// have to match.
+        /// </summary>
+        [HttpPost("find-email-AI")]
+        public async Task<IActionResult> FindEmailWithAi(
+            [FromBody] FindEmailAiRequestDto request)
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { Success = false, Message = "Request body is required." });
+
+                var authenticatedClientId =
+                    int.TryParse(User.FindFirst("UserId")?.Value, out var claimClientId) &&
+                    claimClientId > 0
+                        ? claimClientId
+                        : (int?)null;
+
+                // A caller may not pretend to be another client.
+                if (authenticatedClientId.HasValue &&
+                    request.ClientId > 0 &&
+                    request.ClientId != authenticatedClientId.Value)
+                {
+                    return Forbid();
+                }
+
+                var clientId = authenticatedClientId ?? request.ClientId;
+
+                if (clientId <= 0)
+                    return BadRequest(new { Success = false, Message = "A valid ClientId is required." });
+
+                // Fail before spending anything on the model when the client has
+                // no credit left to pay for the search.
+                if (!await _contactRepository.HasAvailableCreditAsync(clientId))
+                {
+                    return Ok(new
+                    {
+                        Success = false,
+                        Message = "No credit is available. Please buy credits to run an AI email search."
+                    });
+                }
+
+                // Nothing is individually compulsory, but an entirely empty
+                // request gives the model nothing to search for.
+                bool hasAnyInput =
+                    !string.IsNullOrWhiteSpace(request.FullName) ||
+                    !string.IsNullOrWhiteSpace(request.JobTitle) ||
+                    !string.IsNullOrWhiteSpace(request.Company) ||
+                    !string.IsNullOrWhiteSpace(request.Location) ||
+                    !string.IsNullOrWhiteSpace(request.ProfileUrl) ||
+                    !string.IsNullOrWhiteSpace(request.CompanyUrl);
+
+                if (!hasAnyInput)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "At least one of FullName, JobTitle, Company, Location, ProfileUrl or CompanyUrl is required."
+                    });
+                }
+
+                // The instruction is fixed in code — only the contact details
+                // come from the caller.
+                var finalPrompt = FindEmailPrompt.Build(
+                    request.FullName,
+                    request.JobTitle,
+                    request.Company,
+                    request.Location,
+                    request.ProfileUrl,
+                    request.CompanyUrl);
+
+                var modelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.FindEmail);
+
+                var enquiryRequest = new EnquiryRequest
+                {
+                    Prompt = finalPrompt,
+                    ScrappedData = "",
+                    ModelName = modelName
+                };
+
+                // Finding an email means reaching the live web, so this goes down
+                // the same web-search path as the research step — DeepSeek or
+                // OpenAI depending on the configured model. Both deduct the one
+                // credit for the client they are handed.
+                var searchResult = IsDeepSeekModel(modelName)
+                    ? await _deepSeekService.GenerateWebSearchAsync(
+                        enquiryRequest,
+                        clientId)
+                    : await _pitchService.GenerateWebSearchAsync(
+                        enquiryRequest,
+                        clientId);
+
+                if (!searchResult.IsSuccess)
+                {
+                    return StatusCode(StatusCodes.Status502BadGateway, new
+                    {
+                        Success = false,
+                        Message = "The email research call failed.",
+                        Model = modelName,
+                        Error = searchResult.Content
+                    });
+                }
+
+                var raw = searchResult.Content ?? "";
+
+                return Ok(new
+                {
+                    Success = true,
+                    ClientId = clientId,
+                    Model = modelName,
+                    Provider = IsDeepSeekModel(modelName) ? "DeepSeek" : "OpenAI",
+                    Results = ParseFindEmailResults(raw),
+                    Raw = raw,
+                    FinalPrompt = finalPrompt,
+                    Usage = new
+                    {
+                        searchResult.PromptTokens,
+                        searchResult.CompletionTokens,
+                        searchResult.SearchTokens,
+                        searchResult.TotalTokens,
+                        searchResult.CurrentCost
+                    }
+                });
+            }
+            catch (TaskCanceledException ex)
+            {
+                return StatusCode(StatusCodes.Status504GatewayTimeout, new
+                {
+                    Success = false,
+                    Message = "The email research call timed out.",
+                    Error = ex.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new
+                {
+                    Success = false,
+                    Message = "Internal server error.",
+                    Error = ex.Message
+                });
+            }
+        }
+
         //------------------------------------------------------------------------Private Mathods---------------------------------------------------------------------------------
+
+        private static bool IsDeepSeekModel(string? modelName)
+            => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
+
+        /// <summary>
+        /// The instruction asks for bare JSON, but models still wrap it in a
+        /// ```json fence or add a sentence around it, so pull out the object and
+        /// return its "results" array. Returns an empty array when the answer
+        /// cannot be parsed — the raw text is always returned alongside.
+        /// </summary>
+        private static JArray ParseFindEmailResults(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content))
+                return new JArray();
+
+            var text = content.Trim();
+
+            // Strip a leading ```json / ``` fence and its closing fence.
+            if (text.StartsWith("```", StringComparison.Ordinal))
+            {
+                int firstLineBreak = text.IndexOf('\n');
+                if (firstLineBreak >= 0)
+                    text = text[(firstLineBreak + 1)..];
+
+                int closingFence = text.LastIndexOf("```", StringComparison.Ordinal);
+                if (closingFence >= 0)
+                    text = text[..closingFence];
+
+                text = text.Trim();
+            }
+
+            // Fall back to the outermost { ... } when prose surrounds the JSON.
+            if (!text.StartsWith("{", StringComparison.Ordinal))
+            {
+                int start = text.IndexOf('{');
+                int end = text.LastIndexOf('}');
+                if (start < 0 || end <= start)
+                    return new JArray();
+
+                text = text[start..(end + 1)];
+            }
+
+            try
+            {
+                var parsed = JsonConvert.DeserializeObject<JObject>(text);
+                return parsed?["results"] as JArray ?? new JArray();
+            }
+            catch (JsonException)
+            {
+                return new JArray();
+            }
+        }
 
 
         private async Task<UnlockEmailResult> UnlockAsync( GetUnlockedEmailRequest request, CancellationToken cancellationToken)

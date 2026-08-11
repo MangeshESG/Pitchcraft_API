@@ -11,13 +11,15 @@ namespace PitchGenApi.Model
         public const string BlueprintGeneration = "blueprint_generation";
         public const string EmailGeneration = "email_generation";
         public const string ContactQA = "contact_qa";
+        public const string FindEmail = "find_email";
 
         public static readonly IReadOnlyList<string> All = new[]
         {
             WebSearch,
             BlueprintGeneration,
             EmailGeneration,
-            ContactQA
+            ContactQA,
+            FindEmail
         };
 
         public static bool IsKnown(string? purposeKey) =>
@@ -43,6 +45,9 @@ namespace PitchGenApi.Model
                 ContactQA => (
                     "Contact Q&A",
                     "Answers questions asked on a contact profile from CRM context."),
+                FindEmail => (
+                    "Find email (AI)",
+                    "Researches a person's professional email address from public sources."),
                 _ => (purposeKey, "")
             };
     }
