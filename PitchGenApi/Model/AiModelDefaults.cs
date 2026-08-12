@@ -29,6 +29,12 @@ namespace PitchGenApi.Model
         /// </summary>
         public const string ContactQAModel = "gpt-4o-mini";
 
+        /// <summary>
+        /// Model used by the find-email research step. Like web search it has to
+        /// reach the live web, so the default is the same searching model.
+        /// </summary>
+        public const string FindEmailModel = "gpt-5.6-luna";
+
         public static string ForPurpose(string purposeKey) =>
             purposeKey switch
             {
@@ -36,6 +42,7 @@ namespace PitchGenApi.Model
                 AiModelPurposes.BlueprintGeneration => BlueprintGenerationModel,
                 AiModelPurposes.EmailGeneration => EmailGenerationModel,
                 AiModelPurposes.ContactQA => ContactQAModel,
+                AiModelPurposes.FindEmail => FindEmailModel,
                 _ => EmailGenerationModel
             };
 
