@@ -5,7 +5,11 @@ namespace PitchGenApi.Model.DTOs
     public sealed class ProspeoUnlockRequestDto
     {
         public string? Name { get; set; }
+        public string? JobTitle { get; set; }
+        public string? CompanyName { get; set; }
+        public string? Location { get; set; }
         public string? Domain { get; set; }
+        public string? CompanyUrl { get; set; }
         public string? ContactID { get; set; }
         public int ClientID { get; set; }
         public string LinkedInUrl { get; set; } = string.Empty;

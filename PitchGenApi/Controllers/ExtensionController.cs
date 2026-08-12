@@ -84,10 +84,7 @@ namespace PitchGenApi.Controllers
             var apiKey = _configuration["Prospeo:ApiKey"];
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                return StatusCode(StatusCodes.Status503ServiceUnavailable,
-                    UnlockEmailResult.Failed(
-                        request.ContactID,
-                        "Email enrichment is not configured."));
+                return await CompleteAiFallbackUnlockAsync(request);
             }
 
             try
@@ -107,10 +104,7 @@ namespace PitchGenApi.Controllers
                 using var response = await client.SendAsync(httpRequest, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
-                    return StatusCode(StatusCodes.Status502BadGateway,
-                        UnlockEmailResult.Failed(
-                            request.ContactID,
-                            "The email enrichment provider could not complete the request."));
+                    return await CompleteAiFallbackUnlockAsync(request);
                 }
 
                 var result = await response.Content.ReadFromJsonAsync<ProspeoEnrichResponseDto>(
@@ -123,9 +117,7 @@ namespace PitchGenApi.Controllers
                     !string.Equals(emailResult.Status, "VERIFIED", StringComparison.OrdinalIgnoreCase) ||
                     string.IsNullOrWhiteSpace(email))
                 {
-                    return Ok(UnlockEmailResult.Failed(
-                        request.ContactID,
-                        "No verified email address was found for this LinkedIn profile."));
+                    return await CompleteAiFallbackUnlockAsync(request);
                 }
 
                 var completed = await _extensionRepository.CompleteProspeoUnlockAsync(
@@ -148,15 +140,11 @@ namespace PitchGenApi.Controllers
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                return StatusCode(StatusCodes.Status504GatewayTimeout,
-                    UnlockEmailResult.Failed(request.ContactID, "Email enrichment timed out."));
+                return await CompleteAiFallbackUnlockAsync(request);
             }
             catch (HttpRequestException)
             {
-                return StatusCode(StatusCodes.Status502BadGateway,
-                    UnlockEmailResult.Failed(
-                        request.ContactID,
-                        "The email enrichment provider is unavailable."));
+                return await CompleteAiFallbackUnlockAsync(request);
             }
         }
 
@@ -353,36 +341,10 @@ namespace PitchGenApi.Controllers
                     });
                 }
 
-                // The instruction is fixed in code — only the contact details
-                // come from the caller.
-                var finalPrompt = FindEmailPrompt.Build(
-                    request.FullName,
-                    request.JobTitle,
-                    request.Company,
-                    request.Location,
-                    request.ProfileUrl,
-                    request.CompanyUrl);
-
-                var modelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.FindEmail);
-
-                var enquiryRequest = new EnquiryRequest
-                {
-                    Prompt = finalPrompt,
-                    ScrappedData = "",
-                    ModelName = modelName
-                };
-
-                // Finding an email means reaching the live web, so this goes down
-                // the same web-search path as the research step — DeepSeek or
-                // OpenAI depending on the configured model. Both deduct the one
-                // credit for the client they are handed.
-                var searchResult = IsDeepSeekModel(modelName)
-                    ? await _deepSeekService.GenerateWebSearchAsync(
-                        enquiryRequest,
-                        clientId)
-                    : await _pitchService.GenerateWebSearchAsync(
-                        enquiryRequest,
-                        clientId);
+                var aiSearch = await FindEmailWithAiCoreAsync(request, clientId);
+                var searchResult = aiSearch.SearchResult;
+                var modelName = aiSearch.ModelName;
+                var finalPrompt = aiSearch.FinalPrompt;
 
                 if (!searchResult.IsSuccess)
                 {
@@ -403,7 +365,7 @@ namespace PitchGenApi.Controllers
                     ClientId = clientId,
                     Model = modelName,
                     Provider = IsDeepSeekModel(modelName) ? "DeepSeek" : "OpenAI",
-                    Results = ParseFindEmailResults(raw),
+                    Results = aiSearch.Results,
                     Raw = raw,
                     FinalPrompt = finalPrompt,
                     Usage = new
@@ -437,6 +399,111 @@ namespace PitchGenApi.Controllers
         }
 
         //------------------------------------------------------------------------Private Mathods---------------------------------------------------------------------------------
+
+        private async Task<AiEmailSearchOutcome> FindEmailWithAiCoreAsync(
+            FindEmailAiRequestDto request,
+            int billingClientId)
+        {
+            var finalPrompt = FindEmailPrompt.Build(
+                request.FullName,
+                request.JobTitle,
+                request.Company,
+                request.Location,
+                request.ProfileUrl,
+                request.CompanyUrl);
+            var modelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.FindEmail);
+            var enquiryRequest = new EnquiryRequest
+            {
+                Prompt = finalPrompt,
+                ScrappedData = "",
+                ModelName = modelName
+            };
+            var searchResult = IsDeepSeekModel(modelName)
+                ? await _deepSeekService.GenerateWebSearchAsync(enquiryRequest, billingClientId)
+                : await _pitchService.GenerateWebSearchAsync(enquiryRequest, billingClientId);
+            var results = searchResult.IsSuccess
+                ? ParseFindEmailResults(searchResult.Content ?? "")
+                : new JArray();
+
+            return new AiEmailSearchOutcome(
+                searchResult,
+                modelName,
+                finalPrompt,
+                results);
+        }
+
+        private async Task<IActionResult> CompleteAiFallbackUnlockAsync(
+            ProspeoUnlockRequestDto request)
+        {
+            var aiRequest = new FindEmailAiRequestDto
+            {
+                ClientId = request.ClientID,
+                FullName = request.Name,
+                JobTitle = request.JobTitle,
+                Company = request.CompanyName,
+                Location = request.Location,
+                ProfileUrl = request.LinkedInUrl,
+                CompanyUrl = request.CompanyUrl ?? request.Domain
+            };
+
+            // Zero prevents the model service from deducting. Completion below
+            // atomically deducts once and writes UnlockedContacts only after a
+            // usable email has actually been returned.
+            var aiSearch = await FindEmailWithAiCoreAsync(aiRequest, 0);
+            if (!aiSearch.SearchResult.IsSuccess)
+            {
+                return Ok(UnlockEmailResult.Failed(
+                    request.ContactID,
+                    "Prospeo found no verified email and the AI fallback failed."));
+            }
+
+            var email = aiSearch.Results
+                .OfType<JObject>()
+                .Select((item, index) => new
+                {
+                    Email = item["email"]?.Value<string>()?.Trim(),
+                    Type = item["type"]?.Value<string>() ?? "",
+                    Confidence = item["confidence"]?.Value<int>() ?? 0,
+                    Index = index
+                })
+                .Where(item => !string.IsNullOrWhiteSpace(item.Email) &&
+                    System.Net.Mail.MailAddress.TryCreate(item.Email, out _))
+                .OrderByDescending(item =>
+                    string.Equals(item.Type, "direct", StringComparison.OrdinalIgnoreCase))
+                .ThenByDescending(item => item.Confidence)
+                .ThenBy(item => item.Index)
+                .Select(item => item.Email)
+                .FirstOrDefault();
+
+            if (string.IsNullOrWhiteSpace(email))
+            {
+                return Ok(UnlockEmailResult.Failed(
+                    request.ContactID,
+                    "No email address was found by Prospeo or the AI fallback. No credit was deducted."));
+            }
+
+            var completed = await _extensionRepository.CompleteProspeoUnlockAsync(
+                request.ContactID,
+                request.ClientID,
+                request.LinkedInUrl,
+                email);
+
+            return Ok(completed
+                ? UnlockEmailResult.Succeeded(
+                    request.ContactID,
+                    email,
+                    "Email found by AI fallback, unlock history saved and one credit deducted.",
+                    "ai")
+                : UnlockEmailResult.Failed(
+                    request.ContactID,
+                    "Email was found by AI, but unlock could not complete because credit was unavailable."));
+        }
+
+        private sealed record AiEmailSearchOutcome(
+            PitchResult SearchResult,
+            string ModelName,
+            string FinalPrompt,
+            JArray Results);
 
         private static bool IsDeepSeekModel(string? modelName)
             => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
