@@ -309,7 +309,7 @@ namespace PitchGenApi.Controllers
         [HttpGet("templates/{clientId}")]
         public async Task<IActionResult> GetCampaignTemplates(
             string clientId,
-            [FromQuery] int pageSize = 20,
+            [FromQuery] int pageSize = 100,
             [FromQuery] int pageNumber = 1)
         {
             try
@@ -1565,12 +1565,22 @@ namespace PitchGenApi.Controllers
 
                 var isAiSubject = aiMode != "no";
 
+                // Same two-pass fill as the body: campaign-level values first,
+                // then per-contact runtime values on top.
+                string FillSubjectPlaceholders(string text) =>
+                    ApplyPlaceholders(ApplyPlaceholders(text, campaignOnlyValues), subjectReplacements);
+
                 if (isAiSubject)
                 {
-                    var filledSubjectInstruction = ApplyPlaceholders(
-                        template.SubjectInstructions ?? "",
-                        subjectReplacements
-                    );
+                    // Same precedence as the single-contact generator: the
+                    // definition's instruction wins, the campaign's stored copy
+                    // is only a fallback.
+                    var subjectInstructionTemplate =
+                        !string.IsNullOrWhiteSpace(template.TemplateDefinition?.SubjectInstructions)
+                            ? template.TemplateDefinition.SubjectInstructions
+                            : template.SubjectInstructions ?? "";
+
+                    var filledSubjectInstruction = FillSubjectPlaceholders(subjectInstructionTemplate);
 
                     subjectResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                     {
@@ -1584,7 +1594,7 @@ namespace PitchGenApi.Controllers
                 }
                 else if (!string.IsNullOrWhiteSpace(manualSubjectTemplate))
                 {
-                    subjectLine = ApplyPlaceholders(manualSubjectTemplate, subjectReplacements);
+                    subjectLine = FillSubjectPlaceholders(manualSubjectTemplate);
                 }
 
                 // Preview mode: generate & return only — no DB write, no credit, no history

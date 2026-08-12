@@ -387,14 +387,35 @@ namespace PitchGenApi.Controllers
                     ["generated_pitch"] = bodyResult.Content ?? ""
                 };
 
+                // Subjects get the same two-pass fill as the body: campaign-level
+                // values first, then per-contact runtime values. Order matters —
+                // campaignOnlyValues already excludes runtime keys, and running
+                // the runtime pass second means a campaign value that itself
+                // contains {first_name} still resolves.
+                string FillSubjectPlaceholders(string text) =>
+                    ApplyPlaceholders(ApplyPlaceholders(text, campaignOnlyValues), subjectReplacements);
+
                 var isAiSubject = aiMode != "no";
+
+                // The definition table is the live source of truth for subject
+                // instructions — CampaignTemplates.SubjectInstructions is only a
+                // snapshot taken when the campaign was created, so an admin edit
+                // to the definition would never reach existing campaigns.
+                // The campaign copy is kept as a fallback for definitions that
+                // have no instruction of their own.
+                var subjectInstructionTemplate =
+                    !string.IsNullOrWhiteSpace(template.TemplateDefinition.SubjectInstructions)
+                        ? template.TemplateDefinition.SubjectInstructions
+                        : template.SubjectInstructions ?? "";
+
+                var subjectInstructionSource =
+                    !string.IsNullOrWhiteSpace(template.TemplateDefinition.SubjectInstructions)
+                        ? "template-definition"
+                        : (!string.IsNullOrWhiteSpace(template.SubjectInstructions) ? "campaign-template" : "none");
 
                 if (isAiSubject)
                 {
-                    filledSubjectInstruction = ApplyPlaceholders(
-                        template.SubjectInstructions ?? "",
-                        subjectReplacements
-                    );
+                    filledSubjectInstruction = FillSubjectPlaceholders(subjectInstructionTemplate);
 
                     subjectResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                     {
@@ -408,7 +429,7 @@ namespace PitchGenApi.Controllers
                 }
                 else if (!string.IsNullOrWhiteSpace(manualSubjectTemplate))
                 {
-                    subjectLine = ApplyPlaceholders(manualSubjectTemplate, subjectReplacements);
+                    subjectLine = FillSubjectPlaceholders(manualSubjectTemplate);
                 }
 
                 // ---- Preview mode: no DB write, no credit, no history ----
@@ -479,6 +500,7 @@ namespace PitchGenApi.Controllers
                         SummaryPlaceholderFound = hasSummaryPlaceholder,
                         FilledSearchInstructions = filledSearchInstructions,
                         SubjectMode = isAiSubject ? "ai" : "manual",
+                        SubjectInstructionSource = subjectInstructionSource,
                         FilledSubjectInstruction = filledSubjectInstruction,
                         ManualSubjectTemplate = manualSubjectTemplate,
                         RuntimeReplacements = runtimeReplacements,
