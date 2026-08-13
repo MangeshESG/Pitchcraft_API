@@ -47,28 +47,48 @@ public class ContactRepository
         if ((finalCredit.TotalCredit ?? 0) > 0 &&
             (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
         {
+            var activePlan = await _context.UserCredits
+                .Where(u =>
+                    u.ClientId == clientId &&
+                    u.Status != null &&
+                    u.Status.ToLower() == "active" &&
+                    u.Plane != "Custom Credit" &&
+                    u.Plane != "Internal" &&
+                    (u.Credits ?? 0) > 0)
+                .OrderByDescending(u => u.StartDate ?? u.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (activePlan == null)
+                return false;
+
             finalCredit.TotalCredit -= 1;
             finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + 1;
             finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + 1;
+
+            activePlan.Credits -= 1;
+            _context.UserCredits.Update(activePlan);
 
             isDeducted = true;
         }
         // Case 2: Use CustomLimit
         else if ((finalCredit.CustomLimit ?? 0) > 0)
         {
-            var latestActivePlan = await _context.UserCredits
-                .Where(u => u.ClientId == clientId &&
-                            u.Status.ToLower() == "active" &&
-                            (u.Plane == "Custom Credit" || u.Plane == "Internal"))
-                .OrderByDescending(u => u.CreatedAt)
-                .FirstOrDefaultAsync();
+            var activePlan = await _context.UserCredits
+                .FirstOrDefaultAsync(u =>
+                    u.ClientId == clientId &&
+                    u.Status.ToLower() == "active" &&
+                    (u.Plane == "Custom Credit" || u.Plane == "Internal") &&
+                    (u.Credits ?? 0) > 0);
 
-            if (latestActivePlan != null && latestActivePlan.Credits > 0)
+            if (activePlan != null)
             {
                 finalCredit.CustomLimit -= 1;
                 finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + 1;
-                latestActivePlan.Credits -= 1;
-                _context.UserCredits.Update(latestActivePlan);
+
+                activePlan.Credits -= 1;
+
+                _context.UserCredits.Update(activePlan);
+
                 isDeducted = true;
             }
         }
