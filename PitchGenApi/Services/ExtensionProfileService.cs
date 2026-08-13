@@ -1,10 +1,6 @@
 namespace PitchGenApi.Services
 {
-    using System.Text;
     using Microsoft.EntityFrameworkCore;
-    using Microsoft.Extensions.Options;
-    using Newtonsoft.Json;
-    using Newtonsoft.Json.Linq;
     using PitchGenApi.Database;
     using PitchGenApi.Interfaces;
     using PitchGenApi.Model;
@@ -21,20 +17,20 @@ namespace PitchGenApi.Services
         private const int SummaryProfileTextLimit = 24000;
 
         private readonly AppDbContext _context;
-        private readonly HttpClient _httpClient;
         private readonly IAiModelSettingsService _aiModelSettings;
-        private readonly string _apiKey;
+        private readonly IPitchService _pitchService;
+        private readonly DeepSeekPitchService _deepSeekService;
 
         public ExtensionProfileService(
             AppDbContext context,
-            HttpClient httpClient,
             IAiModelSettingsService aiModelSettings,
-            IOptions<OpenAISettings> openAIOptions)
+            IPitchService pitchService,
+            DeepSeekPitchService deepSeekService)
         {
             _context = context;
-            _httpClient = httpClient;
             _aiModelSettings = aiModelSettings;
-            _apiKey = openAIOptions.Value.ApiKey;
+            _pitchService = pitchService;
+            _deepSeekService = deepSeekService;
         }
 
         // ---------------------------------------------------------------- lookup
@@ -223,7 +219,7 @@ namespace PitchGenApi.Services
             });
         }
 
-        // --------------------------------------------------------------- summary
+        // --------------------------------------------------------------- summary -------------------------------------------
 
         public async Task<ExtensionOperationResult> GenerateProfileSummaryAsync(
             ExtensionProfileSummaryRequestDto request,
@@ -237,11 +233,11 @@ namespace PitchGenApi.Services
                 });
             }
 
-            if (string.IsNullOrWhiteSpace(_apiKey))
+            if (request.ClientId <= 0)
             {
-                return new ExtensionOperationResult(503, new
+                return new ExtensionOperationResult(400, new
                 {
-                    message = "The OpenAI API key is not configured on the server."
+                    message = "A valid ClientId is required."
                 });
             }
 
@@ -260,37 +256,37 @@ namespace PitchGenApi.Services
                 }
             }
 
-            var modelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.ContactQA);
-            var rate = await _context.ModelRates
-                           .AsNoTracking()
-                           .FirstOrDefaultAsync(m => m.ModelName == modelName, cancellationToken)
-                       ?? await _context.ModelRates
-                           .AsNoTracking()
-                           .FirstOrDefaultAsync(m => m.ModelName == "gpt-4o-mini", cancellationToken);
-
-            if (rate == null)
-            {
-                return new ExtensionOperationResult(503, new
-                {
-                    message = "Model pricing is not configured for the summary model."
-                });
-            }
+            var modelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.ProfileSummary);
+            var isDeepSeek = IsDeepSeekModel(modelName);
 
             var profileText = request.ProfileText!.Trim();
 
             if (profileText.Length > SummaryProfileTextLimit)
                 profileText = profileText[..SummaryProfileTextLimit];
 
-            string summary;
+            // The instruction is fixed in code — only the profile text and the
+            // identifying fields come from the extension.
+            var enquiryRequest = new EnquiryRequest
+            {
+                Prompt = ProfileSummaryPrompt.Build(
+                    request.ContactName,
+                    request.CompanyName,
+                    request.LinkedInUrl,
+                    profileText),
+                ScrappedData = ProfileSummaryPrompt.Instruction,
+                ModelName = modelName
+            };
 
+            PitchResult result;
+
+            // Same path as find-email: DeepSeek or OpenAI depending on the model
+            // an admin chose for this purpose. Both deduct the one credit for the
+            // client they are handed.
             try
             {
-                summary = await RequestSummaryAsync(
-                    modelName,
-                    rate,
-                    request,
-                    profileText,
-                    cancellationToken);
+                result = isDeepSeek
+                    ? await _deepSeekService.GenerateWebSearchAsync(enquiryRequest, request.ClientId)
+                    : await _pitchService.GenerateWebSearchAsync(enquiryRequest, request.ClientId);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -304,11 +300,24 @@ namespace PitchGenApi.Services
                 });
             }
 
+            if (!result.IsSuccess)
+            {
+                return new ExtensionOperationResult(502, new
+                {
+                    message = "The summary could not be generated.",
+                    model = modelName,
+                    error = result.Content
+                });
+            }
+
+            var summary = (result.Content ?? string.Empty).Trim();
+
             if (string.IsNullOrWhiteSpace(summary))
             {
                 return new ExtensionOperationResult(502, new
                 {
-                    message = "The model returned an empty summary."
+                    message = "The model returned an empty summary.",
+                    model = modelName
                 });
             }
 
@@ -324,9 +333,22 @@ namespace PitchGenApi.Services
                 success = true,
                 summary,
                 saved = contact != null,
-                contactId = contact?.id
+                contactId = contact?.id,
+                model = modelName,
+                provider = isDeepSeek ? "DeepSeek" : "OpenAI",
+                usage = new
+                {
+                    result.PromptTokens,
+                    result.CompletionTokens,
+                    result.SearchTokens,
+                    result.TotalTokens,
+                    result.CurrentCost
+                }
             });
         }
+
+        private static bool IsDeepSeekModel(string? modelName)
+            => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
 
         private async Task<Contact?> ResolveSummaryTargetAsync(
             ExtensionProfileSummaryRequestDto request)
@@ -348,139 +370,7 @@ namespace PitchGenApi.Services
             return match?.Contact;
         }
 
-        private async Task<string> RequestSummaryAsync(
-            string modelName,
-            ModelRate rate,
-            ExtensionProfileSummaryRequestDto request,
-            string profileText,
-            CancellationToken cancellationToken)
-        {
-            const string systemPrompt = """
-                You write the professional summary that a B2B salesperson reads
-                immediately before contacting a prospect. You are given the raw
-                visible text of that prospect's LinkedIn profile.
-
-                Write 120-200 words of plain prose, no headings, no bullet points,
-                no markdown and no preamble such as "Here is a summary".
-
-                Cover, in this order and only where the profile supports it:
-                  1. Who they are and what they are responsible for right now.
-                  2. Their career arc - previous employers, how long in role, how
-                     they got to this seat.
-                  3. Their stated focus, specialisms or the problems they own.
-                  4. Anything genuinely useful as an opening hook: publications,
-                     certifications, volunteering, languages, notable projects.
-
-                Rules:
-                  - Use only what the profile text supports. Never invent an
-                    employer, a metric, a date or an achievement.
-                  - Omit LinkedIn interface noise: connection counts, follower
-                    counts, "see more", endorsements, advertisements, people-also-
-                    viewed entries.
-                  - Write in the third person and stay factual. No sales pitch, no
-                    flattery, no advice on how to sell to them.
-                """;
-
-            var contextLines = new List<string>();
-
-            if (!string.IsNullOrWhiteSpace(request.ContactName))
-                contextLines.Add($"Contact name: {request.ContactName!.Trim()}");
-
-            if (!string.IsNullOrWhiteSpace(request.CompanyName))
-                contextLines.Add($"Company: {request.CompanyName!.Trim()}");
-
-            if (!string.IsNullOrWhiteSpace(request.LinkedInUrl))
-                contextLines.Add($"LinkedIn: {request.LinkedInUrl!.Trim()}");
-
-            var userText = new StringBuilder();
-
-            if (contextLines.Count > 0)
-                userText.AppendLine(string.Join("\n", contextLines)).AppendLine();
-
-            userText.AppendLine("LinkedIn profile text:").AppendLine(profileText);
-
-            var requestData = new Dictionary<string, object>
-            {
-                { "model", modelName },
-                {
-                    "input",
-                    new object[]
-                    {
-                        new
-                        {
-                            role = "system",
-                            content = new object[]
-                            {
-                                new { type = "input_text", text = systemPrompt }
-                            }
-                        },
-                        new
-                        {
-                            role = "user",
-                            content = new object[]
-                            {
-                                new { type = "input_text", text = userText.ToString() }
-                            }
-                        }
-                    }
-                },
-                { "temperature", rate.Temperature },
-                { "max_output_tokens", rate.MaxTokens }
-            };
-
-            using var message = new HttpRequestMessage(
-                HttpMethod.Post,
-                "https://api.openai.com/v1/responses");
-            message.Headers.TryAddWithoutValidation("Authorization", $"Bearer {_apiKey}");
-            message.Headers.TryAddWithoutValidation("Accept", "application/json");
-            message.Content = new StringContent(
-                JsonConvert.SerializeObject(requestData),
-                Encoding.UTF8,
-                "application/json");
-
-            var response = await _httpClient.SendAsync(message, cancellationToken);
-            var json = await response.Content.ReadAsStringAsync(cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException(json);
-
-            var parsed = JsonConvert.DeserializeObject<JObject>(json)
-                         ?? throw new InvalidOperationException("Unreadable model response.");
-            var output = parsed["output_text"]?.ToString() ?? string.Empty;
-
-            if (string.IsNullOrWhiteSpace(output) && parsed["output"] is JArray outputs)
-            {
-                var builder = new StringBuilder();
-
-                foreach (var item in outputs)
-                {
-                    if (item["content"] is not JArray contentArray)
-                        continue;
-
-                    foreach (var part in contentArray)
-                    {
-                        var text = part["text"]?.ToString();
-
-                        if (!string.IsNullOrWhiteSpace(text))
-                            builder.AppendLine(text.Trim());
-                    }
-                }
-
-                output = builder.ToString().Trim();
-            }
-
-            var incompleteReason = OpenAiResponseGuard.GetIncompleteReason(parsed);
-
-            if (incompleteReason != null && string.IsNullOrWhiteSpace(output))
-            {
-                throw new InvalidOperationException(
-                    OpenAiResponseGuard.DescribeEmptyOutput(incompleteReason, rate.MaxTokens));
-            }
-
-            return output.Trim();
-        }
-
-        // --------------------------------------------------------------- helpers
+        // --------------------------------------------------------------- helpers -----------------------------------------------------
 
         private sealed record ContactMatch(Contact Contact, DataFile? DataFile);
 

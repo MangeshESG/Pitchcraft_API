@@ -12,6 +12,7 @@ namespace PitchGenApi.Model
         public const string EmailGeneration = "email_generation";
         public const string ContactQA = "contact_qa";
         public const string FindEmail = "find_email";
+        public const string ProfileSummary = "profile_summary";
 
         public static readonly IReadOnlyList<string> All = new[]
         {
@@ -19,7 +20,8 @@ namespace PitchGenApi.Model
             BlueprintGeneration,
             EmailGeneration,
             ContactQA,
-            FindEmail
+            FindEmail,
+            ProfileSummary
         };
 
         public static bool IsKnown(string? purposeKey) =>
@@ -48,6 +50,9 @@ namespace PitchGenApi.Model
                 FindEmail => (
                     "Find email (AI)",
                     "Researches a person's professional email address from public sources."),
+                ProfileSummary => (
+                    "Profile summary (extension)",
+                    "Writes the professional summary from the LinkedIn profile the browser extension captured."),
                 _ => (purposeKey, "")
             };
     }

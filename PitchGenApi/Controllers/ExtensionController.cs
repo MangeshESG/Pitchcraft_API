@@ -270,8 +270,12 @@ namespace PitchGenApi.Controllers
         }
 
         /// <summary>
-        /// Summarises the scraped LinkedIn profile with the LLM and stores it in
-        /// the contact's LinkedIn information field.
+        /// Summarises the scraped LinkedIn profile with the AI model an admin
+        /// picked for the "profile_summary" purpose (Settings &gt; AI models) and
+        /// stores it in the contact's LinkedIn information field.
+        ///
+        /// Like find-email it runs the shared web-search path, so DeepSeek and
+        /// OpenAI models both work, and the search costs the client one credit.
         /// </summary>
         [HttpPost("EX_profile-summary")]
         public async Task<IActionResult> GenerateProfileSummary(

@@ -189,7 +189,9 @@ builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
 builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
 builder.Services.AddScoped<IForwardRepository, ForwardRepository>();
 builder.Services.AddScoped<IExtensionRepository, ExtensionRepository>();
-builder.Services.AddHttpClient<IExtensionProfileService, ExtensionProfileService>();
+// No typed HttpClient: the profile summary now goes through IPitchService /
+// DeepSeekPitchService instead of calling OpenAI directly.
+builder.Services.AddScoped<IExtensionProfileService, ExtensionProfileService>();
 builder.Services.AddScoped<CalculateEmailRepository>();
 builder.Services.AddScoped<DefaultCustomFieldSeeder>();
 

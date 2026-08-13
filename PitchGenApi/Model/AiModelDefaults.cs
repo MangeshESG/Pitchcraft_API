@@ -35,6 +35,13 @@ namespace PitchGenApi.Model
         /// </summary>
         public const string FindEmailModel = "gpt-5.6-luna";
 
+        /// <summary>
+        /// Model used by the browser extension's LinkedIn profile summary. It
+        /// runs down the same web-search path as find-email so the summary can
+        /// also pick up recent public activity, hence the same default.
+        /// </summary>
+        public const string ProfileSummaryModel = "gpt-5.6-luna";
+
         public static string ForPurpose(string purposeKey) =>
             purposeKey switch
             {
@@ -43,6 +50,7 @@ namespace PitchGenApi.Model
                 AiModelPurposes.EmailGeneration => EmailGenerationModel,
                 AiModelPurposes.ContactQA => ContactQAModel,
                 AiModelPurposes.FindEmail => FindEmailModel,
+                AiModelPurposes.ProfileSummary => ProfileSummaryModel,
                 _ => EmailGenerationModel
             };
 
