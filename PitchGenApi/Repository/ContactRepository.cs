@@ -47,9 +47,26 @@ public class ContactRepository
         if ((finalCredit.TotalCredit ?? 0) > 0 &&
             (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
         {
+            var activePlan = await _context.UserCredits
+                .Where(u =>
+                    u.ClientId == clientId &&
+                    u.Status != null &&
+                    u.Status.ToLower() == "active" &&
+                    u.Plane != "Custom Credit" &&
+                    u.Plane != "Internal" &&
+                    (u.Credits ?? 0) > 0)
+                .OrderByDescending(u => u.StartDate ?? u.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (activePlan == null)
+                return false;
+
             finalCredit.TotalCredit -= 1;
             finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + 1;
             finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + 1;
+
+            activePlan.Credits -= 1;
+            _context.UserCredits.Update(activePlan);
 
             isDeducted = true;
         }
