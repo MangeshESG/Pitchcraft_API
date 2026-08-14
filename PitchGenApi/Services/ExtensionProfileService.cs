@@ -321,6 +321,10 @@ namespace PitchGenApi.Services
                 });
             }
 
+            // The model is asked for raw JSON but both providers occasionally wrap
+            // it in a markdown fence, so unwrap before storing or parsing.
+            summary = UnwrapJson(summary);
+
             if (contact != null)
             {
                 contact.linkedIninformation = summary;
@@ -332,6 +336,10 @@ namespace PitchGenApi.Services
             {
                 success = true,
                 summary,
+                // The same payload already parsed, so the panel does not have to
+                // JSON.parse the summary string itself. Null when the model
+                // ignored the schema and returned prose.
+                profile = ParseProfile(summary),
                 saved = contact != null,
                 contactId = contact?.id,
                 model = modelName,
@@ -349,6 +357,57 @@ namespace PitchGenApi.Services
 
         private static bool IsDeepSeekModel(string? modelName)
             => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
+
+        /// <summary>
+        /// Strips a ```json fence and any chatter around the object so what is
+        /// stored in linkedIninformation is always parseable JSON when the model
+        /// followed the schema.
+        /// </summary>
+        private static string UnwrapJson(string content)
+        {
+            var text = content.Trim();
+
+            if (text.StartsWith("```", StringComparison.Ordinal))
+            {
+                var firstBreak = text.IndexOf('\n');
+
+                if (firstBreak >= 0)
+                    text = text[(firstBreak + 1)..];
+
+                var closingFence = text.LastIndexOf("```", StringComparison.Ordinal);
+
+                if (closingFence >= 0)
+                    text = text[..closingFence];
+
+                text = text.Trim();
+            }
+
+            var start = text.IndexOf('{');
+            var end = text.LastIndexOf('}');
+
+            return start >= 0 && end > start ? text[start..(end + 1)] : text;
+        }
+
+        /// <summary>
+        /// The summary as a JSON element, or null when the model returned prose
+        /// instead of the schema — older contacts hold plain-text summaries too.
+        /// </summary>
+        private static System.Text.Json.JsonElement? ParseProfile(string summary)
+        {
+            try
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(summary);
+                var root = document.RootElement;
+
+                return root.ValueKind == System.Text.Json.JsonValueKind.Object
+                    ? root.Clone()
+                    : null;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return null;
+            }
+        }
 
         private async Task<Contact?> ResolveSummaryTargetAsync(
             ExtensionProfileSummaryRequestDto request)
