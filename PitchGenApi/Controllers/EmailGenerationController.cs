@@ -24,6 +24,7 @@ namespace PitchGenApi.Controllers
         private readonly INoteRepository _noteRepository;
         private readonly DeepSeekPitchService _deepSeekService;
         private readonly IAiModelSettingsService _aiModelSettings;
+        private readonly IContactPromptContextService _promptContext;
 
         public EmailGenerationController(
             AppDbContext dbContext,
@@ -31,7 +32,8 @@ namespace PitchGenApi.Controllers
             ContactRepository contactRepository,
             INoteRepository noteRepository,
             DeepSeekPitchService deepSeekService,
-            IAiModelSettingsService aiModelSettings)
+            IAiModelSettingsService aiModelSettings,
+            IContactPromptContextService promptContext)
         {
             _dbContext = dbContext;
             _pitchService = pitchService;
@@ -39,6 +41,7 @@ namespace PitchGenApi.Controllers
             _noteRepository = noteRepository;
             _deepSeekService = deepSeekService;
             _aiModelSettings = aiModelSettings;
+            _promptContext = promptContext;
         }
 
         // ============================================
@@ -179,6 +182,11 @@ namespace PitchGenApi.Controllers
                     ["search_output_summary"] = ""
                 };
 
+                // {linkedin_messages}. Registered empty up front so the
+                // campaign-level pass can't claim the key, and so the token is
+                // cleared rather than left literal when the switch is off.
+                runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = "";
+
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
 
@@ -200,6 +208,24 @@ namespace PitchGenApi.Controllers
                 var hasSummaryPlaceholder =
                     ContainsPlaceholder(campaignBlueprint, "linkedin_info") ||
                     ContainsPlaceholder(campaignBlueprint, "professional_summary");
+
+                // ---- LinkedIn messages already sent to this contact ----
+                // {linkedin_messages} is the slot; use_linkedin_message is the
+                // yes/no switch, read the same way as use_email_history. Opt-in:
+                // resolved only when the blueprint contains the token, and never
+                // appended as a context section — an email blueprint that
+                // doesn't ask for it generates exactly as before.
+                var hasLinkedInHistoryPlaceholder =
+                    ContainsPlaceholder(campaignBlueprint, PlaceholderEngine.LinkedInHistoryKey);
+
+                var linkedInHistoryEnabled = PlaceholderEngine.IsHistoryEnabled(
+                    campaignPlaceholderValues, PlaceholderEngine.LinkedInHistoryToggleKey);
+
+                var linkedInHistory = hasLinkedInHistoryPlaceholder && linkedInHistoryEnabled
+                    ? await _promptContext.GetSentLinkedInContextAsync(parsedClientId, contact.id)
+                    : new LinkedInSentContext();
+
+                runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = linkedInHistory.Text;
 
                 // ---- email history: only an explicit "no" turns it off ----
                 var emailHistorySetting =
@@ -472,6 +498,9 @@ namespace PitchGenApi.Controllers
                     Emails = emailConversation,
                     ProfessionalSummary = professionalSummary,
                     EmailCount = insights.EmailCount,
+                    LinkedInMessages = linkedInHistory.Text,
+                    LinkedInMessageCount = linkedInHistory.Count,
+                    LinkedInMessagesSentTotal = linkedInHistory.TotalSent,
 
                     // Which inputs actually reached the model. These are not
                     // "we intended to add it" flags — each one is verified
@@ -482,7 +511,8 @@ namespace PitchGenApi.Controllers
                         Emails = emailsUsed && PromptContains(promptSentToAi, emailConversation),
                         ProfessionalSummary = summaryUsed && PromptContains(promptSentToAi, professionalSummary),
                         WebSearch = !string.IsNullOrWhiteSpace(webSearchData)
-                                    && PromptContains(promptSentToAi, webSearchData)
+                                    && PromptContains(promptSentToAi, webSearchData),
+                        LinkedInMessages = PromptContains(promptSentToAi, linkedInHistory.Text)
                     },
 
                     // Everything that fed the generation (for transparency/debug UI)
@@ -498,6 +528,8 @@ namespace PitchGenApi.Controllers
                         NotesPlaceholderFound = hasNotesPlaceholder,
                         EmailPlaceholderFound = hasEmailPlaceholder,
                         SummaryPlaceholderFound = hasSummaryPlaceholder,
+                        LinkedInHistoryPlaceholderFound = hasLinkedInHistoryPlaceholder,
+                        LinkedInHistoryEnabled = linkedInHistoryEnabled,
                         FilledSearchInstructions = filledSearchInstructions,
                         SubjectMode = isAiSubject ? "ai" : "manual",
                         SubjectInstructionSource = subjectInstructionSource,

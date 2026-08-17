@@ -76,6 +76,8 @@ namespace PitchGenApi.Database
         public DbSet<EmailPattern> EmailPattern { get; set; }
         // ✅ Admin-controlled model per AI purpose (Settings > AI models)
         public DbSet<AiModelSetting> ai_model_settings { get; set; }
+        // ✅ LinkedIn messages krafted per contact + the "Sent" checkbox state
+        public DbSet<LinkedInMessage> LinkedInMessages { get; set; }
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
@@ -175,6 +177,19 @@ namespace PitchGenApi.Database
                 entity.HasKey(e => e.Id);
                 entity.HasIndex(e => e.ClientId);
                 entity.Property(e => e.ConversationData).HasColumnType("nvarchar(max)");
+            });
+
+            // ✅ LinkedIn messages. Mirrors the table created in SQL: the
+            // clustered index is (client_id, contact_id, id DESC) — the shape
+            // every read uses — while the identity stays a nonclustered PK.
+            modelBuilder.Entity<LinkedInMessage>(entity =>
+            {
+                entity.ToTable("linkedin_messages");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.Body).HasColumnType("nvarchar(max)");
+                entity.HasIndex(e => new { e.ClientId, e.ContactId, e.Id });
+                entity.HasIndex(e => new { e.ClientId, e.MsgUid }).IsUnique();
+                entity.HasIndex(e => new { e.ClientId, e.SentAt });
             });
 
             base.OnModelCreating(modelBuilder);

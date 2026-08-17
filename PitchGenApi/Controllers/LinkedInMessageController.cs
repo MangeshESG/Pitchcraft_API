@@ -1,0 +1,909 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using PitchGenApi.Database;
+using PitchGenApi.Interfaces;
+using PitchGenApi.Model;
+using PitchGenApi.Model.DTOs;
+using PitchGenApi.Models;
+using PitchGenApi.Services;
+using Serilog;
+
+namespace PitchGenApi.Controllers
+{
+    /// <summary>
+    /// LinkedIn message generation and send-tracking.
+    ///
+    /// Same blueprint + placeholder process as email generation, but:
+    ///  • no subject line,
+    ///  • plain text with a hard character cap,
+    ///  • the result is stored in linkedin_messages (never in contacts.email_body),
+    ///  • "sent" is whatever the user ticks — nothing is detected automatically.
+    ///
+    /// Every route is POST or GET.
+    /// </summary>
+    [ApiController]
+    [Route("api/linkedin-messages")]
+    public class LinkedInMessageController : ControllerBase
+    {
+        private readonly AppDbContext _dbContext;
+        private readonly IContactPromptContextService _promptContext;
+        private readonly ContactRepository _contactRepository;
+        private readonly IPitchService _pitchService;
+        private readonly DeepSeekPitchService _deepSeekService;
+        private readonly IAiModelSettingsService _aiModelSettings;
+
+        public LinkedInMessageController(
+            AppDbContext dbContext,
+            IContactPromptContextService promptContext,
+            ContactRepository contactRepository,
+            IPitchService pitchService,
+            DeepSeekPitchService deepSeekService,
+            IAiModelSettingsService aiModelSettings)
+        {
+            _dbContext = dbContext;
+            _promptContext = promptContext;
+            _contactRepository = contactRepository;
+            _pitchService = pitchService;
+            _deepSeekService = deepSeekService;
+            _aiModelSettings = aiModelSettings;
+        }
+
+        // How far back an offline-queued checkbox is still believed.
+        private static readonly TimeSpan MaxBackdate = TimeSpan.FromDays(7);
+
+        // Guard on the bulk summary call so a runaway grid can't send 50k ids.
+        private const int MaxSummaryContacts = 500;
+
+        // ============================================================
+        // 1️⃣  POST api/linkedin-messages/generate
+        //     Krafts the message from a blueprint and stores it as a
+        //     draft (is_sent = 0). Costs one credit, same as an email.
+        // ============================================================
+        [HttpPost("generate")]
+        public async Task<IActionResult> Generate([FromBody] GenerateLinkedInMessageRequest request)
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { Success = false, Message = "Request body is required." });
+
+                if (request.ClientId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid ClientId is required." });
+
+                if (request.ContactId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid ContactId is required." });
+
+                if (request.BlueprintId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid BlueprintId is required." });
+
+                var messageType = LinkedInMessageTypes.Normalize(request.MessageType);
+                var maxLength = ResolveMaxLength(messageType, request.MaxLength);
+
+                var template = await _dbContext.CampaignTemplates
+                    .Include(t => t.TemplateDefinition)
+                    .FirstOrDefaultAsync(t =>
+                        t.Id == request.BlueprintId &&
+                        t.ClientId == request.ClientId.ToString());
+
+                if (template == null)
+                    return NotFound(new { Success = false, Message = "Blueprint not found for this client." });
+
+                if (template.TemplateDefinition == null)
+                    return StatusCode(500, new { Success = false, Message = "Blueprint definition is missing." });
+
+                var contact = await LoadContactAsync(request.ClientId, request.ContactId);
+                if (contact == null)
+                    return NotFound(new { Success = false, Message = "Contact not found for this client." });
+
+                // Preview costs nothing, so it doesn't need a credit either.
+                if (!request.Preview && !await _contactRepository.HasAvailableCreditAsync(request.ClientId))
+                {
+                    return Ok(new
+                    {
+                        Success = false,
+                        Message = "No credit is available. Please buy credits to generate a message."
+                    });
+                }
+
+                var campaignPlaceholderValues =
+                    string.IsNullOrWhiteSpace(template.PlaceholderValues)
+                        ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
+                          ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                var customFields = await _promptContext.GetCustomFieldsAsync(request.ClientId, request.ContactId);
+                var insights = await _promptContext.BuildAsync(
+                    request.ClientId, request.ContactId, contact.linkedIninformation);
+
+                // ---- runtime replacements (identical set to email generation) ----
+                var runtimeReplacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["full_name"] = contact.full_name ?? $"{contact.first_name} {contact.last_name}".Trim(),
+                    ["first_name"] = contact.first_name ?? "",
+                    ["last_name"] = contact.last_name ?? "",
+                    ["company_name"] = contact.company_name ?? "",
+                    ["company_name_friendly"] = contact.company_name ?? "",
+                    ["job_title"] = contact.job_title ?? "",
+                    ["location"] = contact.country_or_address ?? "",
+                    ["linkedin_url"] = contact.linkedin_url ?? "",
+                    ["website"] = contact.website ?? "",
+                    ["linkedin_info"] = insights.ProfessionalSummary,
+                    ["professional_summary"] = insights.ProfessionalSummary,
+                    ["date"] = DateTime.UtcNow.ToString("MMMM d, yyyy"),
+                    ["notes"] = insights.Notes,
+                    ["use_email"] = "",
+                    ["use_emails"] = "",
+                    ["search_output_summary"] = ""
+                };
+
+                // Registered up front (empty) so the campaign-level pass can't
+                // claim the key — and so the token is cleared rather than left
+                // literal when the switch is off. Filled below if it is on.
+                runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = "";
+
+                foreach (var kv in customFields)
+                    runtimeReplacements[kv.Key] = kv.Value ?? "";
+
+                // Runtime keys must SURVIVE the campaign-level pass.
+                var campaignOnlyValues = campaignPlaceholderValues
+                    .Where(kv => !runtimeReplacements.ContainsKey(kv.Key))
+                    .ToDictionary(
+                        kv => kv.Key,
+                        kv => PlaceholderEngine.CleanValue(kv.Key, kv.Value),
+                        StringComparer.OrdinalIgnoreCase);
+
+                var campaignBlueprint = PlaceholderEngine.Apply(
+                    template.TemplateDefinition.MasterBlueprintUnpopulated ?? "",
+                    campaignOnlyValues);
+
+                var hasNotesPlaceholder = PlaceholderEngine.Contains(campaignBlueprint, "notes");
+                var hasEmailPlaceholder =
+                    PlaceholderEngine.Contains(campaignBlueprint, "use_email") ||
+                    PlaceholderEngine.Contains(campaignBlueprint, "use_emails");
+                var hasSummaryPlaceholder =
+                    PlaceholderEngine.Contains(campaignBlueprint, "linkedin_info") ||
+                    PlaceholderEngine.Contains(campaignBlueprint, "professional_summary");
+
+                // {linkedin_messages} — everything already sent to this contact
+                // on LinkedIn, so a follow-up doesn't repeat the opener. The
+                // blueprint's use_linkedin_message value is the on/off switch;
+                // like use_email_history, only an explicit "no" turns it off.
+                var hasLinkedInHistoryPlaceholder =
+                    PlaceholderEngine.Contains(campaignBlueprint, PlaceholderEngine.LinkedInHistoryKey);
+
+                var linkedInHistoryEnabled = PlaceholderEngine.IsHistoryEnabled(
+                    campaignPlaceholderValues, PlaceholderEngine.LinkedInHistoryToggleKey);
+
+                var linkedInHistory = hasLinkedInHistoryPlaceholder && linkedInHistoryEnabled
+                    ? await _promptContext.GetSentLinkedInContextAsync(request.ClientId, request.ContactId)
+                    : new LinkedInSentContext();
+
+                runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = linkedInHistory.Text;
+
+                // Email history: only an explicit "no" turns it off.
+                var emailHistorySetting =
+                    campaignPlaceholderValues.TryGetValue("use_email_history", out var histVal)
+                        ? (histVal ?? "").Trim().ToLower()
+                        : "";
+                var emailHistoryEnabled = emailHistorySetting != "no";
+
+                if (emailHistoryEnabled)
+                {
+                    runtimeReplacements["use_email"] = insights.EmailContext;
+                    runtimeReplacements["use_emails"] = insights.EmailContext;
+                }
+
+                var finalPrompt = PlaceholderEngine.Apply(campaignBlueprint, runtimeReplacements);
+
+                // Anything resolved but unplaceholdered is appended, so no input
+                // is silently dropped.
+                if (!string.IsNullOrWhiteSpace(insights.Notes) && !hasNotesPlaceholder)
+                    finalPrompt = PlaceholderEngine.AppendContextSection(
+                        finalPrompt,
+                        "Notes about this contact (use them to personalize):",
+                        insights.Notes);
+
+                if (emailHistoryEnabled && !string.IsNullOrWhiteSpace(insights.EmailContext) && !hasEmailPlaceholder)
+                    finalPrompt = PlaceholderEngine.AppendContextSection(
+                        finalPrompt,
+                        "Previous email conversation with this contact:",
+                        insights.EmailContext);
+
+                if (!string.IsNullOrWhiteSpace(insights.ProfessionalSummary) && !hasSummaryPlaceholder)
+                    finalPrompt = PlaceholderEngine.AppendContextSection(
+                        finalPrompt,
+                        "Professional summary (LinkedIn) for this contact:",
+                        insights.ProfessionalSummary);
+
+                // No live web search on this path: LinkedIn generation is one
+                // model call and one credit. The research already stored on the
+                // contact (from a kraft or the Insights panel) is reused, and the
+                // slot is always cleared so a literal token never reaches the model.
+                var storedResearch = PromptTextCleaner.StripHtml(contact.web_search_data);
+                finalPrompt = finalPrompt.Contains("{web_searched_data}")
+                    ? finalPrompt.Replace("{web_searched_data}", storedResearch)
+                    : finalPrompt;
+                runtimeReplacements["search_output_summary"] = storedResearch;
+
+                // Nothing is appended for a normal message: the blueprint is the
+                // only instruction the model gets. A connection note additionally
+                // carries LinkedIn's 300-character cap.
+                var channelRules = BuildChannelRules(messageType, maxLength);
+
+                if (!string.IsNullOrWhiteSpace(channelRules))
+                {
+                    finalPrompt = PlaceholderEngine.AppendContextSection(
+                        finalPrompt,
+                        "LinkedIn connection-request note limit:",
+                        channelRules);
+                }
+
+                var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.EmailGeneration);
+
+                if (string.IsNullOrWhiteSpace(selectedModel))
+                {
+                    selectedModel = !string.IsNullOrWhiteSpace(template.SelectedModel)
+                        ? template.SelectedModel
+                        : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
+                            ? template.TemplateDefinition.SelectedModel
+                            : AiModelDefaults.EmailGenerationModel);
+                }
+
+                var promptSentToAi = finalPrompt;
+
+                var result = await GeneratePitchByProviderAsync(new EnquiryRequest
+                {
+                    Prompt = promptSentToAi,
+                    ScrappedData = "",
+                    ModelName = selectedModel
+                });
+
+                if (!result.IsSuccess || string.IsNullOrWhiteSpace(result.Content))
+                {
+                    return StatusCode(500, new
+                    {
+                        Success = false,
+                        Message = "Failed to generate LinkedIn message.",
+                        Error = result.Content,
+                        FinalPrompt = promptSentToAi
+                    });
+                }
+
+                // LinkedIn's composer is plain text — markup pasted into it shows
+                // up as literal tags.
+                var body = TrimToLength(PromptTextCleaner.StripHtml(result.Content).Trim(), maxLength);
+
+                LinkedInMessage? saved = null;
+
+                if (!request.Preview)
+                {
+                    saved = new LinkedInMessage
+                    {
+                        ClientId = request.ClientId,
+                        ContactId = request.ContactId,
+                        MessageType = messageType,
+                        BlueprintId = request.BlueprintId,
+                        Body = body,
+                        IsSent = false,
+                        GeneratedAt = DateTime.UtcNow,
+                        MsgUid = Guid.NewGuid()
+                    };
+
+                    _dbContext.LinkedInMessages.Add(saved);
+                    await _dbContext.SaveChangesAsync();
+
+                    await _contactRepository.CreditDeduction(request.ClientId);
+                    await _contactRepository.SaveKraftHistoryAsync(
+                        request.ContactId, request.ClientId, null, request.BlueprintId, "LinkedIn");
+                }
+
+                return Ok(new
+                {
+                    Success = true,
+                    Preview = request.Preview,
+
+                    MessageId = saved?.Id,
+                    MsgUid = saved?.MsgUid,
+                    ClientId = request.ClientId,
+                    ContactId = request.ContactId,
+                    BlueprintId = request.BlueprintId,
+                    MessageType = messageType,
+
+                    Body = body,
+                    CharacterCount = body.Length,
+                    MaxLength = maxLength,
+                    IsSent = false,
+                    SentAt = (DateTime?)null,
+                    GeneratedAt = saved?.GeneratedAt ?? DateTime.UtcNow,
+
+                    // Same transparency payload the email generator returns, so
+                    // the Insights tabs work unchanged on this channel.
+                    Notes = insights.Notes,
+                    Emails = insights.EmailContext,
+                    ProfessionalSummary = insights.ProfessionalSummary,
+                    EmailCount = insights.EmailCount,
+                    WebSearchData = storedResearch,
+                    LinkedInMessages = linkedInHistory.Text,
+                    LinkedInMessageCount = linkedInHistory.Count,
+                    LinkedInMessagesSentTotal = linkedInHistory.TotalSent,
+                    FinalPrompt = promptSentToAi,
+
+                    UsedInGeneration = new
+                    {
+                        Notes = PlaceholderEngine.PromptContains(promptSentToAi, insights.Notes),
+                        Emails = emailHistoryEnabled &&
+                                 PlaceholderEngine.PromptContains(promptSentToAi, insights.EmailContext),
+                        ProfessionalSummary =
+                                 PlaceholderEngine.PromptContains(promptSentToAi, insights.ProfessionalSummary),
+                        WebSearch = PlaceholderEngine.PromptContains(promptSentToAi, storedResearch),
+                        LinkedInMessages = PlaceholderEngine.PromptContains(promptSentToAi, linkedInHistory.Text)
+                    },
+
+                    Details = new
+                    {
+                        Model = selectedModel,
+                        EmailHistoryEnabled = emailHistoryEnabled,
+                        NotesPlaceholderFound = hasNotesPlaceholder,
+                        EmailPlaceholderFound = hasEmailPlaceholder,
+                        SummaryPlaceholderFound = hasSummaryPlaceholder,
+                        LinkedInHistoryPlaceholderFound = hasLinkedInHistoryPlaceholder,
+                        LinkedInHistoryEnabled = linkedInHistoryEnabled,
+                        UnresolvedPlaceholders = PlaceholderEngine.FindUnresolved(promptSentToAi),
+                        RuntimeReplacements = runtimeReplacements,
+                        CampaignPlaceholderValues = campaignPlaceholderValues
+                    },
+
+                    Usage = new
+                    {
+                        TotalTokens = result.TotalTokens,
+                        TotalCost = result.CurrentCost
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "LinkedIn message generation failed. ClientId={ClientId}, ContactId={ContactId}",
+                    request?.ClientId, request?.ContactId);
+
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = "Error generating LinkedIn message.",
+                    Error = ex.Message
+                });
+            }
+        }
+
+        // ============================================================
+        // 2️⃣  POST api/linkedin-messages/save
+        //     Stores a hand-written message, or saves the user's edits
+        //     to a draft before they send it. No credit, no AI call.
+        // ============================================================
+        [HttpPost("save")]
+        public async Task<IActionResult> Save([FromBody] SaveLinkedInMessageRequest request)
+        {
+            try
+            {
+                if (request == null || request.ClientId <= 0 || request.ContactId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid ClientId and ContactId are required." });
+
+                if (string.IsNullOrWhiteSpace(request.Body))
+                    return BadRequest(new { Success = false, Message = "Body is required." });
+
+                var messageType = LinkedInMessageTypes.Normalize(request.MessageType);
+                var body = TrimToLength(
+                    PromptTextCleaner.StripHtml(request.Body).Trim(),
+                    LinkedInMessageTypes.DefaultMaxLength(messageType));
+
+                LinkedInMessage? message = null;
+
+                if (request.MessageId.HasValue || request.MsgUid.HasValue)
+                {
+                    message = await FindMessageAsync(request.ClientId, request.MessageId, request.MsgUid);
+
+                    if (message == null)
+                        return NotFound(new { Success = false, Message = "Message not found for this client." });
+
+                    // A sent message is a record of what actually went out —
+                    // editing it would rewrite history. Generate a new one instead.
+                    if (message.IsSent)
+                        return BadRequest(new
+                        {
+                            Success = false,
+                            Message = "This message is already marked as sent and can no longer be edited."
+                        });
+
+                    message.Body = body;
+                    message.MessageType = messageType;
+
+                    if (request.BlueprintId.HasValue)
+                        message.BlueprintId = request.BlueprintId;
+                }
+                else
+                {
+                    var contact = await LoadContactAsync(request.ClientId, request.ContactId);
+                    if (contact == null)
+                        return NotFound(new { Success = false, Message = "Contact not found for this client." });
+
+                    message = new LinkedInMessage
+                    {
+                        ClientId = request.ClientId,
+                        ContactId = request.ContactId,
+                        MessageType = messageType,
+                        BlueprintId = request.BlueprintId,
+                        Body = body,
+                        IsSent = false,
+                        GeneratedAt = DateTime.UtcNow,
+                        MsgUid = request.MsgUid ?? Guid.NewGuid()
+                    };
+
+                    _dbContext.LinkedInMessages.Add(message);
+                }
+
+                await _dbContext.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    Message = "Saved.",
+                    Data = ToDto(message, includeBody: true)
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Saving LinkedIn message failed. ClientId={ClientId}", request?.ClientId);
+                return StatusCode(500, new { Success = false, Message = "Error saving message.", Error = ex.Message });
+            }
+        }
+
+        // ============================================================
+        // 3️⃣  POST api/linkedin-messages/mark-sent
+        //     THE CHECKBOX. Ticking stamps the server's UTC time,
+        //     unticking clears it. Nothing is detected automatically.
+        //     Safe to call twice — the uid keeps it idempotent.
+        // ============================================================
+        [HttpPost("mark-sent")]
+        public async Task<IActionResult> MarkSent([FromBody] MarkLinkedInMessageSentRequest request)
+        {
+            try
+            {
+                if (request == null || request.ClientId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid ClientId is required." });
+
+                if (!request.MessageId.HasValue && !request.MsgUid.HasValue)
+                    return BadRequest(new { Success = false, Message = "MessageId or MsgUid is required." });
+
+                var message = await FindMessageAsync(request.ClientId, request.MessageId, request.MsgUid);
+
+                if (message == null)
+                    return NotFound(new { Success = false, Message = "Message not found for this client." });
+
+                if (request.IsSent)
+                {
+                    // Already ticked: keep the original timestamp. A retry or a
+                    // double tap must not move the send time.
+                    if (!message.IsSent)
+                    {
+                        message.IsSent = true;
+                        message.SentAt = ResolveSentAt(request.OccurredAtUtc);
+                        message.MarkedFrom = NormalizeSource(request.MarkedFrom);
+                        await _dbContext.SaveChangesAsync();
+                    }
+                }
+                else
+                {
+                    if (message.IsSent)
+                    {
+                        message.IsSent = false;
+                        message.SentAt = null;
+                        message.MarkedFrom = null;
+                        await _dbContext.SaveChangesAsync();
+                    }
+                }
+
+                return Ok(new
+                {
+                    Success = true,
+                    Message = message.IsSent ? "Marked as sent." : "Marked as not sent.",
+                    Data = ToDto(message, includeBody: false)
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Marking LinkedIn message sent failed. ClientId={ClientId}", request?.ClientId);
+                return StatusCode(500, new { Success = false, Message = "Error updating message.", Error = ex.Message });
+            }
+        }
+
+        // ============================================================
+        // 4️⃣  GET api/linkedin-messages/by-contact
+        //     The contact's LinkedIn history, newest first. Reads
+        //     straight down the clustered key — one range seek.
+        // ============================================================
+        [HttpGet("by-contact")]
+        public async Task<IActionResult> GetByContact(
+            [FromQuery] int clientId,
+            [FromQuery] int contactId,
+            [FromQuery] bool includeBody = true,
+            [FromQuery] string? messageType = null,
+            [FromQuery] bool sentOnly = false,
+            [FromQuery] int take = 50)
+        {
+            try
+            {
+                if (clientId <= 0 || contactId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid clientId and contactId are required." });
+
+                take = Math.Clamp(take, 1, 200);
+
+                var query = _dbContext.LinkedInMessages
+                    .AsNoTracking()
+                    .Where(m => m.ClientId == clientId && m.ContactId == contactId);
+
+                if (!string.IsNullOrWhiteSpace(messageType))
+                {
+                    var normalized = LinkedInMessageTypes.Normalize(messageType);
+                    query = query.Where(m => m.MessageType == normalized);
+                }
+
+                if (sentOnly)
+                    query = query.Where(m => m.IsSent);
+
+                var rows = await query
+                    .OrderByDescending(m => m.Id)
+                    .Take(take)
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    ClientId = clientId,
+                    ContactId = contactId,
+                    Count = rows.Count,
+                    SentCount = rows.Count(m => m.IsSent),
+                    LastSentAt = rows.Where(m => m.IsSent).Max(m => (DateTime?)m.SentAt),
+                    Data = rows.Select(m => ToDto(m, includeBody)).ToList()
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Fetching LinkedIn messages failed. ClientId={ClientId}, ContactId={ContactId}",
+                    clientId, contactId);
+                return StatusCode(500, new { Success = false, Message = "Error fetching messages.", Error = ex.Message });
+            }
+        }
+
+        // ============================================================
+        // 5️⃣  GET api/linkedin-messages/detail
+        //     One message with its full body.
+        // ============================================================
+        [HttpGet("detail")]
+        public async Task<IActionResult> GetDetail(
+            [FromQuery] int clientId,
+            [FromQuery] long? id = null,
+            [FromQuery] Guid? msgUid = null)
+        {
+            try
+            {
+                if (clientId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid clientId is required." });
+
+                if (!id.HasValue && !msgUid.HasValue)
+                    return BadRequest(new { Success = false, Message = "id or msgUid is required." });
+
+                var message = await FindMessageAsync(clientId, id, msgUid, tracking: false);
+
+                if (message == null)
+                    return NotFound(new { Success = false, Message = "Message not found for this client." });
+
+                return Ok(new { Success = true, Data = ToDto(message, includeBody: true) });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Fetching LinkedIn message detail failed. ClientId={ClientId}", clientId);
+                return StatusCode(500, new { Success = false, Message = "Error fetching message.", Error = ex.Message });
+            }
+        }
+
+        // ============================================================
+        // 6️⃣  GET api/linkedin-messages/sent
+        //     Everything this client has ticked as sent, newest first.
+        //     Served by the filtered index on (client_id, sent_at).
+        // ============================================================
+        [HttpGet("sent")]
+        public async Task<IActionResult> GetSentHistory(
+            [FromQuery] int clientId,
+            [FromQuery] DateTime? fromUtc = null,
+            [FromQuery] DateTime? toUtc = null,
+            [FromQuery] int page = 1,
+            [FromQuery] int pageSize = 50)
+        {
+            try
+            {
+                if (clientId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid clientId is required." });
+
+                page = Math.Max(page, 1);
+                pageSize = Math.Clamp(pageSize, 1, 200);
+
+                var query = _dbContext.LinkedInMessages
+                    .AsNoTracking()
+                    .Where(m => m.ClientId == clientId && m.IsSent);
+
+                if (fromUtc.HasValue)
+                    query = query.Where(m => m.SentAt >= fromUtc.Value);
+
+                if (toUtc.HasValue)
+                    query = query.Where(m => m.SentAt <= toUtc.Value);
+
+                var total = await query.CountAsync();
+
+                // Joined to contacts so the history screen can show a name
+                // without a second round trip per row.
+                var rows = await query
+                    .OrderByDescending(m => m.SentAt)
+                    .Skip((page - 1) * pageSize)
+                    .Take(pageSize)
+                    .Join(_dbContext.contacts.AsNoTracking(),
+                        m => m.ContactId,
+                        c => c.id,
+                        (m, c) => new
+                        {
+                            m.Id,
+                            m.MsgUid,
+                            m.ContactId,
+                            ContactName = c.full_name,
+                            c.company_name,
+                            c.linkedin_url,
+                            m.MessageType,
+                            m.BlueprintId,
+                            m.SentAt,
+                            m.MarkedFrom,
+                            m.GeneratedAt
+                        })
+                    .ToListAsync();
+
+                return Ok(new
+                {
+                    Success = true,
+                    ClientId = clientId,
+                    Page = page,
+                    PageSize = pageSize,
+                    Total = total,
+                    Data = rows
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Fetching LinkedIn sent history failed. ClientId={ClientId}", clientId);
+                return StatusCode(500, new { Success = false, Message = "Error fetching sent history.", Error = ex.Message });
+            }
+        }
+
+        // ============================================================
+        // 7️⃣  POST api/linkedin-messages/summary
+        //     Badges for a whole grid page in ONE query, so the contact
+        //     list never fires a request per row.
+        // ============================================================
+        [HttpPost("summary")]
+        public async Task<IActionResult> GetSummary([FromBody] LinkedInMessageSummaryRequest request)
+        {
+            try
+            {
+                if (request == null || request.ClientId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid ClientId is required." });
+
+                var contactIds = (request.ContactIds ?? new List<int>())
+                    .Where(id => id > 0)
+                    .Distinct()
+                    .ToList();
+
+                if (contactIds.Count == 0)
+                    return Ok(new { Success = true, Data = Array.Empty<object>() });
+
+                if (contactIds.Count > MaxSummaryContacts)
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = $"At most {MaxSummaryContacts} contact ids per call."
+                    });
+
+                var rows = await _dbContext.LinkedInMessages
+                    .AsNoTracking()
+                    .Where(m => m.ClientId == request.ClientId && contactIds.Contains(m.ContactId))
+                    .GroupBy(m => m.ContactId)
+                    // Sum-of-case rather than Count(predicate), and a plain Max
+                    // over sent_at (which is NULL on drafts, and SQL's MAX skips
+                    // NULLs) — both forms translate to SQL on every provider
+                    // version, so this stays one GROUP BY instead of silently
+                    // falling back to client evaluation.
+                    .Select(g => new
+                    {
+                        ContactId = g.Key,
+                        TotalCount = g.Count(),
+                        SentCount = g.Sum(m => m.IsSent ? 1 : 0),
+                        DraftCount = g.Sum(m => m.IsSent ? 0 : 1),
+                        LastSentAt = g.Max(m => m.SentAt),
+                        LastGeneratedAt = g.Max(m => m.GeneratedAt)
+                    })
+                    .ToListAsync();
+
+                return Ok(new { Success = true, ClientId = request.ClientId, Data = rows });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Fetching LinkedIn summary failed. ClientId={ClientId}", request?.ClientId);
+                return StatusCode(500, new { Success = false, Message = "Error fetching summary.", Error = ex.Message });
+            }
+        }
+
+        // ============================================================
+        // 8️⃣  POST api/linkedin-messages/delete
+        //     Removes a draft the user doesn't want. A message already
+        //     ticked as sent is history and is kept.
+        // ============================================================
+        [HttpPost("delete")]
+        public async Task<IActionResult> Delete([FromBody] DeleteLinkedInMessageRequest request)
+        {
+            try
+            {
+                if (request == null || request.ClientId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid ClientId is required." });
+
+                if (!request.MessageId.HasValue && !request.MsgUid.HasValue)
+                    return BadRequest(new { Success = false, Message = "MessageId or MsgUid is required." });
+
+                var message = await FindMessageAsync(request.ClientId, request.MessageId, request.MsgUid);
+
+                if (message == null)
+                    return NotFound(new { Success = false, Message = "Message not found for this client." });
+
+                if (message.IsSent)
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "This message is marked as sent and is kept as history. Untick it first if it was a mistake."
+                    });
+
+                _dbContext.LinkedInMessages.Remove(message);
+                await _dbContext.SaveChangesAsync();
+
+                return Ok(new { Success = true, Message = "Deleted." });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Deleting LinkedIn message failed. ClientId={ClientId}", request?.ClientId);
+                return StatusCode(500, new { Success = false, Message = "Error deleting message.", Error = ex.Message });
+            }
+        }
+
+        // ============================================================
+        // Helpers
+        // ============================================================
+
+        private Task<LinkedInMessage?> FindMessageAsync(
+            int clientId, long? id, Guid? msgUid, bool tracking = true)
+        {
+            var query = tracking
+                ? _dbContext.LinkedInMessages.AsQueryable()
+                : _dbContext.LinkedInMessages.AsNoTracking();
+
+            // Both filters carry client_id so a guessed id can never reach
+            // another client's row, and both hit an index.
+            return msgUid.HasValue
+                ? query.FirstOrDefaultAsync(m => m.ClientId == clientId && m.MsgUid == msgUid.Value)
+                : query.FirstOrDefaultAsync(m => m.ClientId == clientId && m.Id == id!.Value);
+        }
+
+        private Task<Contact?> LoadContactAsync(int clientId, int contactId)
+            => _dbContext.contacts
+                .AsNoTracking()
+                .Include(c => c.data_file)
+                .FirstOrDefaultAsync(c => c.id == contactId && c.data_file.client_id == clientId);
+
+        private static int ResolveMaxLength(string messageType, int? requested)
+        {
+            var ceiling = LinkedInMessageTypes.DefaultMaxLength(messageType);
+
+            if (!requested.HasValue || requested.Value <= 0)
+                return ceiling;
+
+            // A caller may ask for something shorter, never longer than what
+            // LinkedIn itself accepts.
+            return Math.Min(requested.Value, ceiling);
+        }
+
+        /// <summary>
+        /// The blueprint owns tone, structure, salutation and everything else
+        /// about the message. The only instruction added here is LinkedIn's cap
+        /// on a connection-request note, because that is a platform limit the
+        /// message is rejected for exceeding - not an editorial choice.
+        /// A normal message gets no appended instruction at all.
+        /// </summary>
+        private static string BuildChannelRules(string messageType, int maxLength)
+        {
+            if (messageType != LinkedInMessageTypes.ConnectionNote)
+                return string.Empty;
+
+            return $"- Hard limit: {maxLength} characters including spaces. Stay under it.";
+        }
+
+        /// <summary>
+        /// Cuts the text to the cap on a word boundary. The model is told the
+        /// limit, but a hard trim is what guarantees LinkedIn accepts it.
+        /// </summary>
+        private static string TrimToLength(string text, int maxLength)
+        {
+            if (string.IsNullOrEmpty(text) || maxLength <= 0 || text.Length <= maxLength)
+                return text ?? "";
+
+            var slice = text[..maxLength];
+            var lastBreak = slice.LastIndexOfAny(new[] { ' ', '\n', '\r', '\t' });
+
+            // Only fall back to a mid-word cut when there is no sensible break
+            // reasonably near the end.
+            if (lastBreak > maxLength / 2)
+                slice = slice[..lastBreak];
+
+            return slice.TrimEnd();
+        }
+
+        /// <summary>
+        /// The send time is the server's UTC clock. A client-supplied time is
+        /// only honoured for a checkbox that was queued offline: it has to be in
+        /// the past and recent, otherwise a wrong device clock would write a
+        /// nonsense date.
+        /// </summary>
+        private static DateTime ResolveSentAt(DateTime? occurredAtUtc)
+        {
+            var now = DateTime.UtcNow;
+
+            if (!occurredAtUtc.HasValue)
+                return now;
+
+            var supplied = occurredAtUtc.Value.Kind == DateTimeKind.Local
+                ? occurredAtUtc.Value.ToUniversalTime()
+                : DateTime.SpecifyKind(occurredAtUtc.Value, DateTimeKind.Utc);
+
+            if (supplied > now || supplied < now - MaxBackdate)
+                return now;
+
+            return supplied;
+        }
+
+        private static string? NormalizeSource(string? source)
+        {
+            var value = (source ?? "").Trim().ToLowerInvariant();
+            return value is "extension" or "web" ? value : "web";
+        }
+
+        private static object ToDto(LinkedInMessage m, bool includeBody) => new
+        {
+            m.Id,
+            m.MsgUid,
+            m.ClientId,
+            m.ContactId,
+            m.MessageType,
+            m.BlueprintId,
+            Body = includeBody ? m.Body : null,
+            CharacterCount = m.Body?.Length ?? 0,
+            m.IsSent,
+            m.SentAt,
+            m.MarkedFrom,
+            m.GeneratedAt
+        };
+
+        private static bool IsDeepSeekModel(string? modelName)
+            => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
+
+        private Task<PitchResult> GeneratePitchByProviderAsync(EnquiryRequest request)
+            => IsDeepSeekModel(request.ModelName)
+                ? _deepSeekService.GeneratePitchAsync(request)
+                : _pitchService.GeneratePitchAsync(request);
+    }
+}
