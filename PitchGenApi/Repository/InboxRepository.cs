@@ -829,76 +829,11 @@ public class InboxRepository : IInboxRepository
                 x.IsDeleted == false)
             .ToListAsync();
 
-        // =========================================
-        // TRACKING IDS
-        // =========================================
-
-        var trackingIds = sentEmails
-            .Where(x => x.TrackingId != null)
-            .Select(x => x.TrackingId)
-            .Distinct()
-            .ToList();
-
-        // =========================================
-        // MESSAGE IDS
-        // =========================================
-
-        var messageIds = sentEmails
-            .Where(x => !string.IsNullOrEmpty(x.MessageId))
-            .Select(x => x.MessageId)
-            .Distinct()
-            .ToList();
-
-        // =========================================
-        // REPLIED TRACKING IDS
-        // =========================================
-
-        var repliedTrackingIds = await _context.EmailReplies
-            .Where(er =>
-                er.IsDeleted == false &&
-                (
-                    (er.TrackingId != null &&
-                     trackingIds.Contains(er.TrackingId))
-
-                    ||
-
-                    (er.InReplyTo != null &&
-                     messageIds.Contains(er.InReplyTo))
-                )
-            )
-            .Select(er => er.TrackingId)
-            .Distinct()
-            .ToListAsync();
-
-        // =========================================
-        // INBOX REPLIED TRACKING IDS
-        // =========================================
-
-        var inboxRepliedTrackingIds = await _context.InboxEmails
-            .Where(x =>
-                x.TrackingId != null &&
-                trackingIds.Contains(x.TrackingId) &&
-                x.IsDeleted == false)
-            .Select(x => x.TrackingId)
-            .Distinct()
-            .ToListAsync();
-
-        // =========================================
-        // EXCLUDED THREADS
-        // =========================================
-
-        var excludedTrackingIds = repliedTrackingIds
-            .Union(inboxRepliedTrackingIds)
-            .Distinct()
-            .ToList();
-
-        // =========================================
-        // SENT ONLY GROUPS
-        // =========================================
-
+        // Every successful outbound send is its own Sent item. Its stored Body
+        // is the exact snapshot sent at that moment (including any reply trail),
+        // so later inbound replies must not change an older Sent item.
         var sentOnlyGroups = sentEmails
-            .GroupBy(x => x.TrackingId)
-            .Where(g => !excludedTrackingIds.Contains(g.Key))
+            .GroupBy(x => x.Id)
             .ToList();
 
         var totalCount = sentOnlyGroups.Count;
@@ -913,10 +848,8 @@ public class InboxRepository : IInboxRepository
         // CONTACT MAP
         // =========================================
 
-        var contactIds = pagedGroups
-            .SelectMany(g => g)
-            .Where(x => x.ContactId != null)
-            .Select(x => x.ContactId.Value)
+        var contactIds = pagedGroups.SelectMany(g => g)
+            .Where(x => x.ContactId != null).Select(x => x.ContactId!.Value)
             .Distinct()
             .ToList();
 
@@ -928,10 +861,8 @@ public class InboxRepository : IInboxRepository
         // ALL MESSAGE IDS
         // =========================================
 
-        var allMessageIds = pagedGroups
-            .SelectMany(g => g)
-            .Where(x => !string.IsNullOrWhiteSpace(x.MessageId))
-            .Select(x => x.MessageId)
+        var allMessageIds = pagedGroups.SelectMany(g => g)
+            .Where(x => !string.IsNullOrWhiteSpace(x.MessageId)).Select(x => x.MessageId)
             .Distinct()
             .ToList();
 
@@ -995,7 +926,7 @@ public class InboxRepository : IInboxRepository
 
             return new EmailThreadDto
             {
-                TrackingId = g.Key,
+                TrackingId = g.First().TrackingId,
 
                 Subject = g.FirstOrDefault()?.Subject,
 
