@@ -20,7 +20,7 @@ namespace PitchGenApi.Controllers
     ///
     /// Same blueprint + placeholder process as email generation, but:
     ///  • no subject line,
-    ///  • plain text with a hard character cap,
+    ///  • plain text, with the blueprint alone deciding how long it runs,
     ///  • only a message the user marks as sent is stored, in linkedin_messages
     ///    (never in contacts.email_body),
     ///  • "sent" is whatever the user ticks — nothing is detected automatically.
@@ -82,9 +82,6 @@ namespace PitchGenApi.Controllers
 
                 if (request.BlueprintId <= 0)
                     return BadRequest(new { Success = false, Message = "Valid BlueprintId is required." });
-
-                var messageType = LinkedInMessageTypes.Normalize(request.MessageType);
-                var maxLength = ResolveMaxLength(messageType, request.MaxLength);
 
                 var template = await _dbContext.CampaignTemplates
                     .Include(t => t.TemplateDefinition)
@@ -232,18 +229,9 @@ namespace PitchGenApi.Controllers
                     : finalPrompt;
                 runtimeReplacements["search_output_summary"] = storedResearch;
 
-                // Nothing is appended for a normal message: the blueprint is the
-                // only instruction the model gets. A connection note additionally
-                // carries LinkedIn's 300-character cap.
-                var channelRules = BuildChannelRules(messageType, maxLength);
-
-                if (!string.IsNullOrWhiteSpace(channelRules))
-                {
-                    finalPrompt = PlaceholderEngine.AppendContextSection(
-                        finalPrompt,
-                        "LinkedIn connection-request note limit:",
-                        channelRules);
-                }
+                // Nothing is appended here at all: the blueprint is the only
+                // instruction the model gets, and how long the message should run
+                // is part of what the blueprint itself says.
 
                 var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.EmailGeneration);
 
@@ -278,7 +266,7 @@ namespace PitchGenApi.Controllers
 
                 // LinkedIn's composer is plain text — markup pasted into it shows
                 // up as literal tags.
-                var body = TrimToLength(PromptTextCleaner.StripHtml(result.Content).Trim(), maxLength);
+                var body = PromptTextCleaner.StripHtml(result.Content).Trim();
 
                 // Generation stores nothing. A krafted message is a draft in the
                 // user's hands until they tick "sent", and only that tick writes
@@ -309,11 +297,10 @@ namespace PitchGenApi.Controllers
                     ClientId = request.ClientId,
                     ContactId = request.ContactId,
                     BlueprintId = request.BlueprintId,
-                    MessageType = messageType,
+                    MessageType = LinkedInMessageTypes.Message,
 
                     Body = body,
                     CharacterCount = body.Length,
-                    MaxLength = maxLength,
                     IsSent = false,
                     SentAt = (DateTime?)null,
                     GeneratedAt = generatedAt,
@@ -392,10 +379,7 @@ namespace PitchGenApi.Controllers
                 if (string.IsNullOrWhiteSpace(request.Body))
                     return BadRequest(new { Success = false, Message = "Body is required." });
 
-                var messageType = LinkedInMessageTypes.Normalize(request.MessageType);
-                var body = TrimToLength(
-                    PromptTextCleaner.StripHtml(request.Body).Trim(),
-                    LinkedInMessageTypes.DefaultMaxLength(messageType));
+                var body = PromptTextCleaner.StripHtml(request.Body).Trim();
 
                 LinkedInMessage? message = null;
 
@@ -416,7 +400,6 @@ namespace PitchGenApi.Controllers
                         });
 
                     message.Body = body;
-                    message.MessageType = messageType;
 
                     if (request.BlueprintId.HasValue)
                         message.BlueprintId = request.BlueprintId;
@@ -431,7 +414,7 @@ namespace PitchGenApi.Controllers
                     {
                         ClientId = request.ClientId,
                         ContactId = request.ContactId,
-                        MessageType = messageType,
+                        MessageType = LinkedInMessageTypes.Message,
                         BlueprintId = request.BlueprintId,
                         Body = body,
                         IsSent = false,
@@ -508,17 +491,13 @@ namespace PitchGenApi.Controllers
                     if (contact == null)
                         return NotFound(new { Success = false, Message = "Contact not found for this client." });
 
-                    var newType = LinkedInMessageTypes.Normalize(request.MessageType);
-
                     message = new LinkedInMessage
                     {
                         ClientId = request.ClientId,
                         ContactId = request.ContactId,
-                        MessageType = newType,
+                        MessageType = LinkedInMessageTypes.Message,
                         BlueprintId = request.BlueprintId,
-                        Body = TrimToLength(
-                            PromptTextCleaner.StripHtml(request.Body).Trim(),
-                            LinkedInMessageTypes.DefaultMaxLength(newType)),
+                        Body = PromptTextCleaner.StripHtml(request.Body).Trim(),
                         IsSent = true,
                         SentAt = ResolveSentAt(request.OccurredAtUtc),
                         MarkedFrom = NormalizeSource(request.MarkedFrom),
@@ -546,9 +525,7 @@ namespace PitchGenApi.Controllers
                         // Edits made between generating and ticking are part of
                         // what actually went out.
                         if (!string.IsNullOrWhiteSpace(request.Body))
-                            message.Body = TrimToLength(
-                                PromptTextCleaner.StripHtml(request.Body).Trim(),
-                                LinkedInMessageTypes.DefaultMaxLength(message.MessageType));
+                            message.Body = PromptTextCleaner.StripHtml(request.Body).Trim();
 
                         message.IsSent = true;
                         message.SentAt = ResolveSentAt(request.OccurredAtUtc);
@@ -866,53 +843,6 @@ namespace PitchGenApi.Controllers
                 .AsNoTracking()
                 .Include(c => c.data_file)
                 .FirstOrDefaultAsync(c => c.id == contactId && c.data_file.client_id == clientId);
-
-        private static int ResolveMaxLength(string messageType, int? requested)
-        {
-            var ceiling = LinkedInMessageTypes.DefaultMaxLength(messageType);
-
-            if (!requested.HasValue || requested.Value <= 0)
-                return ceiling;
-
-            // A caller may ask for something shorter, never longer than what
-            // LinkedIn itself accepts.
-            return Math.Min(requested.Value, ceiling);
-        }
-
-        /// <summary>
-        /// The blueprint owns tone, structure, salutation and everything else
-        /// about the message. The only instruction added here is LinkedIn's cap
-        /// on a connection-request note, because that is a platform limit the
-        /// message is rejected for exceeding - not an editorial choice.
-        /// A normal message gets no appended instruction at all.
-        /// </summary>
-        private static string BuildChannelRules(string messageType, int maxLength)
-        {
-            if (messageType != LinkedInMessageTypes.ConnectionNote)
-                return string.Empty;
-
-            return $"- Hard limit: {maxLength} characters including spaces. Stay under it.";
-        }
-
-        /// <summary>
-        /// Cuts the text to the cap on a word boundary. The model is told the
-        /// limit, but a hard trim is what guarantees LinkedIn accepts it.
-        /// </summary>
-        private static string TrimToLength(string text, int maxLength)
-        {
-            if (string.IsNullOrEmpty(text) || maxLength <= 0 || text.Length <= maxLength)
-                return text ?? "";
-
-            var slice = text[..maxLength];
-            var lastBreak = slice.LastIndexOfAny(new[] { ' ', '\n', '\r', '\t' });
-
-            // Only fall back to a mid-word cut when there is no sensible break
-            // reasonably near the end.
-            if (lastBreak > maxLength / 2)
-                slice = slice[..lastBreak];
-
-            return slice.TrimEnd();
-        }
 
         /// <summary>
         /// The send time is the server's UTC clock. A client-supplied time is

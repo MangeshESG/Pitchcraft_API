@@ -12,15 +12,6 @@ namespace PitchGenApi.Model.DTOs
         /// <summary>CampaignTemplates.Id — the blueprint to kraft from.</summary>
         public int BlueprintId { get; set; }
 
-        /// <summary>message | connection_note. Defaults to message.</summary>
-        public string? MessageType { get; set; }
-
-        /// <summary>
-        /// Character cap for the generated text. Omit to use the default for the
-        /// message type (300 for a connection note, 8000 for a message).
-        /// </summary>
-        public int? MaxLength { get; set; }
-
         /// <summary>true = no DB row, no credit deducted. For "try it" previews.</summary>
         public bool Preview { get; set; }
 
@@ -39,7 +30,6 @@ namespace PitchGenApi.Model.DTOs
         public Guid? MsgUid { get; set; }
 
         public string Body { get; set; } = "";
-        public string? MessageType { get; set; }
         public int? BlueprintId { get; set; }
     }
 
@@ -55,7 +45,6 @@ namespace PitchGenApi.Model.DTOs
         /// </summary>
         public int ContactId { get; set; }
         public string? Body { get; set; }
-        public string? MessageType { get; set; }
         public int? BlueprintId { get; set; }
 
         /// <summary>Either identifies an existing row. The uid handed out by generate is preferred: it makes retries idempotent and survives the first tick.</summary>

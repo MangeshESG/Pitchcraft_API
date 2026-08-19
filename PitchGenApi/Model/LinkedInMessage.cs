@@ -28,7 +28,11 @@ namespace PitchGenApi.Model
         [Column("contact_id")]
         public int ContactId { get; set; }
 
-        /// <summary>message | connection_note</summary>
+        /// <summary>
+        /// Always "message" on anything written now - the type picker is gone and
+        /// the blueprint decides how long a message runs. Rows written before that
+        /// can still say "connection_note", and the history views read it.
+        /// </summary>
         [Column("message_type")]
         [MaxLength(20)]
         public string MessageType { get; set; } = LinkedInMessageTypes.Message;
@@ -69,22 +73,14 @@ namespace PitchGenApi.Model
         public const string Message = "message";
         public const string ConnectionNote = "connection_note";
 
-        /// <summary>LinkedIn's own cap on a connection-request note.</summary>
-        public const int ConnectionNoteMaxLength = 300;
-
-        /// <summary>Practical cap for a normal message; LinkedIn allows ~8000.</summary>
-        public const int MessageMaxLength = 8000;
-
-        public static bool IsKnown(string? messageType) =>
-            string.Equals(messageType, Message, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(messageType, ConnectionNote, StringComparison.OrdinalIgnoreCase);
-
+        /// <summary>
+        /// Only the read paths still need this: the by-contact filter and the
+        /// history labels, both of which look at rows written before the type
+        /// picker was removed. Nothing written now is anything but Message.
+        /// </summary>
         public static string Normalize(string? messageType) =>
             string.Equals(messageType, ConnectionNote, StringComparison.OrdinalIgnoreCase)
                 ? ConnectionNote
                 : Message;
-
-        public static int DefaultMaxLength(string messageType) =>
-            messageType == ConnectionNote ? ConnectionNoteMaxLength : MessageMaxLength;
     }
 }
