@@ -48,7 +48,17 @@ namespace PitchGenApi.Model.DTOs
     {
         public int ClientId { get; set; }
 
-        /// <summary>Either identifies the row. Uid is preferred — it makes retries idempotent.</summary>
+        /// <summary>
+        /// The message itself, for the first tick. Generation stores nothing, so
+        /// a message that has never been ticked has no row yet and these fields
+        /// are what create it. Ignored once the row exists and is already sent.
+        /// </summary>
+        public int ContactId { get; set; }
+        public string? Body { get; set; }
+        public string? MessageType { get; set; }
+        public int? BlueprintId { get; set; }
+
+        /// <summary>Either identifies an existing row. The uid handed out by generate is preferred: it makes retries idempotent and survives the first tick.</summary>
         public long? MessageId { get; set; }
         public Guid? MsgUid { get; set; }
 

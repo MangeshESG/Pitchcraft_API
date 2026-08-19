@@ -574,7 +574,11 @@ namespace PitchGenApi.Services
             companyIndustry = contact.CompanyIndustry,
             companyEmployeeCount = contact.CompanyEmployeeCount,
             companyLinkedInUrl = contact.CompanyLinkedInURL,
-            hasSummary = !string.IsNullOrWhiteSpace(contact.linkedIninformation)
+            hasSummary = !string.IsNullOrWhiteSpace(contact.linkedIninformation),
+
+            // The summary itself, so the panel can show one that was generated on
+            // an earlier visit instead of asking for it again.
+            summary = contact.linkedIninformation
         };
     }
 }
