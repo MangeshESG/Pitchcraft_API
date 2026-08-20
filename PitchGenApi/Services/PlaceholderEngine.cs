@@ -63,6 +63,25 @@ namespace PitchGenApi.Services
         public const string LinkedInHistoryToggleKey = "use_linkedin_message";
 
         /// <summary>
+        /// {linkedin_conversation} — both sides of the LinkedIn chat: what we
+        /// sent AND what the contact replied, interleaved in the order they
+        /// happened and labelled with who said what.
+        ///
+        /// Deliberately separate from {linkedin_messages} rather than an upgrade
+        /// of it. A blueprint written to see only its own outbound messages
+        /// keeps behaving exactly as it did; asking for the conversation is an
+        /// explicit choice made by typing this token.
+        /// </summary>
+        public const string LinkedInConversationKey = "linkedin_conversation";
+
+        /// <summary>
+        /// use_linkedin_conversation — the campaign-level yes/no switch for the
+        /// slot above. Same convention as the others: only an explicit "no"
+        /// turns it off.
+        /// </summary>
+        public const string LinkedInConversationToggleKey = "use_linkedin_conversation";
+
+        /// <summary>
         /// Reads the yes/no switch out of a blueprint's saved placeholder values.
         /// </summary>
         public static bool IsHistoryEnabled(

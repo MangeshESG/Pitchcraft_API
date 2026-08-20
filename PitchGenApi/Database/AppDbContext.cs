@@ -187,9 +187,17 @@ namespace PitchGenApi.Database
                 entity.ToTable("linkedin_messages");
                 entity.HasKey(e => e.Id);
                 entity.Property(e => e.Body).HasColumnType("nvarchar(max)");
+                entity.Property(e => e.BodyHash).HasColumnType("binary(32)");
                 entity.HasIndex(e => new { e.ClientId, e.ContactId, e.Id });
                 entity.HasIndex(e => new { e.ClientId, e.MsgUid }).IsUnique();
                 entity.HasIndex(e => new { e.ClientId, e.SentAt });
+
+                // Mirrors UX_linkedin_messages_inbound_dedupe: filtered to pasted
+                // inbound rows, so re-pasting the same reply collides instead of
+                // storing a duplicate.
+                entity.HasIndex(e => new { e.ClientId, e.ContactId, e.BodyHash })
+                      .IsUnique()
+                      .HasFilter("[direction] = 'inbound' AND [body_hash] IS NOT NULL");
             });
 
             base.OnModelCreating(modelBuilder);

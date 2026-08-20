@@ -186,6 +186,7 @@ namespace PitchGenApi.Controllers
                 // campaign-level pass can't claim the key, and so the token is
                 // cleared rather than left literal when the switch is off.
                 runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = "";
+                runtimeReplacements[PlaceholderEngine.LinkedInConversationKey] = "";
 
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
@@ -226,6 +227,23 @@ namespace PitchGenApi.Controllers
                     : new LinkedInSentContext();
 
                 runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = linkedInHistory.Text;
+
+                // ---- the LinkedIn chat, both sides ----
+                // {linkedin_conversation} lets an email blueprint answer what
+                // the contact said on LinkedIn: "they replied there, follow up
+                // by email". Free on this channel because the prompt context
+                // service is shared - nothing here is LinkedIn-specific.
+                var hasLinkedInConversationPlaceholder =
+                    ContainsPlaceholder(campaignBlueprint, PlaceholderEngine.LinkedInConversationKey);
+
+                var linkedInConversationEnabled = PlaceholderEngine.IsHistoryEnabled(
+                    campaignPlaceholderValues, PlaceholderEngine.LinkedInConversationToggleKey);
+
+                var linkedInConversation = hasLinkedInConversationPlaceholder && linkedInConversationEnabled
+                    ? await _promptContext.GetLinkedInConversationAsync(parsedClientId, contact.id)
+                    : new LinkedInConversationContext();
+
+                runtimeReplacements[PlaceholderEngine.LinkedInConversationKey] = linkedInConversation.Text;
 
                 // ---- email history: only an explicit "no" turns it off ----
                 var emailHistorySetting =
@@ -501,6 +519,9 @@ namespace PitchGenApi.Controllers
                     LinkedInMessages = linkedInHistory.Text,
                     LinkedInMessageCount = linkedInHistory.Count,
                     LinkedInMessagesSentTotal = linkedInHistory.TotalSent,
+                    LinkedInConversation = linkedInConversation.Text,
+                    LinkedInConversationCount = linkedInConversation.Count,
+                    LinkedInConversationReplies = linkedInConversation.InboundCount,
 
                     // Which inputs actually reached the model. These are not
                     // "we intended to add it" flags — each one is verified
@@ -512,7 +533,8 @@ namespace PitchGenApi.Controllers
                         ProfessionalSummary = summaryUsed && PromptContains(promptSentToAi, professionalSummary),
                         WebSearch = !string.IsNullOrWhiteSpace(webSearchData)
                                     && PromptContains(promptSentToAi, webSearchData),
-                        LinkedInMessages = PromptContains(promptSentToAi, linkedInHistory.Text)
+                        LinkedInMessages = PromptContains(promptSentToAi, linkedInHistory.Text),
+                        LinkedInConversation = PromptContains(promptSentToAi, linkedInConversation.Text)
                     },
 
                     // Everything that fed the generation (for transparency/debug UI)
@@ -530,6 +552,8 @@ namespace PitchGenApi.Controllers
                         SummaryPlaceholderFound = hasSummaryPlaceholder,
                         LinkedInHistoryPlaceholderFound = hasLinkedInHistoryPlaceholder,
                         LinkedInHistoryEnabled = linkedInHistoryEnabled,
+                        LinkedInConversationPlaceholderFound = hasLinkedInConversationPlaceholder,
+                        LinkedInConversationEnabled = linkedInConversationEnabled,
                         FilledSearchInstructions = filledSearchInstructions,
                         SubjectMode = isAiSubject ? "ai" : "manual",
                         SubjectInstructionSource = subjectInstructionSource,
