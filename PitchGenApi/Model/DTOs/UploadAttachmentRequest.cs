@@ -4,6 +4,8 @@
     {
         public int ContactId { get; set; }
 
+        public int ClientId { get; set; }
+
         public string Name { get; set; }
 
         public string? Description { get; set; }
