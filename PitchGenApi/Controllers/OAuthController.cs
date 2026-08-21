@@ -1,6 +1,8 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 
 namespace PitchGenApi.Controllers
@@ -10,10 +12,39 @@ namespace PitchGenApi.Controllers
     public class OAuthController : ControllerBase
     {
         private readonly IOAuthRepository _repo;
+        private readonly AppDbContext _context;
 
-        public OAuthController(IOAuthRepository repo)
+        public OAuthController(IOAuthRepository repo, AppDbContext context)
         {
             _repo = repo;
+            _context = context;
+        }
+
+        [HttpPost("update-configuration")]
+        public async Task<IActionResult> UpdateConfiguration([FromBody] OAuthConfigurationRequest request)
+        {
+            var account = await _context.EmailOAuthTokens.FirstOrDefaultAsync(x =>
+                x.Id == request.Id && x.ClientId == request.ClientId);
+            if (account == null)
+                return NotFound(new { message = "OAuth configuration not found" });
+
+            account.SenderName = request.SenderName?.Trim() ?? "";
+            account.FullInboxSync = request.FullInboxSync;
+            await _context.SaveChangesAsync();
+            return Ok(new { message = "OAuth configuration updated" });
+        }
+
+        [HttpPost("delete-configuration")]
+        public async Task<IActionResult> DeleteConfiguration([FromBody] OAuthConfigurationDeleteRequest request)
+        {
+            var account = await _context.EmailOAuthTokens.FirstOrDefaultAsync(x =>
+                x.Id == request.Id && x.ClientId == request.ClientId);
+            if (account == null)
+                return NotFound(new { message = "OAuth configuration not found" });
+
+            _context.EmailOAuthTokens.Remove(account);
+            await _context.SaveChangesAsync();
+            return Ok(new { message = "OAuth configuration deleted" });
         }
         private void WriteOAuthLog(string message)
         {
@@ -196,5 +227,19 @@ namespace PitchGenApi.Controllers
                 return Content(errorHtml, "text/html");
             }
         }
+    }
+
+    public class OAuthConfigurationRequest
+    {
+        public int Id { get; set; }
+        public int ClientId { get; set; }
+        public string? SenderName { get; set; }
+        public bool FullInboxSync { get; set; }
+    }
+
+    public class OAuthConfigurationDeleteRequest
+    {
+        public int Id { get; set; }
+        public int ClientId { get; set; }
     }
 }

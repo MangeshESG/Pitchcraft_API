@@ -1373,7 +1373,10 @@ public class ContactRepository
             {
                 Id = x.Id,
                 Email = x.Email,
-                Provider = x.Provider
+                Provider = x.Provider,
+                SenderName = x.SenderName,
+                FullInboxSync = x.FullInboxSync,
+                CreatedAt = x.CreatedAt
             })
             .ToListAsync();
 
@@ -1385,7 +1388,8 @@ public class ContactRepository
             {
                 Id = x.Id,
                 Email = x.FromEmail,
-                Provider = "SMTP"
+                Provider = "SMTP",
+                SenderName = x.SenderName
             })
             .ToListAsync();
 

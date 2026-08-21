@@ -78,6 +78,8 @@ namespace PitchGenApi.Database
         public DbSet<AiModelSetting> ai_model_settings { get; set; }
         // ✅ LinkedIn messages krafted per contact + the "Sent" checkbox state
         public DbSet<LinkedInMessage> LinkedInMessages { get; set; }
+        public DbSet<OutgoingMailboxGroup> OutgoingMailboxGroups { get; set; }
+        public DbSet<OutgoingMailboxGroupMember> OutgoingMailboxGroupMembers { get; set; }
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
