@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using PitchGenApi.Database;
@@ -507,6 +508,78 @@ namespace PitchGenApi.Controllers
                     message = ex.Message
                 });
             }
+        }
+
+        /// <summary>
+        /// Signs an admin into one of their clients' accounts ("Sign in as this
+        /// client" on the profile page). The issued token is an ordinary client
+        /// token carrying no admin rights, so the session can do exactly what
+        /// that client can do and nothing more.
+        /// </summary>
+        [Authorize]
+        [HttpPost("admin/impersonate")]
+        public async Task<IActionResult> ImpersonateClient([FromBody] ImpersonateRequest request)
+        {
+            try
+            {
+                if (request == null || request.TargetClientId <= 0)
+                    return BadRequest(new { message = "A client to sign in as is required." });
+
+                // The caller is identified from their own signed token, never
+                // from the request body, so posting an admin's id is not enough
+                // to impersonate anyone.
+                if (!int.TryParse(User.FindFirst("UserId")?.Value, out var callerId))
+                    return Unauthorized(new { message = "Sign in again and retry." });
+
+                var admin = await _context.ClientDetails
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(client => client.Id == callerId);
+
+                if (admin == null || !admin.IsAdmin)
+                    return StatusCode(403, new { message = "Only an admin can sign in as a client." });
+
+                var target = await _context.ClientDetails
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(client => client.Id == request.TargetClientId);
+
+                if (target == null)
+                    return NotFound(new { message = "Client not found." });
+
+                if (target.Id == admin.Id)
+                    return BadRequest(new { message = "You are already signed in as this account." });
+
+                // Impersonation is worth a trail even without an audit table.
+                Console.WriteLine(
+                    $"Admin {admin.Username} ({admin.Id}) signed in as client {target.Username} ({target.Id})");
+
+                var token = _jwtService.GeneratenewToken(
+                    target.Username,
+                    target.Id,
+                    target.FirstName ?? "",
+                    target.LastName ?? "");
+
+                return Ok(new
+                {
+                    Token = token,
+                    ClientId = target.Id,
+                    target.Username,
+                    target.FirstName,
+                    target.LastName,
+                    target.Email,
+                    // An impersonated session is never an admin session.
+                    IsAdmin = false
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        public class ImpersonateRequest
+        {
+            /// <summary>Client whose account the admin wants to work inside.</summary>
+            public int TargetClientId { get; set; }
         }
 
         // ---------------- PROFILE ----------------
