@@ -76,6 +76,8 @@ namespace PitchGenApi.Database
         public DbSet<EmailPattern> EmailPattern { get; set; }
         // ✅ Admin-controlled model per AI purpose (Settings > AI models)
         public DbSet<AiModelSetting> ai_model_settings { get; set; }
+        // ✅ Admin-controlled security switches (Settings > Security)
+        public DbSet<SecuritySetting> app_security_settings { get; set; }
         // ✅ LinkedIn messages krafted per contact + the "Sent" checkbox state
         public DbSet<LinkedInMessage> LinkedInMessages { get; set; }
         public DbSet<OutgoingMailboxGroup> OutgoingMailboxGroups { get; set; }
@@ -96,6 +98,19 @@ namespace PitchGenApi.Database
                 // One row per purpose — the settings are application-wide.
                 entity.HasIndex(e => e.purpose_key).IsUnique();
             });
+            modelBuilder.Entity<SecuritySetting>(entity =>
+            {
+                entity.ToTable("app_security_settings");
+                entity.HasKey(e => e.id);
+                entity.Property(e => e.setting_key).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.setting_value).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.updated_by).HasMaxLength(200);
+                entity.Property(e => e.updated_at).HasDefaultValueSql("GETUTCDATE()");
+
+                // One row per switch — the settings are application-wide.
+                entity.HasIndex(e => e.setting_key).IsUnique();
+            });
+
             modelBuilder.Entity<zohoViewIddetails>().ToTable("zohoViewIddetails");
             modelBuilder.Entity<SettingspgViewIddetails>().ToTable("Settingspg");
             modelBuilder.Entity<UserDateTimeSettings>(entity =>

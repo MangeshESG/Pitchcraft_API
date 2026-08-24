@@ -27,10 +27,11 @@ namespace PitchGenApi.Controllers
         private readonly IRegisterEmailSender _register;
         private readonly ICompanyAlertService _companyAlert;
         private readonly DefaultCustomFieldSeeder _defaultCustomFieldSeeder;
+        private readonly ISecuritySettingsService _securitySettings;
 
 
 
-        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert, DefaultCustomFieldSeeder defaultCustomFieldSeeder)
+        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert, DefaultCustomFieldSeeder defaultCustomFieldSeeder, ISecuritySettingsService securitySettings)
         {
             _context = context;
             _userRepository = userRepository;
@@ -40,6 +41,7 @@ namespace PitchGenApi.Controllers
             _register = register;
             _companyAlert = companyAlert;
             _defaultCustomFieldSeeder = defaultCustomFieldSeeder;
+            _securitySettings = securitySettings;
         }
 
         [HttpPost("login")]
@@ -84,6 +86,34 @@ namespace PitchGenApi.Controllers
                     return Ok(new
                     {
                         Token = tokenDirect,
+                        user.IsAdmin
+                    });
+                }
+
+                // Settings > Security lets an admin turn device verification off
+                // for everyone; then a correct username and password is enough.
+                if (!await _securitySettings.IsLoginOtpEnabledAsync())
+                {
+                    Console.WriteLine("OTP disabled by admin - signing in directly");
+
+                    var tokenNoOtp = _jwtService.GeneratenewToken(
+                        dto.username,
+                        user.Id,
+                        user.FirstName?.ToString(),
+                        user.LastName?.ToString());
+
+                    try
+                    {
+                        await _register.LoginDetect(user, ipAddress, browserName);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Login alert email failed: " + ex.Message);
+                    }
+
+                    return Ok(new
+                    {
+                        Token = tokenNoOtp,
                         user.IsAdmin
                     });
                 }

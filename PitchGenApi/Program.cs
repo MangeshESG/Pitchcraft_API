@@ -198,6 +198,10 @@ builder.Services.AddScoped<DefaultCustomFieldSeeder>();
 // Admin-controlled model per AI purpose (Settings > AI models)
 builder.Services.AddScoped<IAiModelSettingsService, AiModelSettingsService>();
 
+// Admin-controlled security switches, e.g. the login OTP requirement
+// (Settings > Security)
+builder.Services.AddScoped<ISecuritySettingsService, SecuritySettingsService>();
+
 // Per-contact personalization inputs shared by email and LinkedIn generation
 builder.Services.AddScoped<IContactPromptContextService, ContactPromptContextService>();
 
