@@ -33,6 +33,21 @@ namespace PitchGenApi.Services
         public int TotalSent { get; set; }
     }
 
+    /// <summary>A two-sided LinkedIn chat rendered as prompt context.</summary>
+    public sealed class LinkedInConversationContext
+    {
+        public string Text { get; set; } = "";
+
+        /// <summary>How many messages the text actually contains, both directions.</summary>
+        public int Count { get; set; }
+
+        /// <summary>Total on record for the contact, before the size budget dropped any.</summary>
+        public int TotalMessages { get; set; }
+
+        /// <summary>How many of <see cref="Count"/> came from the contact.</summary>
+        public int InboundCount { get; set; }
+    }
+
     /// <inheritdoc cref="IContactPromptContextService"/>
     public class ContactPromptContextService : IContactPromptContextService
     {
@@ -206,6 +221,127 @@ namespace PitchGenApi.Services
                 // it gets logged rather than swallowed.
                 Log.Error(ex,
                     "Failed to build LinkedIn sent context. ClientId={ClientId}, ContactId={ContactId}",
+                    clientId, contactId);
+                return empty;
+            }
+        }
+
+        /// <inheritdoc />
+        public async Task<LinkedInConversationContext> GetLinkedInConversationAsync(
+            int clientId,
+            int contactId,
+            int maxMessages = 30,
+            int maxChars = 8000)
+        {
+            var empty = new LinkedInConversationContext();
+
+            if (clientId <= 0 || contactId <= 0)
+                return empty;
+
+            try
+            {
+                // Same shape of read as the sent-only context: a range seek down
+                // the clustered key. Both directions live in this table, so the
+                // conversation costs exactly one query - no merge of two sources.
+                //
+                // Drafts are excluded the same way. An outbound row is only part
+                // of the conversation once the user says it went out; an inbound
+                // row is written with IsSent already true, because a reply
+                // someone pasted has by definition happened.
+                var rows = await _dbContext.LinkedInMessages
+                    .AsNoTracking()
+                    .Where(m => m.ClientId == clientId && m.ContactId == contactId && m.IsSent)
+                    .OrderByDescending(m => m.Id)
+                    .Take(Math.Clamp(maxMessages, 1, 100))
+                    .Select(m => new { m.Id, m.Direction, m.SentAt, m.Body })
+                    .ToListAsync();
+
+                var totalMessages = await _dbContext.LinkedInMessages
+                    .AsNoTracking()
+                    .CountAsync(m => m.ClientId == clientId && m.ContactId == contactId && m.IsSent);
+
+                if (rows.Count == 0)
+                    return empty;
+
+                // When it happened, not when the row was written: a reply pasted
+                // days late must still sort into the position it actually holds
+                // in the conversation, or the model reads the exchange backwards.
+                var newestFirst = rows
+                    .OrderByDescending(r => r.SentAt ?? DateTime.MinValue)
+                    .ThenByDescending(r => r.Id)
+                    .ToList();
+
+                // Spend the character budget on the most recent exchange, then
+                // flip to chronological so the model reads it as a dialogue.
+                var kept = new List<(string Block, bool Inbound)>();
+                var used = 0;
+                var dropped = false;
+
+                foreach (var row in newestFirst)
+                {
+                    var body = (row.Body ?? "").Trim();
+                    if (body.Length == 0)
+                        continue;
+
+                    var inbound = string.Equals(
+                        row.Direction, LinkedInMessageDirections.Inbound, StringComparison.OrdinalIgnoreCase);
+
+                    // Who said what has to be unmistakable. Without it the model
+                    // routinely answers questions the contact never asked, or
+                    // writes the next message in the contact's own voice.
+                    var speaker = inbound ? "REPLY FROM THEM" : "SENT BY US";
+                    var whenLabel = inbound ? "Received" : "Sent";
+
+                    var when = row.SentAt.HasValue
+                        ? row.SentAt.Value.ToString("dd MMM yyyy HH:mm") + " UTC"
+                        : "date not recorded";
+
+                    var block = $"{speaker}\n{whenLabel}: {when}\nMessage:\n{body}";
+
+                    if (used + block.Length > maxChars && kept.Count > 0)
+                    {
+                        dropped = true;
+                        break;
+                    }
+
+                    kept.Add((block, inbound));
+                    used += block.Length;
+                }
+
+                if (kept.Count == 0)
+                    return empty;
+
+                kept.Reverse();
+
+                var builder = new StringBuilder();
+
+                if (dropped)
+                    builder.Append($"(showing the {kept.Count} most recent of {totalMessages} LinkedIn messages exchanged with this contact)\n\n");
+
+                for (var i = 0; i < kept.Count; i++)
+                {
+                    if (i > 0)
+                        builder.Append("\n\n---\n\n");
+
+                    builder.Append($"Message {i + 1} of {kept.Count}\n");
+                    builder.Append(kept[i].Block);
+                }
+
+                return new LinkedInConversationContext
+                {
+                    Text = builder.ToString().Trim(),
+                    Count = kept.Count,
+                    TotalMessages = totalMessages,
+                    InboundCount = kept.Count(k => k.Inbound)
+                };
+            }
+            catch (Exception ex)
+            {
+                // Same reasoning as the sent-only context: a failure here is
+                // indistinguishable from "no conversation yet", so it gets
+                // logged rather than swallowed.
+                Log.Error(ex,
+                    "Failed to build LinkedIn conversation context. ClientId={ClientId}, ContactId={ContactId}",
                     clientId, contactId);
                 return empty;
             }

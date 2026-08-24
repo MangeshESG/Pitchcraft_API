@@ -29,5 +29,20 @@ namespace PitchGenApi.Interfaces
             int contactId,
             int maxMessages = 20,
             int maxChars = 6000);
+
+        /// <summary>
+        /// Both sides of the LinkedIn chat - what this client sent AND what the
+        /// contact replied - interleaved chronologically and labelled with who
+        /// said what. Fills {linkedin_conversation} in both generators.
+        ///
+        /// Resolved lazily on the same terms as the sent-only context: only when
+        /// the blueprint contains the token AND use_linkedin_conversation is not
+        /// "no", so a blueprint that doesn't ask for it pays nothing.
+        /// </summary>
+        Task<LinkedInConversationContext> GetLinkedInConversationAsync(
+            int clientId,
+            int contactId,
+            int maxMessages = 30,
+            int maxChars = 8000);
     }
 }

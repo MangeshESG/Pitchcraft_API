@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
@@ -20,9 +22,14 @@ namespace PitchGenApi.Controllers
     ///
     /// Same blueprint + placeholder process as email generation, but:
     ///  • no subject line,
-    ///  • plain text with a hard character cap,
-    ///  • the result is stored in linkedin_messages (never in contacts.email_body),
+    ///  • plain text, with the blueprint alone deciding how long it runs,
+    ///  • only a message the user marks as sent is stored, in linkedin_messages
+    ///    (never in contacts.email_body),
     ///  • "sent" is whatever the user ticks — nothing is detected automatically.
+    ///
+    /// The same table also holds the contact's replies, pasted in by hand
+    /// (see import). LinkedIn has no API to sync them, and without them a
+    /// follow-up is generated as though nobody ever answered.
     ///
     /// Every route is POST or GET.
     /// </summary>
@@ -61,8 +68,9 @@ namespace PitchGenApi.Controllers
 
         // ============================================================
         // 1️⃣  POST api/linkedin-messages/generate
-        //     Krafts the message from a blueprint and stores it as a
-        //     draft (is_sent = 0). Costs one credit, same as an email.
+        //     Krafts the message from a blueprint and returns it. Nothing
+        //     is stored here - marking it sent is what saves it. Costs one
+        //     credit, same as an email.
         // ============================================================
         [HttpPost("generate")]
         public async Task<IActionResult> Generate([FromBody] GenerateLinkedInMessageRequest request)
@@ -80,9 +88,6 @@ namespace PitchGenApi.Controllers
 
                 if (request.BlueprintId <= 0)
                     return BadRequest(new { Success = false, Message = "Valid BlueprintId is required." });
-
-                var messageType = LinkedInMessageTypes.Normalize(request.MessageType);
-                var maxLength = ResolveMaxLength(messageType, request.MaxLength);
 
                 var template = await _dbContext.CampaignTemplates
                     .Include(t => t.TemplateDefinition)
@@ -145,6 +150,7 @@ namespace PitchGenApi.Controllers
                 // claim the key — and so the token is cleared rather than left
                 // literal when the switch is off. Filled below if it is on.
                 runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = "";
+                runtimeReplacements[PlaceholderEngine.LinkedInConversationKey] = "";
 
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
@@ -184,6 +190,22 @@ namespace PitchGenApi.Controllers
                     : new LinkedInSentContext();
 
                 runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = linkedInHistory.Text;
+
+                // {linkedin_conversation} — the same chat, but both sides: what
+                // we sent and what they replied, in the order it happened. The
+                // slot above stays outbound-only so blueprints already using it
+                // are untouched; seeing the replies is opted into by name.
+                var hasLinkedInConversationPlaceholder =
+                    PlaceholderEngine.Contains(campaignBlueprint, PlaceholderEngine.LinkedInConversationKey);
+
+                var linkedInConversationEnabled = PlaceholderEngine.IsHistoryEnabled(
+                    campaignPlaceholderValues, PlaceholderEngine.LinkedInConversationToggleKey);
+
+                var linkedInConversation = hasLinkedInConversationPlaceholder && linkedInConversationEnabled
+                    ? await _promptContext.GetLinkedInConversationAsync(request.ClientId, request.ContactId)
+                    : new LinkedInConversationContext();
+
+                runtimeReplacements[PlaceholderEngine.LinkedInConversationKey] = linkedInConversation.Text;
 
                 // Email history: only an explicit "no" turns it off.
                 var emailHistorySetting =
@@ -230,18 +252,9 @@ namespace PitchGenApi.Controllers
                     : finalPrompt;
                 runtimeReplacements["search_output_summary"] = storedResearch;
 
-                // Nothing is appended for a normal message: the blueprint is the
-                // only instruction the model gets. A connection note additionally
-                // carries LinkedIn's 300-character cap.
-                var channelRules = BuildChannelRules(messageType, maxLength);
-
-                if (!string.IsNullOrWhiteSpace(channelRules))
-                {
-                    finalPrompt = PlaceholderEngine.AppendContextSection(
-                        finalPrompt,
-                        "LinkedIn connection-request note limit:",
-                        channelRules);
-                }
+                // Nothing is appended here at all: the blueprint is the only
+                // instruction the model gets, and how long the message should run
+                // is part of what the blueprint itself says.
 
                 var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.EmailGeneration);
 
@@ -276,27 +289,22 @@ namespace PitchGenApi.Controllers
 
                 // LinkedIn's composer is plain text — markup pasted into it shows
                 // up as literal tags.
-                var body = TrimToLength(PromptTextCleaner.StripHtml(result.Content).Trim(), maxLength);
+                var body = PromptTextCleaner.StripHtml(result.Content).Trim();
 
-                LinkedInMessage? saved = null;
+                // Generation stores nothing. A krafted message is a draft in the
+                // user's hands until they tick "sent", and only that tick writes
+                // a row (see mark-sent) - the table is a record of what actually
+                // went out, not of everything the model ever produced.
+                //
+                // The uid is minted here so one identity carries from generation
+                // through editing to the tick that finally stores it.
+                var msgUid = Guid.NewGuid();
+                var generatedAt = DateTime.UtcNow;
 
                 if (!request.Preview)
                 {
-                    saved = new LinkedInMessage
-                    {
-                        ClientId = request.ClientId,
-                        ContactId = request.ContactId,
-                        MessageType = messageType,
-                        BlueprintId = request.BlueprintId,
-                        Body = body,
-                        IsSent = false,
-                        GeneratedAt = DateTime.UtcNow,
-                        MsgUid = Guid.NewGuid()
-                    };
-
-                    _dbContext.LinkedInMessages.Add(saved);
-                    await _dbContext.SaveChangesAsync();
-
+                    // The AI call happened and is billable whether or not the
+                    // message is ever sent.
                     await _contactRepository.CreditDeduction(request.ClientId);
                     await _contactRepository.SaveKraftHistoryAsync(
                         request.ContactId, request.ClientId, null, request.BlueprintId, "LinkedIn");
@@ -307,19 +315,18 @@ namespace PitchGenApi.Controllers
                     Success = true,
                     Preview = request.Preview,
 
-                    MessageId = saved?.Id,
-                    MsgUid = saved?.MsgUid,
+                    MessageId = (long?)null,
+                    MsgUid = msgUid,
                     ClientId = request.ClientId,
                     ContactId = request.ContactId,
                     BlueprintId = request.BlueprintId,
-                    MessageType = messageType,
+                    MessageType = LinkedInMessageTypes.Message,
 
                     Body = body,
                     CharacterCount = body.Length,
-                    MaxLength = maxLength,
                     IsSent = false,
                     SentAt = (DateTime?)null,
-                    GeneratedAt = saved?.GeneratedAt ?? DateTime.UtcNow,
+                    GeneratedAt = generatedAt,
 
                     // Same transparency payload the email generator returns, so
                     // the Insights tabs work unchanged on this channel.
@@ -331,6 +338,9 @@ namespace PitchGenApi.Controllers
                     LinkedInMessages = linkedInHistory.Text,
                     LinkedInMessageCount = linkedInHistory.Count,
                     LinkedInMessagesSentTotal = linkedInHistory.TotalSent,
+                    LinkedInConversation = linkedInConversation.Text,
+                    LinkedInConversationCount = linkedInConversation.Count,
+                    LinkedInConversationReplies = linkedInConversation.InboundCount,
                     FinalPrompt = promptSentToAi,
 
                     UsedInGeneration = new
@@ -341,7 +351,9 @@ namespace PitchGenApi.Controllers
                         ProfessionalSummary =
                                  PlaceholderEngine.PromptContains(promptSentToAi, insights.ProfessionalSummary),
                         WebSearch = PlaceholderEngine.PromptContains(promptSentToAi, storedResearch),
-                        LinkedInMessages = PlaceholderEngine.PromptContains(promptSentToAi, linkedInHistory.Text)
+                        LinkedInMessages = PlaceholderEngine.PromptContains(promptSentToAi, linkedInHistory.Text),
+                        LinkedInConversation =
+                                 PlaceholderEngine.PromptContains(promptSentToAi, linkedInConversation.Text)
                     },
 
                     Details = new
@@ -353,6 +365,8 @@ namespace PitchGenApi.Controllers
                         SummaryPlaceholderFound = hasSummaryPlaceholder,
                         LinkedInHistoryPlaceholderFound = hasLinkedInHistoryPlaceholder,
                         LinkedInHistoryEnabled = linkedInHistoryEnabled,
+                        LinkedInConversationPlaceholderFound = hasLinkedInConversationPlaceholder,
+                        LinkedInConversationEnabled = linkedInConversationEnabled,
                         UnresolvedPlaceholders = PlaceholderEngine.FindUnresolved(promptSentToAi),
                         RuntimeReplacements = runtimeReplacements,
                         CampaignPlaceholderValues = campaignPlaceholderValues
@@ -395,10 +409,7 @@ namespace PitchGenApi.Controllers
                 if (string.IsNullOrWhiteSpace(request.Body))
                     return BadRequest(new { Success = false, Message = "Body is required." });
 
-                var messageType = LinkedInMessageTypes.Normalize(request.MessageType);
-                var body = TrimToLength(
-                    PromptTextCleaner.StripHtml(request.Body).Trim(),
-                    LinkedInMessageTypes.DefaultMaxLength(messageType));
+                var body = PromptTextCleaner.StripHtml(request.Body).Trim();
 
                 LinkedInMessage? message = null;
 
@@ -419,7 +430,6 @@ namespace PitchGenApi.Controllers
                         });
 
                     message.Body = body;
-                    message.MessageType = messageType;
 
                     if (request.BlueprintId.HasValue)
                         message.BlueprintId = request.BlueprintId;
@@ -434,7 +444,7 @@ namespace PitchGenApi.Controllers
                     {
                         ClientId = request.ClientId,
                         ContactId = request.ContactId,
-                        MessageType = messageType,
+                        MessageType = LinkedInMessageTypes.Message,
                         BlueprintId = request.BlueprintId,
                         Body = body,
                         IsSent = false,
@@ -463,9 +473,10 @@ namespace PitchGenApi.Controllers
 
         // ============================================================
         // 3️⃣  POST api/linkedin-messages/mark-sent
-        //     THE CHECKBOX. Ticking stamps the server's UTC time,
-        //     unticking clears it. Nothing is detected automatically.
-        //     Safe to call twice — the uid keeps it idempotent.
+        //     THE CHECKBOX, and the only route that stores a message.
+        //     Ticking creates the row (or stamps an existing one) with the
+        //     server's UTC time; unticking clears it. Nothing is detected
+        //     automatically. Safe to call twice - the uid keeps it idempotent.
         // ============================================================
         [HttpPost("mark-sent")]
         public async Task<IActionResult> MarkSent([FromBody] MarkLinkedInMessageSentRequest request)
@@ -475,13 +486,65 @@ namespace PitchGenApi.Controllers
                 if (request == null || request.ClientId <= 0)
                     return BadRequest(new { Success = false, Message = "Valid ClientId is required." });
 
-                if (!request.MessageId.HasValue && !request.MsgUid.HasValue)
-                    return BadRequest(new { Success = false, Message = "MessageId or MsgUid is required." });
+                // A message ticked for the first time may carry no identifier at
+                // all: nothing has been stored for it yet, so the body is what
+                // the row gets built from.
+                var identified = request.MessageId.HasValue || request.MsgUid.HasValue;
 
-                var message = await FindMessageAsync(request.ClientId, request.MessageId, request.MsgUid);
+                if (!identified && string.IsNullOrWhiteSpace(request.Body))
+                    return BadRequest(new { Success = false, Message = "MessageId, MsgUid or Body is required." });
+
+                var message = identified
+                    ? await FindMessageAsync(request.ClientId, request.MessageId, request.MsgUid)
+                    : null;
 
                 if (message == null)
-                    return NotFound(new { Success = false, Message = "Message not found for this client." });
+                {
+                    // Generation stores nothing, so the first tick is what
+                    // creates the row - the body travels with it.
+                    if (!request.IsSent)
+                        return Ok(new
+                        {
+                            Success = true,
+                            Message = "Nothing stored for this message.",
+                            Data = (object?)null
+                        });
+
+                    if (string.IsNullOrWhiteSpace(request.Body))
+                        return NotFound(new { Success = false, Message = "Message not found for this client." });
+
+                    if (request.ContactId <= 0)
+                        return BadRequest(new { Success = false, Message = "Valid ContactId is required to store this message." });
+
+                    var contact = await LoadContactAsync(request.ClientId, request.ContactId);
+
+                    if (contact == null)
+                        return NotFound(new { Success = false, Message = "Contact not found for this client." });
+
+                    message = new LinkedInMessage
+                    {
+                        ClientId = request.ClientId,
+                        ContactId = request.ContactId,
+                        MessageType = LinkedInMessageTypes.Message,
+                        BlueprintId = request.BlueprintId,
+                        Body = PromptTextCleaner.StripHtml(request.Body).Trim(),
+                        IsSent = true,
+                        SentAt = ResolveSentAt(request.OccurredAtUtc),
+                        MarkedFrom = NormalizeSource(request.MarkedFrom),
+                        GeneratedAt = DateTime.UtcNow,
+                        MsgUid = request.MsgUid ?? Guid.NewGuid()
+                    };
+
+                    _dbContext.LinkedInMessages.Add(message);
+                    await _dbContext.SaveChangesAsync();
+
+                    return Ok(new
+                    {
+                        Success = true,
+                        Message = "Marked as sent.",
+                        Data = ToDto(message, includeBody: false)
+                    });
+                }
 
                 if (request.IsSent)
                 {
@@ -489,6 +552,11 @@ namespace PitchGenApi.Controllers
                     // double tap must not move the send time.
                     if (!message.IsSent)
                     {
+                        // Edits made between generating and ticking are part of
+                        // what actually went out.
+                        if (!string.IsNullOrWhiteSpace(request.Body))
+                            message.Body = PromptTextCleaner.StripHtml(request.Body).Trim();
+
                         message.IsSent = true;
                         message.SentAt = ResolveSentAt(request.OccurredAtUtc);
                         message.MarkedFrom = NormalizeSource(request.MarkedFrom);
@@ -521,7 +589,126 @@ namespace PitchGenApi.Controllers
         }
 
         // ============================================================
-        // 4️⃣  GET api/linkedin-messages/by-contact
+        // 4️⃣  POST api/linkedin-messages/import
+        //     A message that happened on LinkedIn outside Pitchkraft,
+        //     pasted in by hand. Free: no model runs, so no credit.
+        // ============================================================
+        [HttpPost("import")]
+        public async Task<IActionResult> Import([FromBody] ImportLinkedInMessageRequest request)
+        {
+            try
+            {
+                if (request == null || request.ClientId <= 0 || request.ContactId <= 0)
+                    return BadRequest(new { Success = false, Message = "Valid ClientId and ContactId are required." });
+
+                var body = PromptTextCleaner.StripHtml(request.Body ?? "").Trim();
+
+                if (string.IsNullOrWhiteSpace(body))
+                    return BadRequest(new { Success = false, Message = "Body is required." });
+
+                if (body.Length > MaxImportLength)
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = $"That paste is {body.Length:N0} characters. Paste one message at a time — the limit is {MaxImportLength:N0}."
+                    });
+
+                var contact = await LoadContactAsync(request.ClientId, request.ContactId);
+                if (contact == null)
+                    return NotFound(new { Success = false, Message = "Contact not found for this client." });
+
+                var direction = LinkedInMessageDirections.Normalize(
+                    string.IsNullOrWhiteSpace(request.Direction)
+                        ? LinkedInMessageDirections.Inbound
+                        : request.Direction);
+
+                var hash = HashBody(body);
+
+                // People re-paste the same chat every time they check it. Answer
+                // the second paste with the row the first one made, so the model
+                // never reads one reply as five.
+                var existing = await FindByHashAsync(
+                    request.ClientId, request.ContactId, direction, hash);
+
+                if (existing != null)
+                {
+                    return Ok(new
+                    {
+                        Success = true,
+                        Created = false,
+                        Message = "That message is already saved against this contact.",
+                        Data = ToDto(existing, includeBody: true)
+                    });
+                }
+
+                var message = new LinkedInMessage
+                {
+                    ClientId = request.ClientId,
+                    ContactId = request.ContactId,
+                    Direction = direction,
+                    MessageType = LinkedInMessageTypes.Message,
+                    BlueprintId = null,
+                    Body = body,
+                    BodyHash = hash,
+
+                    // Not a draft: a message someone pasted already happened, in
+                    // whichever direction. That is what puts it in the
+                    // conversation the generators read.
+                    IsSent = true,
+                    SentAt = ResolveSentAt(request.OccurredAtUtc),
+                    MarkedFrom = NormalizeSource(request.Source),
+                    GeneratedAt = DateTime.UtcNow,
+                    MsgUid = Guid.NewGuid()
+                };
+
+                _dbContext.LinkedInMessages.Add(message);
+
+                try
+                {
+                    await _dbContext.SaveChangesAsync();
+                }
+                catch (DbUpdateException)
+                {
+                    // Two tabs pasting the same text at once: the unique index
+                    // caught it. Return the row that won rather than an error -
+                    // the caller's message is stored either way, which is all
+                    // they asked for.
+                    _dbContext.Entry(message).State = EntityState.Detached;
+
+                    var raced = await FindByHashAsync(
+                        request.ClientId, request.ContactId, direction, hash);
+
+                    if (raced == null)
+                        throw;
+
+                    return Ok(new
+                    {
+                        Success = true,
+                        Created = false,
+                        Message = "That message is already saved against this contact.",
+                        Data = ToDto(raced, includeBody: true)
+                    });
+                }
+
+                return Ok(new
+                {
+                    Success = true,
+                    Created = true,
+                    Message = direction == LinkedInMessageDirections.Inbound
+                        ? "Reply saved."
+                        : "Message saved.",
+                    Data = ToDto(message, includeBody: true)
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Importing LinkedIn message failed. ClientId={ClientId}", request?.ClientId);
+                return StatusCode(500, new { Success = false, Message = "Error saving message.", Error = ex.Message });
+            }
+        }
+
+        // ============================================================
+        // 5️⃣  GET api/linkedin-messages/by-contact
         //     The contact's LinkedIn history, newest first. Reads
         //     straight down the clustered key — one range seek.
         // ============================================================
@@ -531,6 +718,7 @@ namespace PitchGenApi.Controllers
             [FromQuery] int contactId,
             [FromQuery] bool includeBody = true,
             [FromQuery] string? messageType = null,
+            [FromQuery] string? direction = null,
             [FromQuery] bool sentOnly = false,
             [FromQuery] int take = 50)
         {
@@ -549,6 +737,12 @@ namespace PitchGenApi.Controllers
                 {
                     var normalized = LinkedInMessageTypes.Normalize(messageType);
                     query = query.Where(m => m.MessageType == normalized);
+                }
+
+                if (!string.IsNullOrWhiteSpace(direction))
+                {
+                    var wanted = LinkedInMessageDirections.Normalize(direction);
+                    query = query.Where(m => m.Direction == wanted);
                 }
 
                 if (sentOnly)
@@ -579,7 +773,7 @@ namespace PitchGenApi.Controllers
         }
 
         // ============================================================
-        // 5️⃣  GET api/linkedin-messages/detail
+        // 6️⃣  GET api/linkedin-messages/detail
         //     One message with its full body.
         // ============================================================
         [HttpGet("detail")]
@@ -611,7 +805,7 @@ namespace PitchGenApi.Controllers
         }
 
         // ============================================================
-        // 6️⃣  GET api/linkedin-messages/sent
+        // 7️⃣  GET api/linkedin-messages/sent
         //     Everything this client has ticked as sent, newest first.
         //     Served by the filtered index on (client_id, sent_at).
         // ============================================================
@@ -686,7 +880,7 @@ namespace PitchGenApi.Controllers
         }
 
         // ============================================================
-        // 7️⃣  POST api/linkedin-messages/summary
+        // 8️⃣  POST api/linkedin-messages/summary
         //     Badges for a whole grid page in ONE query, so the contact
         //     list never fires a request per row.
         // ============================================================
@@ -743,9 +937,18 @@ namespace PitchGenApi.Controllers
         }
 
         // ============================================================
-        // 8️⃣  POST api/linkedin-messages/delete
-        //     Removes a draft the user doesn't want. A message already
-        //     ticked as sent is history and is kept.
+        // 9️⃣  POST api/linkedin-messages/delete
+        //     Removes one message from a contact's record: a draft, a
+        //     message stored as sent, or a pasted reply.
+        //
+        //     This used to refuse anything already marked as sent, on the
+        //     grounds that history should not be rewritten. That guard
+        //     assumed the sent mark was a checkbox the user could untick.
+        //     It isn't any more - storing a message is a single click, and a
+        //     pasted reply is stored the moment it is saved - so refusing
+        //     would leave a mistake on the record with no way to take it
+        //     back. Deleting one row by id stays a deliberate act, and the
+        //     caller is expected to confirm it first.
         // ============================================================
         [HttpPost("delete")]
         public async Task<IActionResult> Delete([FromBody] DeleteLinkedInMessageRequest request)
@@ -763,17 +966,23 @@ namespace PitchGenApi.Controllers
                 if (message == null)
                     return NotFound(new { Success = false, Message = "Message not found for this client." });
 
-                if (message.IsSent)
-                    return BadRequest(new
-                    {
-                        Success = false,
-                        Message = "This message is marked as sent and is kept as history. Untick it first if it was a mistake."
-                    });
+                var wasInbound = string.Equals(
+                    message.Direction, LinkedInMessageDirections.Inbound, StringComparison.OrdinalIgnoreCase);
 
                 _dbContext.LinkedInMessages.Remove(message);
                 await _dbContext.SaveChangesAsync();
 
-                return Ok(new { Success = true, Message = "Deleted." });
+                // Worth logging: this is the one call that removes something the
+                // generators were reading as fact about the conversation.
+                Log.Information(
+                    "Deleted LinkedIn message {MessageId} ({Direction}) for ClientId={ClientId}, ContactId={ContactId}.",
+                    message.Id, message.Direction, message.ClientId, message.ContactId);
+
+                return Ok(new
+                {
+                    Success = true,
+                    Message = wasInbound ? "Reply deleted." : "Message deleted."
+                });
             }
             catch (Exception ex)
             {
@@ -800,58 +1009,46 @@ namespace PitchGenApi.Controllers
                 : query.FirstOrDefaultAsync(m => m.ClientId == clientId && m.Id == id!.Value);
         }
 
+        // A single LinkedIn message, not a whole pasted thread. Auto-splitting a
+        // copied chat is not attempted: the text varies by locale and by app
+        // version, and a wrong split feeds the model a conversation that never
+        // happened - worse than having none.
+        private const int MaxImportLength = 8000;
+
+        /// <summary>
+        /// Whitespace-collapsed, case-folded SHA-256. Normalizing first is what
+        /// makes the dedupe survive the trailing newline or stray indent a paste
+        /// picks up on the way through the clipboard.
+        /// </summary>
+        private static byte[] HashBody(string body)
+        {
+            var normalized = string.Join(' ',
+                body.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+                .ToLowerInvariant();
+
+            return SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
+        }
+
+        /// <summary>
+        /// Scoped to one direction, matching the filtered unique index. The same
+        /// words quoted back in the other direction are a different event in the
+        /// conversation, not a duplicate of it.
+        /// </summary>
+        private Task<LinkedInMessage?> FindByHashAsync(
+            int clientId, int contactId, string direction, byte[] hash)
+            => _dbContext.LinkedInMessages
+                .AsNoTracking()
+                .FirstOrDefaultAsync(m =>
+                    m.ClientId == clientId &&
+                    m.ContactId == contactId &&
+                    m.Direction == direction &&
+                    m.BodyHash == hash);
+
         private Task<Contact?> LoadContactAsync(int clientId, int contactId)
             => _dbContext.contacts
                 .AsNoTracking()
                 .Include(c => c.data_file)
                 .FirstOrDefaultAsync(c => c.id == contactId && c.data_file.client_id == clientId);
-
-        private static int ResolveMaxLength(string messageType, int? requested)
-        {
-            var ceiling = LinkedInMessageTypes.DefaultMaxLength(messageType);
-
-            if (!requested.HasValue || requested.Value <= 0)
-                return ceiling;
-
-            // A caller may ask for something shorter, never longer than what
-            // LinkedIn itself accepts.
-            return Math.Min(requested.Value, ceiling);
-        }
-
-        /// <summary>
-        /// The blueprint owns tone, structure, salutation and everything else
-        /// about the message. The only instruction added here is LinkedIn's cap
-        /// on a connection-request note, because that is a platform limit the
-        /// message is rejected for exceeding - not an editorial choice.
-        /// A normal message gets no appended instruction at all.
-        /// </summary>
-        private static string BuildChannelRules(string messageType, int maxLength)
-        {
-            if (messageType != LinkedInMessageTypes.ConnectionNote)
-                return string.Empty;
-
-            return $"- Hard limit: {maxLength} characters including spaces. Stay under it.";
-        }
-
-        /// <summary>
-        /// Cuts the text to the cap on a word boundary. The model is told the
-        /// limit, but a hard trim is what guarantees LinkedIn accepts it.
-        /// </summary>
-        private static string TrimToLength(string text, int maxLength)
-        {
-            if (string.IsNullOrEmpty(text) || maxLength <= 0 || text.Length <= maxLength)
-                return text ?? "";
-
-            var slice = text[..maxLength];
-            var lastBreak = slice.LastIndexOfAny(new[] { ' ', '\n', '\r', '\t' });
-
-            // Only fall back to a mid-word cut when there is no sensible break
-            // reasonably near the end.
-            if (lastBreak > maxLength / 2)
-                slice = slice[..lastBreak];
-
-            return slice.TrimEnd();
-        }
 
         /// <summary>
         /// The send time is the server's UTC clock. A client-supplied time is
@@ -888,6 +1085,7 @@ namespace PitchGenApi.Controllers
             m.MsgUid,
             m.ClientId,
             m.ContactId,
+            m.Direction,
             m.MessageType,
             m.BlueprintId,
             Body = includeBody ? m.Body : null,

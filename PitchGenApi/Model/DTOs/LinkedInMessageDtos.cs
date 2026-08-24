@@ -12,15 +12,6 @@ namespace PitchGenApi.Model.DTOs
         /// <summary>CampaignTemplates.Id — the blueprint to kraft from.</summary>
         public int BlueprintId { get; set; }
 
-        /// <summary>message | connection_note. Defaults to message.</summary>
-        public string? MessageType { get; set; }
-
-        /// <summary>
-        /// Character cap for the generated text. Omit to use the default for the
-        /// message type (300 for a connection note, 8000 for a message).
-        /// </summary>
-        public int? MaxLength { get; set; }
-
         /// <summary>true = no DB row, no credit deducted. For "try it" previews.</summary>
         public bool Preview { get; set; }
 
@@ -39,7 +30,6 @@ namespace PitchGenApi.Model.DTOs
         public Guid? MsgUid { get; set; }
 
         public string Body { get; set; } = "";
-        public string? MessageType { get; set; }
         public int? BlueprintId { get; set; }
     }
 
@@ -48,7 +38,16 @@ namespace PitchGenApi.Model.DTOs
     {
         public int ClientId { get; set; }
 
-        /// <summary>Either identifies the row. Uid is preferred — it makes retries idempotent.</summary>
+        /// <summary>
+        /// The message itself, for the first tick. Generation stores nothing, so
+        /// a message that has never been ticked has no row yet and these fields
+        /// are what create it. Ignored once the row exists and is already sent.
+        /// </summary>
+        public int ContactId { get; set; }
+        public string? Body { get; set; }
+        public int? BlueprintId { get; set; }
+
+        /// <summary>Either identifies an existing row. The uid handed out by generate is preferred: it makes retries idempotent and survives the first tick.</summary>
         public long? MessageId { get; set; }
         public Guid? MsgUid { get; set; }
 
@@ -64,6 +63,36 @@ namespace PitchGenApi.Model.DTOs
         /// 7 days — otherwise the server clock wins.
         /// </summary>
         public DateTime? OccurredAtUtc { get; set; }
+    }
+
+    /// <summary>
+    /// POST api/linkedin-messages/import — a message that happened on LinkedIn
+    /// outside Pitchkraft, pasted in by hand.
+    ///
+    /// Usually the contact's reply, which is the whole point: there is no
+    /// LinkedIn API to sync one, and without it the AI writes every follow-up as
+    /// though nobody ever answered. Also takes an outbound message sent straight
+    /// from LinkedIn rather than through Kraft.
+    /// </summary>
+    public class ImportLinkedInMessageRequest
+    {
+        public int ClientId { get; set; }
+        public int ContactId { get; set; }
+
+        /// <summary>inbound = they sent it, outbound = we did. Defaults to inbound.</summary>
+        public string? Direction { get; set; }
+
+        /// <summary>The pasted text. One message per call — see the endpoint remarks.</summary>
+        public string Body { get; set; } = "";
+
+        /// <summary>
+        /// When it happened on LinkedIn. Omit for "now". Worth sending: a reply
+        /// pasted a week late still needs to read as a week old to the model.
+        /// </summary>
+        public DateTime? OccurredAtUtc { get; set; }
+
+        /// <summary>extension | web</summary>
+        public string? Source { get; set; }
     }
 
     /// <summary>POST api/linkedin-messages/summary — one call for a whole grid page.</summary>
