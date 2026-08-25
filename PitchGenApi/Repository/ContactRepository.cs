@@ -103,6 +103,24 @@ public class ContactRepository
         return true;
     }
 
+    /// <summary>
+    /// Whether this client is an admin. The extension needs this to decide
+    /// who may see unlock diagnostics, and the JWT carries no admin claim -
+    /// the same token is issued to the web app, so the flag stays in the
+    /// database rather than in the token.
+    /// </summary>
+    public async Task<bool> IsAdminAsync(int clientId)
+    {
+        if (clientId <= 0)
+            return false;
+
+        return await _context.ClientDetails
+            .AsNoTracking()
+            .Where(c => c.Id == clientId)
+            .Select(c => c.IsAdmin)
+            .FirstOrDefaultAsync();
+    }
+
     public async Task<bool> HasAvailableCreditAsync(int clientId)
     {
         var finalCredit = await _context.FinalUserCredit

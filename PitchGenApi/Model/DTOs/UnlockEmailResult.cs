@@ -1,4 +1,4 @@
-namespace PitchGenApi.Model.DTOs
+﻿namespace PitchGenApi.Model.DTOs
 {
     public class UnlockEmailResult
     {
@@ -7,6 +7,13 @@ namespace PitchGenApi.Model.DTOs
         public string Email { get; init; } = string.Empty;
         public string Status { get; init; } = string.Empty;
         public string Source { get; init; } = string.Empty;
+
+        /// <summary>
+        /// A trace of the unlock, attached only when the caller is an admin.
+        /// Null for everyone else - it carries the raw prompt and raw model
+        /// output, so it must never reach a normal client.
+        /// </summary>
+        public UnlockDiagnostics? Diagnostics { get; set; }
 
         public static UnlockEmailResult Succeeded(
             string? contactId,

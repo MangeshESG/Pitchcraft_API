@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -54,71 +54,182 @@ namespace PitchGenApi.Controllers
                     "ClientID and LinkedInUrl are required."));
             }
 
-            if (!await _contactRepository.HasAvailableCreditAsync(request.ClientID))
+            // The trace below carries the raw prompt and the raw model reply, so
+            // it is built for everyone but handed only to an admin.
+            var isAdmin = await CallerIsAdminAsync(request.ClientID);
+            var diagnostics = new UnlockDiagnostics();
+            var totalTimer = System.Diagnostics.Stopwatch.StartNew();
+
+            IActionResult Finish(UnlockEmailResult result, string mode, string reason)
             {
-                return Ok(UnlockEmailResult.Failed(
-                    request.ContactID,
-                    "No unlock credit is available. Please buy credits to unlock this email."));
+                diagnostics.Mode = mode;
+                diagnostics.ModeReason = reason;
+                diagnostics.ElapsedMs = (int)totalTimer.ElapsedMilliseconds;
+                result.Diagnostics = isAdmin ? diagnostics : null;
+                return Ok(result);
             }
 
+            void Stage(string name, string outcome, string detail, long elapsedMs) =>
+                diagnostics.Stages.Add(new UnlockStageDiagnostics
+                {
+                    Name = name,
+                    Outcome = outcome,
+                    Detail = detail,
+                    ElapsedMs = (int)elapsedMs
+                });
+
+            if (!await _contactRepository.HasAvailableCreditAsync(request.ClientID))
+            {
+                Stage("credit", "error", "No unlock credit available.", 0);
+                return Finish(
+                    UnlockEmailResult.Failed(
+                        request.ContactID,
+                        "No unlock credit is available. Please buy credits to unlock this email."),
+                    "none",
+                    "Stopped before any lookup: the client has no unlock credit.");
+            }
+
+            // ------------------------------------------------------- mode 1: cache
+            var cacheTimer = System.Diagnostics.Stopwatch.StartNew();
             var cachedEmail = await _extensionRepository.GetProspeoUnlockedEmailAsync(
                 request.LinkedInUrl);
+            cacheTimer.Stop();
+
             if (!string.IsNullOrWhiteSpace(cachedEmail))
             {
+                Stage("cache", "hit",
+                    "This LinkedIn URL was unlocked in the last 30 days; no external call was made.",
+                    cacheTimer.ElapsedMilliseconds);
+
                 var cachedCompleted = await _extensionRepository.CompleteProspeoUnlockAsync(
                     request.ContactID,
                     request.ClientID,
                     request.LinkedInUrl,
                     cachedEmail);
 
-                return Ok(cachedCompleted
-                    ? UnlockEmailResult.Succeeded(
-                        request.ContactID,
-                        cachedEmail,
-                        "Email reused from the 30-day unlock cache and one credit deducted.")
-                    : UnlockEmailResult.Failed(
-                        request.ContactID,
-                        "No unlock credit is available. Please buy credits to unlock this email."));
+                return Finish(
+                    cachedCompleted
+                        ? UnlockEmailResult.Succeeded(
+                            request.ContactID,
+                            cachedEmail,
+                            "Email reused from the 30-day unlock cache and one credit deducted.",
+                            "cache")
+                        : UnlockEmailResult.Failed(
+                            request.ContactID,
+                            "No unlock credit is available. Please buy credits to unlock this email."),
+                    "cache",
+                    "Served from the 30-day unlock cache. Prospeo and the AI fallback were never called.");
             }
 
+            Stage("cache", "miss",
+                "No unlock for this LinkedIn URL in the last 30 days.",
+                cacheTimer.ElapsedMilliseconds);
+
+            // ----------------------------------------------------- mode 2: Prospeo
             var apiKey = _configuration["Prospeo:ApiKey"];
+            var prospeo = new UnlockProspeoDiagnostics
+            {
+                ApiKeyConfigured = !string.IsNullOrWhiteSpace(apiKey),
+                Endpoint = "https://api.prospeo.io/enrich-person"
+            };
+            diagnostics.Prospeo = prospeo;
+
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                return await CompleteAiFallbackUnlockAsync(request);
+                prospeo.RejectedBecause = "No Prospeo:ApiKey is configured.";
+                Stage("prospeo", "skipped", prospeo.RejectedBecause, 0);
+                return Finish(
+                    await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                    "ai",
+                    "Prospeo was skipped because no API key is configured, so the AI fallback ran.");
             }
+
+            var prospeoTimer = System.Diagnostics.Stopwatch.StartNew();
 
             try
             {
-                using var httpRequest = new HttpRequestMessage(
-                    HttpMethod.Post,
-                    "https://api.prospeo.io/enrich-person");
-                httpRequest.Headers.Add("X-KEY", apiKey);
-                httpRequest.Content = JsonContent.Create(new
+                var prospeoBody = new
                 {
                     only_verified_email = true,
                     enrich_mobile = false,
                     data = new { linkedin_url = request.LinkedInUrl.Trim() }
-                });
+                };
+                prospeo.RequestBody = JsonConvert.SerializeObject(prospeoBody, Formatting.Indented);
+
+                using var httpRequest = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    prospeo.Endpoint);
+                httpRequest.Headers.Add("X-KEY", apiKey);
+                httpRequest.Content = JsonContent.Create(prospeoBody);
 
                 var client = _httpClientFactory.CreateClient();
                 using var response = await client.SendAsync(httpRequest, cancellationToken);
+                prospeo.HttpStatus = (int)response.StatusCode;
+
+                // Read the body as text first so the raw payload survives into the
+                // trace even when it fails to deserialise.
+                var rawBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                prospeo.RawResponse = rawBody;
+
                 if (!response.IsSuccessStatusCode)
                 {
-                    return await CompleteAiFallbackUnlockAsync(request);
+                    prospeo.RejectedBecause =
+                        $"Prospeo replied {(int)response.StatusCode} {response.StatusCode}.";
+                    prospeoTimer.Stop();
+                    Stage("prospeo", "error", prospeo.RejectedBecause,
+                        prospeoTimer.ElapsedMilliseconds);
+                    return Finish(
+                        await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                        "ai",
+                        "Prospeo returned an error status, so the AI fallback ran.");
                 }
 
-                var result = await response.Content.ReadFromJsonAsync<ProspeoEnrichResponseDto>(
-                    cancellationToken: cancellationToken);
+                ProspeoEnrichResponseDto? result = null;
+                try
+                {
+                    result = System.Text.Json.JsonSerializer
+                        .Deserialize<ProspeoEnrichResponseDto>(rawBody);
+                }
+                catch (System.Text.Json.JsonException ex)
+                {
+                    prospeo.RejectedBecause = "Prospeo returned unreadable JSON: " + ex.Message;
+                }
+
                 var emailResult = result?.Person?.Email;
                 var email = emailResult?.Email?.Trim();
+                prospeo.Revealed = emailResult?.Revealed;
+                prospeo.EmailStatus = emailResult?.Status;
 
-                if (result?.Error == true || emailResult == null ||
-                    !emailResult.Revealed ||
-                    !string.Equals(emailResult.Status, "VERIFIED", StringComparison.OrdinalIgnoreCase) ||
-                    string.IsNullOrWhiteSpace(email))
+                if (prospeo.RejectedBecause == null)
                 {
-                    return await CompleteAiFallbackUnlockAsync(request);
+                    prospeo.RejectedBecause =
+                        result?.Error == true
+                            ? "Prospeo flagged the response as an error."
+                        : emailResult == null
+                            ? "Prospeo returned no email object for this profile."
+                        : !emailResult.Revealed
+                            ? "Prospeo did not reveal the address."
+                        : !string.Equals(emailResult.Status, "VERIFIED", StringComparison.OrdinalIgnoreCase)
+                            ? "Prospeo status was '" + emailResult.Status + "', not VERIFIED."
+                        : string.IsNullOrWhiteSpace(email)
+                            ? "Prospeo returned an empty address."
+                        : null;
                 }
+
+                if (prospeo.RejectedBecause != null)
+                {
+                    prospeoTimer.Stop();
+                    Stage("prospeo", "miss", prospeo.RejectedBecause,
+                        prospeoTimer.ElapsedMilliseconds);
+                    return Finish(
+                        await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                        "ai",
+                        "Prospeo had no verified address, so the AI fallback ran.");
+                }
+
+                prospeoTimer.Stop();
+                Stage("prospeo", "hit", "Prospeo returned a verified address.",
+                    prospeoTimer.ElapsedMilliseconds);
 
                 var completed = await _extensionRepository.CompleteProspeoUnlockAsync(
                     request.ContactID,
@@ -128,24 +239,83 @@ namespace PitchGenApi.Controllers
 
                 if (!completed)
                 {
-                    return Ok(UnlockEmailResult.Failed(
-                        request.ContactID,
-                        "No unlock credit is available. Please buy credits to unlock this email."));
+                    return Finish(
+                        UnlockEmailResult.Failed(
+                            request.ContactID,
+                            "No unlock credit is available. Please buy credits to unlock this email."),
+                        "prospeo",
+                        "Prospeo found the address but the credit could not be deducted.");
                 }
 
-                return Ok(UnlockEmailResult.Succeeded(
-                    request.ContactID,
-                    email,
-                    "Verified email unlocked and one credit deducted."));
+                return Finish(
+                    UnlockEmailResult.Succeeded(
+                        request.ContactID,
+                        email,
+                        "Verified email unlocked and one credit deducted."),
+                    "prospeo",
+                    "Prospeo returned a verified address, so the AI fallback never ran.");
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                return await CompleteAiFallbackUnlockAsync(request);
+                prospeoTimer.Stop();
+                prospeo.RejectedBecause = "The Prospeo call timed out.";
+                Stage("prospeo", "error", prospeo.RejectedBecause,
+                    prospeoTimer.ElapsedMilliseconds);
+                return Finish(
+                    await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                    "ai",
+                    "The Prospeo call timed out, so the AI fallback ran.");
             }
-            catch (HttpRequestException)
+            catch (HttpRequestException ex)
             {
-                return await CompleteAiFallbackUnlockAsync(request);
+                prospeoTimer.Stop();
+                prospeo.RejectedBecause = "The Prospeo call failed: " + ex.Message;
+                Stage("prospeo", "error", prospeo.RejectedBecause,
+                    prospeoTimer.ElapsedMilliseconds);
+                return Finish(
+                    await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                    "ai",
+                    "The Prospeo call could not be made, so the AI fallback ran.");
             }
+        }
+
+        /// <summary>
+        /// Whether the caller may see an unlock trace. The token is shared with
+        /// the web app and carries no admin claim, so this reads the flag from
+        /// the database - and only after the Bearer token proves the caller is
+        /// the client whose id is in the body, since this endpoint otherwise
+        /// takes that id on trust.
+        /// </summary>
+        /// <summary>
+        /// Re-parses a Newtonsoft array through System.Text.Json so the response
+        /// serialiser renders it as a real array rather than JToken internals.
+        /// </summary>
+        private static System.Text.Json.Nodes.JsonNode? ToJsonNode(JArray? value)
+        {
+            if (value == null)
+                return null;
+
+            try
+            {
+                return System.Text.Json.Nodes.JsonNode.Parse(value.ToString(Formatting.None));
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return null;
+            }
+        }
+
+        private async Task<bool> CallerIsAdminAsync(int clientId)
+        {
+            if (clientId <= 0 || User?.Identity?.IsAuthenticated != true)
+                return false;
+
+            var tokenClientId = User.FindFirst("UserId")?.Value;
+
+            if (!int.TryParse(tokenClientId, out var parsed) || parsed != clientId)
+                return false;
+
+            return await _contactRepository.IsAdminAsync(clientId);
         }
 
         [HttpPost]
@@ -436,8 +606,13 @@ namespace PitchGenApi.Controllers
                 results);
         }
 
-        private async Task<IActionResult> CompleteAiFallbackUnlockAsync(
-            ProspeoUnlockRequestDto request)
+        /// <summary>
+        /// Mode 3. Fills in <paramref name="diagnostics"/> as it goes so an admin
+        /// can see the prompt, the model's raw reply and which candidate won.
+        /// </summary>
+        private async Task<UnlockEmailResult> CompleteAiFallbackUnlockAsync(
+            ProspeoUnlockRequestDto request,
+            UnlockDiagnostics diagnostics)
         {
             var aiRequest = new FindEmailAiRequestDto
             {
@@ -450,18 +625,55 @@ namespace PitchGenApi.Controllers
                 CompanyUrl = request.CompanyUrl ?? request.Domain
             };
 
+            var aiTimer = System.Diagnostics.Stopwatch.StartNew();
+
             // Zero prevents the model service from deducting. Completion below
             // atomically deducts once and writes UnlockedContacts only after a
             // usable email has actually been returned.
             var aiSearch = await FindEmailWithAiCoreAsync(aiRequest, 0);
+            aiTimer.Stop();
+
+            var ai = new UnlockAiDiagnostics
+            {
+                Provider = IsDeepSeekModel(aiSearch.ModelName) ? "DeepSeek" : "OpenAI",
+                Model = aiSearch.ModelName ?? "",
+                Prompt = aiSearch.FinalPrompt ?? "",
+                Raw = aiSearch.SearchResult?.Content ?? "",
+                Results = ToJsonNode(aiSearch.Results),
+                IsSuccess = aiSearch.SearchResult?.IsSuccess ?? false,
+                Usage = aiSearch.SearchResult == null ? null : new UnlockAiUsage
+                {
+                    PromptTokens = aiSearch.SearchResult.PromptTokens,
+                    CompletionTokens = aiSearch.SearchResult.CompletionTokens,
+                    SearchTokens = aiSearch.SearchResult.SearchTokens,
+                    TotalTokens = aiSearch.SearchResult.TotalTokens,
+                    CurrentCost = aiSearch.SearchResult.CurrentCost
+                }
+            };
+            diagnostics.Ai = ai;
+
+            void Stage(string outcome, string detail) =>
+                diagnostics.Stages.Add(new UnlockStageDiagnostics
+                {
+                    Name = "ai",
+                    Outcome = outcome,
+                    Detail = detail,
+                    ElapsedMs = (int)aiTimer.ElapsedMilliseconds
+                });
+
             if (!aiSearch.SearchResult.IsSuccess)
             {
-                return Ok(UnlockEmailResult.Failed(
+                ai.ChoiceReason = "The model call itself failed.";
+                Stage("error", "The " + ai.Provider + " call failed (" + ai.Model + ").");
+
+                return UnlockEmailResult.Failed(
                     request.ContactID,
-                    "Prospeo found no verified email and the AI fallback failed."));
+                    "Prospeo found no verified email and the AI fallback failed.");
             }
 
-            var email = aiSearch.Results
+            // A direct address beats a guessed pattern; after that the model's own
+            // confidence decides, and ties keep the order the model returned.
+            var ranked = aiSearch.Results
                 .OfType<JObject>()
                 .Select((item, index) => new
                 {
@@ -476,15 +688,28 @@ namespace PitchGenApi.Controllers
                     string.Equals(item.Type, "direct", StringComparison.OrdinalIgnoreCase))
                 .ThenByDescending(item => item.Confidence)
                 .ThenBy(item => item.Index)
-                .Select(item => item.Email)
-                .FirstOrDefault();
+                .ToList();
+
+            var chosen = ranked.FirstOrDefault();
+            var email = chosen?.Email;
 
             if (string.IsNullOrWhiteSpace(email))
             {
-                return Ok(UnlockEmailResult.Failed(
+                ai.ChoiceReason = aiSearch.Results.Count == 0
+                    ? "The model returned no candidates."
+                    : "The model returned " + aiSearch.Results.Count +
+                        " candidate(s), none of them a valid address.";
+                Stage("miss", ai.ChoiceReason);
+
+                return UnlockEmailResult.Failed(
                     request.ContactID,
-                    "No email address was found by Prospeo or the AI fallback. No credit was deducted."));
+                    "No email address was found by Prospeo or the AI fallback. No credit was deducted.");
             }
+
+            ai.ChosenEmail = email;
+            ai.ChoiceReason = "Picked from " + ranked.Count + " valid candidate(s): type '" +
+                chosen.Type + "', confidence " + chosen.Confidence + ".";
+            Stage("hit", ai.ChoiceReason);
 
             var completed = await _extensionRepository.CompleteProspeoUnlockAsync(
                 request.ContactID,
@@ -492,7 +717,7 @@ namespace PitchGenApi.Controllers
                 request.LinkedInUrl,
                 email);
 
-            return Ok(completed
+            return completed
                 ? UnlockEmailResult.Succeeded(
                     request.ContactID,
                     email,
@@ -500,7 +725,7 @@ namespace PitchGenApi.Controllers
                     "ai")
                 : UnlockEmailResult.Failed(
                     request.ContactID,
-                    "Email was found by AI, but unlock could not complete because credit was unavailable."));
+                    "Email was found by AI, but unlock could not complete because credit was unavailable.");
         }
 
         private sealed record AiEmailSearchOutcome(
