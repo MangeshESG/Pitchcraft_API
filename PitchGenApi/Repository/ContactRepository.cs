@@ -33,75 +33,6 @@ public class ContactRepository
         return await query.ToListAsync();
     }
 
-    public async Task<bool> CreditDeduction(int clientId)
-    {
-        var finalCredit = await _context.FinalUserCredit
-            .FirstOrDefaultAsync(f => f.ClientId == clientId);
-
-        if (finalCredit == null)
-            return false;
-
-        bool isDeducted = false;
-
-        // Case 1: Use TotalCredit if available and monthly limit not reached
-        if ((finalCredit.TotalCredit ?? 0) > 0 &&
-            (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
-        {
-            var activePlan = await _context.UserCredits
-                .Where(u =>
-                    u.ClientId == clientId &&
-                    u.Status != null &&
-                    u.Status.ToLower() == "active" &&
-                    u.Plane != "Custom Credit" &&
-                    u.Plane != "Internal" &&
-                    (u.Credits ?? 0) > 0)
-                .OrderByDescending(u => u.StartDate ?? u.CreatedAt)
-                .FirstOrDefaultAsync();
-
-            if (activePlan == null)
-                return false;
-
-            finalCredit.TotalCredit -= 1;
-            finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + 1;
-            finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + 1;
-
-            activePlan.Credits -= 1;
-            _context.UserCredits.Update(activePlan);
-
-            isDeducted = true;
-        }
-        // Case 2: Use CustomLimit
-        else if ((finalCredit.CustomLimit ?? 0) > 0)
-        {
-            var activePlan = await _context.UserCredits
-                .FirstOrDefaultAsync(u =>
-                    u.ClientId == clientId &&
-                    u.Status.ToLower() == "active" &&
-                    (u.Plane == "Custom Credit" || u.Plane == "Internal") &&
-                    (u.Credits ?? 0) > 0);
-
-            if (activePlan != null)
-            {
-                finalCredit.CustomLimit -= 1;
-                finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + 1;
-
-                activePlan.Credits -= 1;
-
-                _context.UserCredits.Update(activePlan);
-
-                isDeducted = true;
-            }
-        }
-
-        if (!isDeducted)
-            return false;
-
-        finalCredit.UpdatedAt = DateTime.UtcNow;
-        _context.FinalUserCredit.Update(finalCredit);
-
-        await _context.SaveChangesAsync();
-        return true;
-    }
 
     public async Task<bool> HasAvailableCreditAsync(int clientId)
     {
@@ -1482,6 +1413,75 @@ public class ContactRepository
             };
         }
     }
+    public async Task<bool> CreditDeduction(int clientId)
+    {
+        var finalCredit = await _context.FinalUserCredit
+            .FirstOrDefaultAsync(f => f.ClientId == clientId);
+
+        if (finalCredit == null)
+            return false;
+
+        bool isDeducted = false;
+
+        // Case 1: Use TotalCredit if available and monthly limit not reached
+        if ((finalCredit.TotalCredit ?? 0) > 0 &&
+            (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
+        {
+            var activePlan = await _context.UserCredits
+                .Where(u =>
+                    u.ClientId == clientId &&
+                    u.Status != null &&
+                    u.Status.ToLower() == "active" &&
+                    u.Plane != "Custom Credit" &&
+                    u.Plane != "Internal" &&
+                    (u.Credits ?? 0) > 0)
+                .OrderByDescending(u => u.StartDate ?? u.CreatedAt)
+                .FirstOrDefaultAsync();
+
+            if (activePlan == null)
+                return false;
+
+            finalCredit.TotalCredit -= 1;
+            finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + 1;
+            finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + 1;
+
+            activePlan.Credits -= 1;
+            _context.UserCredits.Update(activePlan);
+
+            isDeducted = true;
+        }
+        // Case 2: Use CustomLimit
+        else if ((finalCredit.CustomLimit ?? 0) > 0)
+        {
+            var activePlan = await _context.UserCredits
+                .FirstOrDefaultAsync(u =>
+                    u.ClientId == clientId &&
+                    u.Status.ToLower() == "active" &&
+                    (u.Plane == "Custom Credit" || u.Plane == "Internal") &&
+                    (u.Credits ?? 0) > 0);
+
+            if (activePlan != null)
+            {
+                finalCredit.CustomLimit -= 1;
+                finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + 1;
+
+                activePlan.Credits -= 1;
+
+                _context.UserCredits.Update(activePlan);
+
+                isDeducted = true;
+            }
+        }
+
+        if (!isDeducted)
+            return false;
+
+        finalCredit.UpdatedAt = DateTime.UtcNow;
+        _context.FinalUserCredit.Update(finalCredit);
+
+        await _context.SaveChangesAsync();
+        return true;
+    }
 
     public async Task<OperationResult> DeleteSignature(int id, int clientId)
     {
@@ -1533,6 +1533,8 @@ public class ContactRepository
         _context.KraftHistory.Add(history);
         await _context.SaveChangesAsync();
     }
+
+
     //-------------------------------------------------------------------------------------private---------------------------------------------------------------------------------------------------------------
     private string? GetSourceName(EmailLog log)
     {
