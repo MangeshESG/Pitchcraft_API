@@ -94,7 +94,7 @@ namespace PitchGenApi.Model.DTOs
         /// Null when the reply carried no company block; individual fields are
         /// null when the model could not source them.
         /// </summary>
-        public UnlockAiCompany? Company { get; set; }
+        public UnlockCompanyDetails? Company { get; set; }
 
         /// <summary>Which candidate was picked, and why it beat the others.</summary>
         public string? ChosenEmail { get; set; }
@@ -104,20 +104,6 @@ namespace PitchGenApi.Model.DTOs
         public bool IsSuccess { get; set; }
 
         public UnlockAiUsage? Usage { get; set; }
-    }
-
-    /// <summary>
-    /// The employer behind the address, as reported by the email search. Shown
-    /// in the extension and saved with the contact.
-    /// </summary>
-    public sealed class UnlockAiCompany
-    {
-        public string? Website { get; set; }
-
-        public string? Industry { get; set; }
-
-        /// <summary>A headcount band, e.g. "501-1000".</summary>
-        public string? Size { get; set; }
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -758,6 +758,19 @@ namespace PitchGenApi.Controllers
             var aiSearch = await FindEmailWithAiCoreAsync(aiRequest, 0);
             aiTimer.Stop();
 
+            // Contact data rather than a trace, so it rides on every result this
+            // method returns - including the failures. A search that found no
+            // address still learned who the person works for, and that is worth
+            // saving whether or not the email came back.
+            var companyDetails = aiSearch.Company == null
+                ? null
+                : new UnlockCompanyDetails
+                {
+                    Website = aiSearch.Company.Website,
+                    Industry = aiSearch.Company.Industry,
+                    Size = aiSearch.Company.Size
+                };
+
             var ai = new UnlockAiDiagnostics
             {
                 Provider = IsDeepSeekModel(aiSearch.ModelName) ? "DeepSeek" : "OpenAI",
@@ -765,7 +778,10 @@ namespace PitchGenApi.Controllers
                 Prompt = aiSearch.FinalPrompt ?? "",
                 Raw = aiSearch.SearchResult?.Content ?? "",
                 Results = ToJsonNode(aiSearch.Results),
-                Company = aiSearch.Company == null ? null : new UnlockAiCompany
+                // Its own instance, not the one returned below: that one can
+                // pick up a website from Hunter, and this section reports what
+                // the model itself said.
+                Company = aiSearch.Company == null ? null : new UnlockCompanyDetails
                 {
                     Website = aiSearch.Company.Website,
                     Industry = aiSearch.Company.Industry,
@@ -947,6 +963,28 @@ namespace PitchGenApi.Controllers
                     lookup.ElapsedMs);
             }
 
+            // Hunter is asked about a domain, so a lookup that got that far knows
+            // the company website even when the model did not report one. Only
+            // ever fills a gap - what the model found is the better answer,
+            // because it is a homepage rather than a bare mail domain.
+            if (!string.IsNullOrWhiteSpace(hunterDiagnostics?.Domain) &&
+                string.IsNullOrWhiteSpace(companyDetails?.Website))
+            {
+                companyDetails ??= new UnlockCompanyDetails();
+                companyDetails.Website = hunterDiagnostics.Domain;
+            }
+
+            // Nothing found at all is reported as nothing, not as an empty shape
+            // the extension has to test three fields of.
+            if (companyDetails?.HasAny != true)
+                companyDetails = null;
+
+            UnlockEmailResult WithCompany(UnlockEmailResult result)
+            {
+                result.Company = companyDetails;
+                return result;
+            }
+
             // Hunter's score and the model's confidence are both 0-100 statements
             // about the same address, so the higher one wins. A tie keeps the AI
             // answer, which already survived the ranking above.
@@ -1022,12 +1060,12 @@ namespace PitchGenApi.Controllers
                       "% confidence, so no address was served."
                     : "Prospeo, the AI fallback and Hunter all came back empty.";
 
-                return UnlockEmailResult.Failed(
+                return WithCompany(UnlockEmailResult.Failed(
                     request.ContactID,
                     belowThreshold
                         ? "No email found. Nothing reached the " + threshold +
                           "% confidence required, so no credit was deducted."
-                        : "No email address was found by Prospeo, the AI fallback or Hunter. No credit was deducted.");
+                        : "No email address was found by Prospeo, the AI fallback or Hunter. No credit was deducted."));
             }
 
             var repeatedRejected = SameAddress(email, rejectedEmail);
@@ -1055,20 +1093,20 @@ namespace PitchGenApi.Controllers
 
             if (!completed)
             {
-                return UnlockEmailResult.Failed(
+                return WithCompany(UnlockEmailResult.Failed(
                     request.ContactID,
-                    "Email was found, but unlock could not complete because credit was unavailable.");
+                    "Email was found, but unlock could not complete because credit was unavailable."));
             }
 
             var foundBy = preferHunter ? "Hunter" : "AI fallback";
 
-            return UnlockEmailResult.Succeeded(
+            return WithCompany(UnlockEmailResult.Succeeded(
                 request.ContactID,
                 email,
                 repeatedRejected
                     ? "The fresh lookup returned the same address that was cached, and one credit was deducted."
                     : "Email found by " + foundBy + ", unlock history saved and one credit deducted.",
-                preferHunter ? "hunter" : "ai");
+                preferHunter ? "hunter" : "ai"));
         }
 
         /// <summary>Two addresses being the same one, case aside.</summary>
