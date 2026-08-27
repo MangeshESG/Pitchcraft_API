@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -22,6 +22,7 @@ namespace PitchGenApi.Controllers
         private readonly IPitchService _pitchService;
         private readonly DeepSeekPitchService _deepSeekService;
         private readonly IAiModelSettingsService _aiModelSettings;
+        private readonly IHunterEmailService _hunterService;
 
         public ExtensionController(
             IExtensionRepository extensionRepository,
@@ -31,7 +32,8 @@ namespace PitchGenApi.Controllers
             ContactRepository contactRepository,
             IPitchService pitchService,
             DeepSeekPitchService deepSeekService,
-            IAiModelSettingsService aiModelSettings)
+            IAiModelSettingsService aiModelSettings,
+            IHunterEmailService hunterService)
         {
             _extensionRepository = extensionRepository;
             _extensionProfileService = extensionProfileService;
@@ -41,6 +43,7 @@ namespace PitchGenApi.Controllers
             _pitchService = pitchService;
             _deepSeekService = deepSeekService;
             _aiModelSettings = aiModelSettings;
+            _hunterService = hunterService;
         }
 
         [HttpPost("EX_prospeo-unlock")]
@@ -60,12 +63,27 @@ namespace PitchGenApi.Controllers
             var diagnostics = new UnlockDiagnostics();
             var totalTimer = System.Diagnostics.Stopwatch.StartNew();
 
+            // The address the cache was holding when a forced refresh came in.
+            // Reported back so the extension can show what was replaced, and kept
+            // out of the AI fallback's candidates so "try again" cannot hand back
+            // the same wrong answer. Null on a normal unlock.
+            string? rejectedEmail = null;
+
             IActionResult Finish(UnlockEmailResult result, string mode, string reason)
             {
-                diagnostics.Mode = mode;
-                diagnostics.ModeReason = reason;
+                // A later stage can name the mode itself - the AI fallback does
+                // when Hunter's address beats the model's - and the caller here
+                // cannot know that happened. Only fill in the mode it passed
+                // when nothing downstream has claimed one.
+                if (string.IsNullOrEmpty(diagnostics.Mode))
+                {
+                    diagnostics.Mode = mode;
+                    diagnostics.ModeReason = reason;
+                }
+
                 diagnostics.ElapsedMs = (int)totalTimer.ElapsedMilliseconds;
                 result.Diagnostics = isAdmin ? diagnostics : null;
+                result.PreviousEmail = rejectedEmail;
                 return Ok(result);
             }
 
@@ -95,7 +113,24 @@ namespace PitchGenApi.Controllers
                 request.LinkedInUrl);
             cacheTimer.Stop();
 
-            if (!string.IsNullOrWhiteSpace(cachedEmail))
+            if (request.ForceRefresh)
+            {
+                // The caller ticked "look it up again from other sources", so the
+                // cached address is read but never served - Prospeo and then the
+                // AI fallback answer instead, and whatever they return overwrites
+                // the cache row.
+                rejectedEmail = string.IsNullOrWhiteSpace(cachedEmail)
+                    ? null
+                    : cachedEmail.Trim();
+
+                Stage("cache", "skipped",
+                    rejectedEmail == null
+                        ? "A fresh lookup was requested; the cache held nothing for this URL anyway."
+                        : "A fresh lookup was requested, so the cached address '" +
+                          rejectedEmail + "' was not served.",
+                    cacheTimer.ElapsedMilliseconds);
+            }
+            else if (!string.IsNullOrWhiteSpace(cachedEmail))
             {
                 Stage("cache", "hit",
                     "This LinkedIn URL was unlocked in the last 30 days; no external call was made.",
@@ -107,23 +142,30 @@ namespace PitchGenApi.Controllers
                     request.LinkedInUrl,
                     cachedEmail);
 
-                return Finish(
-                    cachedCompleted
-                        ? UnlockEmailResult.Succeeded(
-                            request.ContactID,
-                            cachedEmail,
-                            "Email reused from the 30-day unlock cache and one credit deducted.",
-                            "cache")
-                        : UnlockEmailResult.Failed(
-                            request.ContactID,
-                            "No unlock credit is available. Please buy credits to unlock this email."),
+                var cachedResult = cachedCompleted
+                    ? UnlockEmailResult.Succeeded(
+                        request.ContactID,
+                        cachedEmail,
+                        "Email reused from the 30-day unlock cache and one credit deducted.",
+                        "cache")
+                    : UnlockEmailResult.Failed(
+                        request.ContactID,
+                        "No unlock credit is available. Please buy credits to unlock this email.");
+
+                // Only a cache answer is worth retrying: Prospeo and the AI
+                // fallback have already been asked everything they know.
+                cachedResult.CanRetryFromOtherSources = cachedCompleted;
+
+                return Finish(cachedResult,
                     "cache",
                     "Served from the 30-day unlock cache. Prospeo and the AI fallback were never called.");
             }
-
-            Stage("cache", "miss",
-                "No unlock for this LinkedIn URL in the last 30 days.",
-                cacheTimer.ElapsedMilliseconds);
+            else
+            {
+                Stage("cache", "miss",
+                    "No unlock for this LinkedIn URL in the last 30 days.",
+                    cacheTimer.ElapsedMilliseconds);
+            }
 
             // ----------------------------------------------------- mode 2: Prospeo
             var apiKey = _configuration["Prospeo:ApiKey"];
@@ -139,7 +181,7 @@ namespace PitchGenApi.Controllers
                 prospeo.RejectedBecause = "No Prospeo:ApiKey is configured.";
                 Stage("prospeo", "skipped", prospeo.RejectedBecause, 0);
                 return Finish(
-                    await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                    await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
                     "ai",
                     "Prospeo was skipped because no API key is configured, so the AI fallback ran.");
             }
@@ -179,7 +221,7 @@ namespace PitchGenApi.Controllers
                     Stage("prospeo", "error", prospeo.RejectedBecause,
                         prospeoTimer.ElapsedMilliseconds);
                     return Finish(
-                        await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                        await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
                         "ai",
                         "Prospeo returned an error status, so the AI fallback ran.");
                 }
@@ -222,7 +264,7 @@ namespace PitchGenApi.Controllers
                     Stage("prospeo", "miss", prospeo.RejectedBecause,
                         prospeoTimer.ElapsedMilliseconds);
                     return Finish(
-                        await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                        await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
                         "ai",
                         "Prospeo had no verified address, so the AI fallback ran.");
                 }
@@ -247,13 +289,20 @@ namespace PitchGenApi.Controllers
                         "Prospeo found the address but the credit could not be deducted.");
                 }
 
+                var sameAsRejected = rejectedEmail != null &&
+                    string.Equals(email, rejectedEmail, StringComparison.OrdinalIgnoreCase);
+
                 return Finish(
                     UnlockEmailResult.Succeeded(
                         request.ContactID,
                         email,
-                        "Verified email unlocked and one credit deducted."),
+                        sameAsRejected
+                            ? "Prospeo re-verified the same address that was cached, and one credit was deducted."
+                            : "Verified email unlocked and one credit deducted."),
                     "prospeo",
-                    "Prospeo returned a verified address, so the AI fallback never ran.");
+                    sameAsRejected
+                        ? "Prospeo was asked again and returned the same verified address the cache held."
+                        : "Prospeo returned a verified address, so the AI fallback never ran.");
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
@@ -262,7 +311,7 @@ namespace PitchGenApi.Controllers
                 Stage("prospeo", "error", prospeo.RejectedBecause,
                     prospeoTimer.ElapsedMilliseconds);
                 return Finish(
-                    await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                    await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
                     "ai",
                     "The Prospeo call timed out, so the AI fallback ran.");
             }
@@ -273,7 +322,7 @@ namespace PitchGenApi.Controllers
                 Stage("prospeo", "error", prospeo.RejectedBecause,
                     prospeoTimer.ElapsedMilliseconds);
                 return Finish(
-                    await CompleteAiFallbackUnlockAsync(request, diagnostics),
+                    await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
                     "ai",
                     "The Prospeo call could not be made, so the AI fallback ran.");
             }
@@ -533,6 +582,56 @@ namespace PitchGenApi.Controllers
 
                 var raw = searchResult.Content ?? "";
 
+                // The same escalation the unlock flow uses: when the model's best
+                // candidate falls short of the threshold, Hunter is asked as well.
+                // Its answer is reported alongside the model's rather than mixed
+                // into Results, so the caller can see where each address came from.
+                var bestCandidate = aiSearch.Results
+                    .OfType<JObject>()
+                    .Select(item => new
+                    {
+                        Email = item["email"]?.Value<string>()?.Trim(),
+                        Confidence = item["confidence"]?.Value<int>() ?? 0
+                    })
+                    .Where(item => !string.IsNullOrWhiteSpace(item.Email))
+                    .OrderByDescending(item => item.Confidence)
+                    .FirstOrDefault();
+
+                var threshold = _hunterService.ConfidenceThreshold;
+                object? hunter = null;
+
+                if (bestCandidate == null || bestCandidate.Confidence < threshold)
+                {
+                    var lookup = await _hunterService.FindEmailAsync(new HunterLookupRequest
+                    {
+                        FullName = request.FullName,
+                        AiWebsite = aiSearch.Company?.Website,
+                        EmailHint = bestCandidate?.Email,
+                        CompanyUrl = request.CompanyUrl,
+                        Company = request.Company
+                    });
+
+                    hunter = new
+                    {
+                        Ran = true,
+                        TriggeredAtConfidence = bestCandidate?.Confidence ?? 0,
+                        ConfidenceThreshold = threshold,
+                        lookup.Found,
+
+                        // The unlock flow will not serve an address below the
+                        // threshold, so callers of this endpoint can see the same
+                        // verdict without re-deriving it from the score.
+                        MeetsThreshold = lookup.Found && lookup.Score >= threshold,
+                        lookup.Email,
+                        lookup.Score,
+                        lookup.VerificationStatus,
+                        lookup.Domain,
+                        lookup.Position,
+                        lookup.SourceCount,
+                        lookup.RejectedBecause
+                    };
+                }
+
                 return Ok(new
                 {
                     Success = true,
@@ -540,6 +639,18 @@ namespace PitchGenApi.Controllers
                     Model = modelName,
                     Provider = IsDeepSeekModel(modelName) ? "DeepSeek" : "OpenAI",
                     Results = aiSearch.Results,
+
+                    // The employer facts the instruction asks for. Reported here
+                    // so the prompt's company block is observable; nothing in
+                    // the unlock flow reads them yet beyond the website, which
+                    // is what Hunter is asked about.
+                    Company = aiSearch.Company == null ? null : new
+                    {
+                        aiSearch.Company.Website,
+                        aiSearch.Company.Industry,
+                        aiSearch.Company.Size
+                    },
+                    Hunter = hunter,
                     Raw = raw,
                     FinalPrompt = finalPrompt,
                     Usage = new
@@ -598,21 +709,35 @@ namespace PitchGenApi.Controllers
             var results = searchResult.IsSuccess
                 ? ParseFindEmailResults(searchResult.Content ?? "")
                 : new JArray();
+            var company = searchResult.IsSuccess
+                ? ParseFindEmailCompany(searchResult.Content ?? "")
+                : null;
 
             return new AiEmailSearchOutcome(
                 searchResult,
                 modelName,
                 finalPrompt,
-                results);
+                results,
+                company);
         }
 
         /// <summary>
-        /// Mode 3. Fills in <paramref name="diagnostics"/> as it goes so an admin
-        /// can see the prompt, the model's raw reply and which candidate won.
+        /// Mode 3, and mode 4 behind it.
+        ///
+        /// Runs the AI search first. When the model's best candidate falls below
+        /// the Hunter confidence threshold - or the model produced nothing at
+        /// all - Hunter.io is asked as well and whichever answer scores higher
+        /// is the one returned. A confident model answer never spends a Hunter
+        /// request.
+        ///
+        /// Fills in <paramref name="diagnostics"/> as it goes so an admin can
+        /// see the prompt, the model's raw reply, what Hunter said and which
+        /// answer won.
         /// </summary>
         private async Task<UnlockEmailResult> CompleteAiFallbackUnlockAsync(
             ProspeoUnlockRequestDto request,
-            UnlockDiagnostics diagnostics)
+            UnlockDiagnostics diagnostics,
+            string? rejectedEmail = null)
         {
             var aiRequest = new FindEmailAiRequestDto
             {
@@ -640,6 +765,12 @@ namespace PitchGenApi.Controllers
                 Prompt = aiSearch.FinalPrompt ?? "",
                 Raw = aiSearch.SearchResult?.Content ?? "",
                 Results = ToJsonNode(aiSearch.Results),
+                Company = aiSearch.Company == null ? null : new UnlockAiCompany
+                {
+                    Website = aiSearch.Company.Website,
+                    Industry = aiSearch.Company.Industry,
+                    Size = aiSearch.Company.Size
+                },
                 IsSuccess = aiSearch.SearchResult?.IsSuccess ?? false,
                 Usage = aiSearch.SearchResult == null ? null : new UnlockAiUsage
                 {
@@ -652,64 +783,269 @@ namespace PitchGenApi.Controllers
             };
             diagnostics.Ai = ai;
 
-            void Stage(string outcome, string detail) =>
+            void Stage(string name, string outcome, string detail, int elapsedMs) =>
                 diagnostics.Stages.Add(new UnlockStageDiagnostics
                 {
-                    Name = "ai",
+                    Name = name,
                     Outcome = outcome,
                     Detail = detail,
-                    ElapsedMs = (int)aiTimer.ElapsedMilliseconds
+                    ElapsedMs = elapsedMs
                 });
+
+            string? aiEmail = null;
+            var aiConfidence = 0;
 
             if (!aiSearch.SearchResult.IsSuccess)
             {
+                // The model failing is no longer the end of the road: Hunter is
+                // still worth asking, so this records the failure and carries on.
                 ai.ChoiceReason = "The model call itself failed.";
-                Stage("error", "The " + ai.Provider + " call failed (" + ai.Model + ").");
+                Stage("ai", "error",
+                    "The " + ai.Provider + " call failed (" + ai.Model + ").",
+                    (int)aiTimer.ElapsedMilliseconds);
+            }
+            else
+            {
+                // On a forced refresh the cached address is the one the caller is
+                // telling us is wrong, so it sorts last - it is still kept,
+                // because a wrong-looking address beats returning nothing at all.
+                // After that a direct address beats a guessed pattern, then the
+                // model's own confidence decides, and ties keep the order the
+                // model returned.
+                var ranked = aiSearch.Results
+                    .OfType<JObject>()
+                    .Select((item, index) => new
+                    {
+                        Email = item["email"]?.Value<string>()?.Trim(),
+                        Type = item["type"]?.Value<string>() ?? "",
+                        Confidence = item["confidence"]?.Value<int>() ?? 0,
+                        Index = index
+                    })
+                    .Where(item => !string.IsNullOrWhiteSpace(item.Email) &&
+                        System.Net.Mail.MailAddress.TryCreate(item.Email, out _))
+                    .OrderBy(item => rejectedEmail != null &&
+                        string.Equals(item.Email, rejectedEmail, StringComparison.OrdinalIgnoreCase))
+                    .ThenByDescending(item =>
+                        string.Equals(item.Type, "direct", StringComparison.OrdinalIgnoreCase))
+                    .ThenByDescending(item => item.Confidence)
+                    .ThenBy(item => item.Index)
+                    .ToList();
 
-                return UnlockEmailResult.Failed(
-                    request.ContactID,
-                    "Prospeo found no verified email and the AI fallback failed.");
+                var chosen = ranked.FirstOrDefault();
+
+                if (chosen == null || string.IsNullOrWhiteSpace(chosen.Email))
+                {
+                    ai.ChoiceReason = aiSearch.Results.Count == 0
+                        ? "The model returned no candidates."
+                        : "The model returned " + aiSearch.Results.Count +
+                            " candidate(s), none of them a valid address.";
+                    Stage("ai", "miss", ai.ChoiceReason, (int)aiTimer.ElapsedMilliseconds);
+                }
+                else
+                {
+                    aiEmail = chosen.Email;
+                    aiConfidence = chosen.Confidence;
+
+                    ai.ChosenEmail = aiEmail;
+                    ai.ChoiceReason = "Picked from " + ranked.Count +
+                        " valid candidate(s): type '" + chosen.Type +
+                        "', confidence " + aiConfidence + ".";
+                    Stage("ai", "hit", ai.ChoiceReason, (int)aiTimer.ElapsedMilliseconds);
+                }
             }
 
-            // A direct address beats a guessed pattern; after that the model's own
-            // confidence decides, and ties keep the order the model returned.
-            var ranked = aiSearch.Results
-                .OfType<JObject>()
-                .Select((item, index) => new
+            // ------------------------------------------------------ mode 4: Hunter
+            var threshold = _hunterService.ConfidenceThreshold;
+            string? hunterEmail = null;
+            var hunterScore = 0;
+            UnlockHunterDiagnostics? hunterDiagnostics = null;
+
+            if (aiEmail != null && aiConfidence >= threshold)
+            {
+                Stage("hunter", "skipped",
+                    "The model was " + aiConfidence + "% confident, at or above the " +
+                    threshold + "% threshold, so Hunter was not called.",
+                    0);
+            }
+            else
+            {
+                var triggerReason = aiEmail == null
+                    ? "The AI stage produced no usable address."
+                    : "The model was only " + aiConfidence + "% confident, below the " +
+                      threshold + "% threshold.";
+
+                var lookup = await _hunterService.FindEmailAsync(new HunterLookupRequest
                 {
-                    Email = item["email"]?.Value<string>()?.Trim(),
-                    Type = item["type"]?.Value<string>() ?? "",
-                    Confidence = item["confidence"]?.Value<int>() ?? 0,
-                    Index = index
-                })
-                .Where(item => !string.IsNullOrWhiteSpace(item.Email) &&
-                    System.Net.Mail.MailAddress.TryCreate(item.Email, out _))
-                .OrderByDescending(item =>
-                    string.Equals(item.Type, "direct", StringComparison.OrdinalIgnoreCase))
-                .ThenByDescending(item => item.Confidence)
-                .ThenBy(item => item.Index)
-                .ToList();
+                    FullName = request.Name,
 
-            var chosen = ranked.FirstOrDefault();
-            var email = chosen?.Email;
+                    // The AI search is what actually researched this person, so
+                    // its website is the domain to trust. What the extension
+                    // scraped comes last: on a profile with no website on the
+                    // page it is the company's LinkedIn URL, and Hunter cannot
+                    // find anybody at linkedin.com.
+                    AiWebsite = aiSearch.Company?.Website,
 
+                    // A low-confidence guess is still usually right about the
+                    // employer, so its domain stands in when the model reported
+                    // no website.
+                    EmailHint = aiEmail,
+                    Domain = request.Domain,
+                    CompanyUrl = request.CompanyUrl,
+                    Company = request.CompanyName
+                });
+
+                hunterDiagnostics = new UnlockHunterDiagnostics
+                {
+                    ApiKeyConfigured = lookup.ApiKeyConfigured,
+                    Endpoint = lookup.Endpoint,
+                    RequestUrl = lookup.RequestUrl,
+                    HttpStatus = lookup.HttpStatus,
+                    RawResponse = lookup.RawResponse,
+                    TriggeredAtConfidence = aiConfidence,
+                    ConfidenceThreshold = threshold,
+                    TriggerReason = triggerReason,
+                    Email = lookup.Email,
+                    Score = lookup.Score,
+                    VerificationStatus = lookup.VerificationStatus,
+                    Domain = lookup.Domain,
+                    DomainSource = lookup.DomainSource,
+                    Position = lookup.Position,
+                    SourceCount = lookup.SourceCount,
+                    RejectedBecause = lookup.RejectedBecause
+                };
+                diagnostics.Hunter = hunterDiagnostics;
+
+                if (lookup.Found)
+                {
+                    hunterEmail = lookup.Email;
+                    hunterScore = lookup.Score;
+                }
+
+                // "skipped" is for the stage never reaching Hunter at all - no key,
+                // or nothing to search with. Once a request went out, an answer
+                // without an address is a miss and a bad response is an error.
+                // An address Hunter scores below the threshold is a miss too: it
+                // is kept for the trace but cannot be served on its own.
+                var outcome =
+                    lookup.Found && lookup.Score >= threshold ? "hit"
+                    : lookup.Found ? "miss"
+                    : !lookup.ApiKeyConfigured ? "skipped"
+                    : string.IsNullOrEmpty(lookup.RequestUrl) ? "skipped"
+                    : lookup.HttpStatus is >= 200 and < 300 ? "miss"
+                    : "error";
+
+                Stage("hunter", outcome,
+                    triggerReason + " " +
+                    (!lookup.Found
+                        ? lookup.RejectedBecause ?? "Hunter returned nothing usable."
+                        : lookup.Score >= threshold
+                            ? "Hunter returned " + hunterEmail + " with a score of " +
+                              hunterScore + "."
+                            : "Hunter returned " + hunterEmail + " but scored it " +
+                              hunterScore + "%, below the " + threshold +
+                              "% threshold, so it cannot be served on its own."),
+                    lookup.ElapsedMs);
+            }
+
+            // Hunter's score and the model's confidence are both 0-100 statements
+            // about the same address, so the higher one wins. A tie keeps the AI
+            // answer, which already survived the ranking above.
+            var preferHunter = hunterEmail != null &&
+                (aiEmail == null || hunterScore > aiConfidence);
+
+            // A forced refresh means the caller has called one address wrong.
+            // Whichever stage repeats it loses to a stage offering something else.
+            if (rejectedEmail != null && aiEmail != null && hunterEmail != null)
+            {
+                var aiRepeats = SameAddress(aiEmail, rejectedEmail);
+                var hunterRepeats = SameAddress(hunterEmail, rejectedEmail);
+
+                if (aiRepeats != hunterRepeats)
+                    preferHunter = aiRepeats;
+            }
+
+            var email = preferHunter ? hunterEmail : aiEmail;
+
+            if (hunterDiagnostics != null)
+            {
+                hunterDiagnostics.Preferred = preferHunter;
+                hunterDiagnostics.ComparisonReason =
+                    hunterEmail == null && aiEmail == null
+                        ? "Neither stage produced an address."
+                    : hunterEmail == null
+                        ? "Hunter had nothing to compare, so the model's answer stands."
+                    : aiEmail == null
+                        ? "The model had no candidate, so Hunter's answer is the only one."
+                    : preferHunter
+                        ? "Hunter scored " + hunterScore + " against the model's " +
+                          aiConfidence + ", so Hunter's address was used."
+                        : "The model's " + aiConfidence + " was not beaten by Hunter's " +
+                          hunterScore + ", so the model's address was used.";
+            }
+
+            // Neither stage vouching for its answer at the threshold is treated
+            // as no answer. An address nobody is confident in would still be
+            // billed, cached for 30 days and emailed, so it is worse than
+            // reporting nothing found - the same bar Hunter was called to clear.
+            var chosenConfidence = preferHunter ? hunterScore : aiConfidence;
+            var belowThreshold = email != null && chosenConfidence < threshold;
+
+            if (belowThreshold)
+            {
+                Stage("confidence", "miss",
+                    "The best address found was " + email + " at " + chosenConfidence +
+                    "%, below the " + threshold + "% threshold, so it was discarded and " +
+                    "no credit was deducted.",
+                    0);
+
+                if (hunterDiagnostics != null)
+                {
+                    hunterDiagnostics.Preferred = false;
+                    hunterDiagnostics.ComparisonReason +=
+                        " Neither answer reached " + threshold +
+                        "%, so no address was served.";
+                }
+
+                email = null;
+            }
+
+            // Nothing to return means every stage that ran came back empty or
+            // came back under the threshold. Hunter always runs when the AI
+            // stage does not clear it.
             if (string.IsNullOrWhiteSpace(email))
             {
-                ai.ChoiceReason = aiSearch.Results.Count == 0
-                    ? "The model returned no candidates."
-                    : "The model returned " + aiSearch.Results.Count +
-                        " candidate(s), none of them a valid address.";
-                Stage("miss", ai.ChoiceReason);
+                await ForgetRejectedCacheEntryAsync(request, rejectedEmail, diagnostics);
+
+                diagnostics.Mode = "none";
+                diagnostics.ModeReason = belowThreshold
+                    ? "Neither the AI search nor Hunter reached " + threshold +
+                      "% confidence, so no address was served."
+                    : "Prospeo, the AI fallback and Hunter all came back empty.";
 
                 return UnlockEmailResult.Failed(
                     request.ContactID,
-                    "No email address was found by Prospeo or the AI fallback. No credit was deducted.");
+                    belowThreshold
+                        ? "No email found. Nothing reached the " + threshold +
+                          "% confidence required, so no credit was deducted."
+                        : "No email address was found by Prospeo, the AI fallback or Hunter. No credit was deducted.");
             }
 
-            ai.ChosenEmail = email;
-            ai.ChoiceReason = "Picked from " + ranked.Count + " valid candidate(s): type '" +
-                chosen.Type + "', confidence " + chosen.Confidence + ".";
-            Stage("hit", ai.ChoiceReason);
+            var repeatedRejected = SameAddress(email, rejectedEmail);
+
+            if (repeatedRejected && !preferHunter)
+            {
+                ai.ChoiceReason += " This is the same address the cache held; the fresh lookup found nothing else.";
+            }
+
+            // Hunter winning makes this a mode 4 unlock, and the caller cannot
+            // know that - it only knows it handed control to the AI fallback.
+            if (preferHunter)
+            {
+                diagnostics.Mode = "hunter";
+                diagnostics.ModeReason =
+                    "The model was not confident enough, so Hunter was asked and its " +
+                    "address scored higher.";
+            }
 
             var completed = await _extensionRepository.CompleteProspeoUnlockAsync(
                 request.ContactID,
@@ -717,22 +1053,74 @@ namespace PitchGenApi.Controllers
                 request.LinkedInUrl,
                 email);
 
-            return completed
-                ? UnlockEmailResult.Succeeded(
+            if (!completed)
+            {
+                return UnlockEmailResult.Failed(
                     request.ContactID,
-                    email,
-                    "Email found by AI fallback, unlock history saved and one credit deducted.",
-                    "ai")
-                : UnlockEmailResult.Failed(
-                    request.ContactID,
-                    "Email was found by AI, but unlock could not complete because credit was unavailable.");
+                    "Email was found, but unlock could not complete because credit was unavailable.");
+            }
+
+            var foundBy = preferHunter ? "Hunter" : "AI fallback";
+
+            return UnlockEmailResult.Succeeded(
+                request.ContactID,
+                email,
+                repeatedRejected
+                    ? "The fresh lookup returned the same address that was cached, and one credit was deducted."
+                    : "Email found by " + foundBy + ", unlock history saved and one credit deducted.",
+                preferHunter ? "hunter" : "ai");
+        }
+
+        /// <summary>Two addresses being the same one, case aside.</summary>
+        private static bool SameAddress(string? left, string? right) =>
+            !string.IsNullOrWhiteSpace(left) &&
+            !string.IsNullOrWhiteSpace(right) &&
+            string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+        /// <summary>
+        /// A forced refresh that found nothing leaves the cache holding the very
+        /// address the caller called wrong, and the next plain unlock would serve
+        /// it straight back. Blank it instead - the unlock row stays for the
+        /// history, only the address goes.
+        /// </summary>
+        private async Task ForgetRejectedCacheEntryAsync(
+            ProspeoUnlockRequestDto request,
+            string? rejectedEmail,
+            UnlockDiagnostics diagnostics)
+        {
+            if (string.IsNullOrWhiteSpace(rejectedEmail))
+                return;
+
+            var cleared = await _extensionRepository.ClearProspeoUnlockedEmailAsync(
+                request.LinkedInUrl,
+                rejectedEmail);
+
+            diagnostics.Stages.Add(new UnlockStageDiagnostics
+            {
+                Name = "cache",
+                Outcome = cleared ? "cleared" : "skipped",
+                Detail = cleared
+                    ? "The fresh lookup found nothing, so the rejected address '" +
+                      rejectedEmail + "' was dropped from the cache."
+                    : "The rejected address was no longer in the cache.",
+                ElapsedMs = 0
+            });
         }
 
         private sealed record AiEmailSearchOutcome(
             PitchResult SearchResult,
             string ModelName,
             string FinalPrompt,
-            JArray Results);
+            JArray Results,
+            AiCompanyDetails? Company);
+
+        /// <summary>
+        /// The employer facts the email instruction asks for alongside the
+        /// addresses. Each is null when the model could not source it.
+        /// </summary>
+        private sealed record AiCompanyDetails(
+            string? Website,
+            string? Industry,
+            string? Size);
 
         private static bool IsDeepSeekModel(string? modelName)
             => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
@@ -744,9 +1132,50 @@ namespace PitchGenApi.Controllers
         /// cannot be parsed — the raw text is always returned alongside.
         /// </summary>
         private static JArray ParseFindEmailResults(string content)
+            => ExtractJsonObject(content)?["results"] as JArray ?? new JArray();
+
+        /// <summary>
+        /// The "company" block the same instruction asks for: the employer's
+        /// website, industry and headcount band. Every field is null when the
+        /// model could not source it, and the whole thing is null when the reply
+        /// carried no company block at all.
+        /// </summary>
+        private static AiCompanyDetails? ParseFindEmailCompany(string content)
+        {
+            if (ExtractJsonObject(content)?["company"] is not JObject company)
+                return null;
+
+            return new AiCompanyDetails(
+                Value(company["website"]),
+                Value(company["industry"]),
+                Value(company["size"]));
+
+            // A model that has nothing to report writes JSON null, but "null"
+            // and "Not provided" as strings both turn up too.
+            static string? Value(JToken? token)
+            {
+                var text = token?.Type == JTokenType.Null
+                    ? null
+                    : token?.Value<string>()?.Trim();
+
+                return string.IsNullOrWhiteSpace(text) ||
+                       text.Equals("null", StringComparison.OrdinalIgnoreCase) ||
+                       text.Equals(FindEmailPrompt.MissingValue, StringComparison.OrdinalIgnoreCase)
+                    ? null
+                    : text;
+            }
+        }
+
+        /// <summary>
+        /// Pulls the JSON object out of a model reply, whether it arrived bare,
+        /// inside a ```json fence, or surrounded by a sentence of prose. Returns
+        /// null when there is nothing parseable — the raw text is always
+        /// returned to the caller alongside.
+        /// </summary>
+        private static JObject? ExtractJsonObject(string content)
         {
             if (string.IsNullOrWhiteSpace(content))
-                return new JArray();
+                return null;
 
             var text = content.Trim();
 
@@ -770,19 +1199,18 @@ namespace PitchGenApi.Controllers
                 int start = text.IndexOf('{');
                 int end = text.LastIndexOf('}');
                 if (start < 0 || end <= start)
-                    return new JArray();
+                    return null;
 
                 text = text[start..(end + 1)];
             }
 
             try
             {
-                var parsed = JsonConvert.DeserializeObject<JObject>(text);
-                return parsed?["results"] as JArray ?? new JArray();
+                return JsonConvert.DeserializeObject<JObject>(text);
             }
             catch (JsonException)
             {
-                return new JArray();
+                return null;
             }
         }
 

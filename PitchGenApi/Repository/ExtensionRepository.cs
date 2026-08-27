@@ -1,4 +1,4 @@
-﻿using DnsClient;
+using DnsClient;
 using Microsoft.EntityFrameworkCore;
 using MailKit.Security;
 using MailKit.Net.Imap;
@@ -734,7 +734,37 @@ namespace PitchGenApi.Repository
             });
         }
 
-        
+        /// <summary>
+        /// Drops the address off the cached unlock for this profile, leaving the
+        /// row itself in place so the unlock history and its credit are still on
+        /// record. Called when a forced refresh found nothing: without it the
+        /// next plain unlock would hand back the very address the caller had
+        /// just rejected.
+        /// </summary>
+        public async Task<bool> ClearProspeoUnlockedEmailAsync(string linkedInUrl, string email)
+        {
+            if (string.IsNullOrWhiteSpace(linkedInUrl) || string.IsNullOrWhiteSpace(email))
+                return false;
+
+            var canonicalUrl = NormalizeLinkedInUrl(linkedInUrl);
+            var withoutSlash = canonicalUrl.TrimEnd('/');
+            var rejected = email.Trim();
+
+            var rows = await _context.UnlockedContacts
+                .Where(x => (x.LinkedInUrl == canonicalUrl || x.LinkedInUrl == withoutSlash) &&
+                            x.EmailId == rejected)
+                .ToListAsync();
+
+            if (rows.Count == 0)
+                return false;
+
+            foreach (var row in rows)
+                row.EmailId = string.Empty;
+
+            await _context.SaveChangesAsync();
+            return true;
+        }
+
         //------------------------------------------------------------------------Private Mathods---------------------------------------------------------------------------------
 
         private static string NormalizeLinkedInUrl(string value)

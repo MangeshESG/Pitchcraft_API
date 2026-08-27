@@ -1,4 +1,4 @@
-﻿namespace PitchGenApi.Model.DTOs
+namespace PitchGenApi.Model.DTOs
 {
     public class UnlockEmailResult
     {
@@ -14,6 +14,19 @@
         /// output, so it must never reach a normal client.
         /// </summary>
         public UnlockDiagnostics? Diagnostics { get; set; }
+
+        /// <summary>
+        /// True when this answer came out of the 30-day cache, so the extension
+        /// should offer the "look it up again from other sources" checkbox. False
+        /// once Prospeo or the AI fallback has actually been asked.
+        /// </summary>
+        public bool CanRetryFromOtherSources { get; set; }
+
+        /// <summary>
+        /// The address the cache held before this unlock. Set only on a forced
+        /// refresh, so the extension can show what the fresh lookup replaced.
+        /// </summary>
+        public string? PreviousEmail { get; set; }
 
         public static UnlockEmailResult Succeeded(
             string? contactId,

@@ -248,6 +248,16 @@ Check whether the address may be historical or inactive.
 Prefer current professional addresses over old addresses.
 If the current company does not expose a direct address, an older verified professional address may still be included but must have lower confidence.
 Do not use leaked, hacked, stolen, breached, private, or improperly obtained datasets.
+COMPANY DETAILS
+While researching the person, also capture three facts about the company they currently work for.
+Use the same sources listed above. The company website, the company LinkedIn page, the About page and public business registries are usually enough.
+Website: the official homepage of the company, as a full URL. Not a LinkedIn page, not a careers portal, not a job board listing, not a parent company unless the person works for the parent.
+Industry: the primary industry in a few words, for example "Commercial Real Estate", "SaaS - Marketing Automation", "Renewable Energy". Prefer the wording the company itself or its LinkedIn page uses.
+Size: the current employee headcount as one of these bands exactly: "1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10001+". Use the band the LinkedIn company page shows when it is available.
+Return null for any of the three you cannot support with a source.
+Do not guess a size band from the company's age, funding, revenue or office count, and do not infer an industry from the person's job title alone.
+These three facts describe the company, not any one address: report them once, not per email.
+They are not part of the email confidence score and must never raise or lower it.
 CONFIDENCE SCALE
 95-100
 Directly published by an official or highly authoritative source, ideally independently corroborated.
@@ -263,9 +273,15 @@ FINAL OUTPUT
 Research as deeply as necessary, but return ONLY concise valid JSON.
 Maximum 3 email addresses.
 Maximum 4 strongest sources per email.
+Always include the "company" object, even when all three of its values are null.
 Do not output methodology, search queries, explanations, company history, or lengthy reasoning.
 Use exactly this structure:
 {
+"company": {
+"website": "https://company.com",
+"industry": "Commercial Real Estate",
+"size": "51-200"
+},
 "results": [
 {
 "email": "name@company.com",
@@ -299,6 +315,8 @@ Include only the strongest plausible results.
 Exclude speculative emails below 50 confidence unless no stronger result exists.
 If no direct email reaches 70 confidence, return the best available result honestly rather than forcing certainty.
 General company inboxes may be included as fallback results but must use "type": "general_company".
+Fill "company" with the website, industry and size you found, and null for anything you could not source. Never drop the object itself.
+A company detail you cannot find is never a reason to withhold an email address, and an email address you cannot find is never a reason to withhold the company details.
 Keep the final JSON extremely concise.
 """;
 

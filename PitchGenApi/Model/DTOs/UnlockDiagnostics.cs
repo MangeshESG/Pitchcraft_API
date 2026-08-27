@@ -9,7 +9,10 @@ namespace PitchGenApi.Model.DTOs
     /// </summary>
     public sealed class UnlockDiagnostics
     {
-        /// <summary>"cache", "prospeo" or "ai" - the mode that produced the email.</summary>
+        /// <summary>
+        /// "cache", "prospeo", "ai" or "hunter" - the mode that produced the
+        /// email.
+        /// </summary>
         public string Mode { get; set; } = "";
 
         /// <summary>Plain-language reason this mode was the one that ran.</summary>
@@ -22,12 +25,18 @@ namespace PitchGenApi.Model.DTOs
 
         public UnlockAiDiagnostics? Ai { get; set; }
 
+        /// <summary>
+        /// Set only when the AI stage was not confident enough and Hunter was
+        /// asked as well. Null on every unlock that never reached it.
+        /// </summary>
+        public UnlockHunterDiagnostics? Hunter { get; set; }
+
         public int ElapsedMs { get; set; }
     }
 
     public sealed class UnlockStageDiagnostics
     {
-        /// <summary>"cache", "prospeo" or "ai".</summary>
+        /// <summary>"cache", "prospeo", "ai" or "hunter".</summary>
         public string Name { get; set; } = "";
 
         /// <summary>"hit", "miss", "skipped" or "error".</summary>
@@ -80,6 +89,13 @@ namespace PitchGenApi.Model.DTOs
         /// </summary>
         public JsonNode? Results { get; set; }
 
+        /// <summary>
+        /// The employer facts the instruction asks for alongside the addresses.
+        /// Null when the reply carried no company block; individual fields are
+        /// null when the model could not source them.
+        /// </summary>
+        public UnlockAiCompany? Company { get; set; }
+
         /// <summary>Which candidate was picked, and why it beat the others.</summary>
         public string? ChosenEmail { get; set; }
 
@@ -88,6 +104,77 @@ namespace PitchGenApi.Model.DTOs
         public bool IsSuccess { get; set; }
 
         public UnlockAiUsage? Usage { get; set; }
+    }
+
+    /// <summary>
+    /// The employer behind the address, as reported by the email search. Shown
+    /// in the extension and saved with the contact.
+    /// </summary>
+    public sealed class UnlockAiCompany
+    {
+        public string? Website { get; set; }
+
+        public string? Industry { get; set; }
+
+        /// <summary>A headcount band, e.g. "501-1000".</summary>
+        public string? Size { get; set; }
+    }
+
+    /// <summary>
+    /// The Hunter.io stage: why it ran, what it was asked, and whether its
+    /// answer beat the model's.
+    /// </summary>
+    public sealed class UnlockHunterDiagnostics
+    {
+        public bool ApiKeyConfigured { get; set; }
+
+        public string Endpoint { get; set; } = "";
+
+        /// <summary>The request URL, with the API key stripped out.</summary>
+        public string RequestUrl { get; set; } = "";
+
+        public int? HttpStatus { get; set; }
+
+        /// <summary>The verbatim Hunter response body.</summary>
+        public string? RawResponse { get; set; }
+
+        /// <summary>The AI confidence that fell short and triggered this stage.</summary>
+        public int TriggeredAtConfidence { get; set; }
+
+        /// <summary>The threshold the AI confidence was measured against.</summary>
+        public int ConfidenceThreshold { get; set; }
+
+        /// <summary>Why this stage ran at all.</summary>
+        public string TriggerReason { get; set; } = "";
+
+        public string? Email { get; set; }
+
+        /// <summary>Hunter's 0-100 score, comparable to the AI confidence.</summary>
+        public int Score { get; set; }
+
+        public string? VerificationStatus { get; set; }
+
+        public string? Domain { get; set; }
+
+        /// <summary>
+        /// Which input that domain came from. A lookup that searched the wrong
+        /// company is indistinguishable from one that searched the right company
+        /// and found nobody, unless this is recorded.
+        /// </summary>
+        public string? DomainSource { get; set; }
+
+        public string? Position { get; set; }
+
+        public int SourceCount { get; set; }
+
+        /// <summary>Why Hunter's answer was unusable, when it was.</summary>
+        public string? RejectedBecause { get; set; }
+
+        /// <summary>True when the address returned to the caller came from Hunter.</summary>
+        public bool Preferred { get; set; }
+
+        /// <summary>Which of the two answers won, and why.</summary>
+        public string? ComparisonReason { get; set; }
     }
 
     public sealed class UnlockAiUsage

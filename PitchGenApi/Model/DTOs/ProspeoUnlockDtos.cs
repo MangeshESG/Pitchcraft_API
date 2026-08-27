@@ -13,6 +13,15 @@ namespace PitchGenApi.Model.DTOs
         public string? ContactID { get; set; }
         public int ClientID { get; set; }
         public string LinkedInUrl { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Set by the extension's "look it up again from other sources" checkbox.
+        /// The 30-day cache sometimes holds a wrong address, so this skips the
+        /// cache read and goes straight to Prospeo and then the AI fallback. The
+        /// address that comes back replaces the cached one.
+        /// </summary>
+        [JsonPropertyName("forceRefresh")]
+        public bool ForceRefresh { get; set; }
     }
 
     public sealed class ProspeoEnrichResponseDto

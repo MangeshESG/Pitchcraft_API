@@ -205,6 +205,14 @@ builder.Services.AddScoped<ISecuritySettingsService, SecuritySettingsService>();
 // Per-contact personalization inputs shared by email and LinkedIn generation
 builder.Services.AddScoped<IContactPromptContextService, ContactPromptContextService>();
 
+// Hunter.io, the stage after the AI email search. Its own timeout sits just
+// above the max_duration the service asks Hunter for, so a slow lookup ends as
+// a skipped stage rather than holding the unlock open.
+builder.Services.AddHttpClient<IHunterEmailService, HunterEmailService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(20);
+});
+
 builder.Services.Configure<DeepSeekSettings>(
     builder.Configuration.GetSection("DeepSeekSettings"));
 

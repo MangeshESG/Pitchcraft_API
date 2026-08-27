@@ -33,5 +33,6 @@ namespace PitchGenApi.Interfaces
             int clientId,
             string linkedInUrl,
             string email);
+        Task<bool> ClearProspeoUnlockedEmailAsync(string linkedInUrl, string email);
     }
 }
