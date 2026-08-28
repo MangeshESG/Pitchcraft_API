@@ -22,6 +22,7 @@ namespace PitchGenApi.Controllers
         private readonly IPitchService _pitchService;
         private readonly DeepSeekPitchService _deepSeekService;
         private readonly IAiModelSettingsService _aiModelSettings;
+        private readonly IPromptSettingsService _promptSettings;
         private readonly IHunterEmailService _hunterService;
 
         public ExtensionController(
@@ -33,6 +34,7 @@ namespace PitchGenApi.Controllers
             IPitchService pitchService,
             DeepSeekPitchService deepSeekService,
             IAiModelSettingsService aiModelSettings,
+            IPromptSettingsService promptSettings,
             IHunterEmailService hunterService)
         {
             _extensionRepository = extensionRepository;
@@ -43,6 +45,7 @@ namespace PitchGenApi.Controllers
             _pitchService = pitchService;
             _deepSeekService = deepSeekService;
             _aiModelSettings = aiModelSettings;
+            _promptSettings = promptSettings;
             _hunterService = hunterService;
         }
 
@@ -689,7 +692,28 @@ namespace PitchGenApi.Controllers
             FindEmailAiRequestDto request,
             int billingClientId)
         {
+            // The instruction lives only in app_prompt_settings (Settings >
+            // Admin > Prompts). Nothing is compiled in, so an unsaved prompt
+            // ends the search here rather than sending a blank instruction to
+            // the model and paying for the reply.
+            var template = await _promptSettings.GetPromptAsync(PromptKeys.FindEmail);
+
+            if (string.IsNullOrWhiteSpace(template))
+            {
+                return new AiEmailSearchOutcome(
+                    new PitchResult
+                    {
+                        IsSuccess = false,
+                        Content = "No email research prompt is configured. Add one in Settings > Admin > Prompts."
+                    },
+                    await _aiModelSettings.GetModelAsync(AiModelPurposes.FindEmail),
+                    "",
+                    new JArray(),
+                    null);
+            }
+
             var finalPrompt = FindEmailPrompt.Build(
+                template,
                 request.FullName,
                 request.JobTitle,
                 request.Company,
@@ -985,6 +1009,15 @@ namespace PitchGenApi.Controllers
                 return result;
             }
 
+            // Both carried on every answer this method produces, so the caller
+            // can say how sure the search was without knowing which stage won.
+            UnlockEmailResult WithConfidence(UnlockEmailResult result, int confidence)
+            {
+                result.Confidence = confidence;
+                result.ConfidenceThreshold = threshold;
+                return result;
+            }
+
             // Hunter's score and the model's confidence are both 0-100 statements
             // about the same address, so the higher one wins. A tie keeps the AI
             // answer, which already survived the ranking above.
@@ -1021,51 +1054,35 @@ namespace PitchGenApi.Controllers
                           hunterScore + ", so the model's address was used.";
             }
 
-            // Neither stage vouching for its answer at the threshold is treated
-            // as no answer. An address nobody is confident in would still be
-            // billed, cached for 30 days and emailed, so it is worse than
-            // reporting nothing found - the same bar Hunter was called to clear.
+            // How sure the winning stage is of its own answer, on the 0-100 scale
+            // both stages use. Reported to the caller rather than acted on: an
+            // address the search is only half sure of is still worth showing, as
+            // long as the person deciding what to do with it is told as much.
+            // The threshold still decides whether Hunter is asked at all.
             var chosenConfidence = preferHunter ? hunterScore : aiConfidence;
-            var belowThreshold = email != null && chosenConfidence < threshold;
 
-            if (belowThreshold)
+            if (email != null && chosenConfidence < threshold)
             {
                 Stage("confidence", "miss",
                     "The best address found was " + email + " at " + chosenConfidence +
-                    "%, below the " + threshold + "% threshold, so it was discarded and " +
-                    "no credit was deducted.",
+                    "%, below the " + threshold + "% mark, so it is returned with its " +
+                    "confidence shown rather than presented as confirmed.",
                     0);
-
-                if (hunterDiagnostics != null)
-                {
-                    hunterDiagnostics.Preferred = false;
-                    hunterDiagnostics.ComparisonReason +=
-                        " Neither answer reached " + threshold +
-                        "%, so no address was served.";
-                }
-
-                email = null;
             }
 
-            // Nothing to return means every stage that ran came back empty or
-            // came back under the threshold. Hunter always runs when the AI
-            // stage does not clear it.
+            // Nothing to return means every stage that ran came back empty.
+            // Hunter always runs when the AI stage does not clear the threshold.
             if (string.IsNullOrWhiteSpace(email))
             {
                 await ForgetRejectedCacheEntryAsync(request, rejectedEmail, diagnostics);
 
                 diagnostics.Mode = "none";
-                diagnostics.ModeReason = belowThreshold
-                    ? "Neither the AI search nor Hunter reached " + threshold +
-                      "% confidence, so no address was served."
-                    : "Prospeo, the AI fallback and Hunter all came back empty.";
+                diagnostics.ModeReason =
+                    "Prospeo, the AI fallback and Hunter all came back empty.";
 
                 return WithCompany(UnlockEmailResult.Failed(
                     request.ContactID,
-                    belowThreshold
-                        ? "No email found. Nothing reached the " + threshold +
-                          "% confidence required, so no credit was deducted."
-                        : "No email address was found by Prospeo, the AI fallback or Hunter. No credit was deducted."));
+                    "No email address was found by Prospeo, the AI fallback or Hunter. No credit was deducted."));
             }
 
             var repeatedRejected = SameAddress(email, rejectedEmail);
@@ -1093,20 +1110,22 @@ namespace PitchGenApi.Controllers
 
             if (!completed)
             {
-                return WithCompany(UnlockEmailResult.Failed(
+                return WithConfidence(WithCompany(UnlockEmailResult.Failed(
                     request.ContactID,
-                    "Email was found, but unlock could not complete because credit was unavailable."));
+                    "Email was found, but unlock could not complete because credit was unavailable.")),
+                    chosenConfidence);
             }
 
             var foundBy = preferHunter ? "Hunter" : "AI fallback";
 
-            return WithCompany(UnlockEmailResult.Succeeded(
+            return WithConfidence(WithCompany(UnlockEmailResult.Succeeded(
                 request.ContactID,
                 email,
                 repeatedRejected
                     ? "The fresh lookup returned the same address that was cached, and one credit was deducted."
                     : "Email found by " + foundBy + ", unlock history saved and one credit deducted.",
-                preferHunter ? "hunter" : "ai"));
+                preferHunter ? "hunter" : "ai")),
+                chosenConfidence);
         }
 
         /// <summary>Two addresses being the same one, case aside.</summary>

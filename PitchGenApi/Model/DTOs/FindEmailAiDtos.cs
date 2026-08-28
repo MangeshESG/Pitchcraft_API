@@ -27,7 +27,7 @@ namespace PitchGenApi.Model.DTOs
         public string? CompanyUrl { get; set; }
 
         // The research instruction is deliberately NOT part of this payload —
-        // it is fixed in FindEmailPrompt so callers cannot change how the
-        // search is performed.
+        // it comes from the admin-editable prompt (app_prompt_settings, key
+        // find_email) so callers cannot change how the search is performed.
     }
 }

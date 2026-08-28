@@ -38,6 +38,22 @@ namespace PitchGenApi.Model.DTOs
         /// </summary>
         public UnlockCompanyDetails? Company { get; set; }
 
+        /// <summary>
+        /// How sure the search is of <see cref="Email"/>, 0-100, or null when the
+        /// answer came from somewhere that does not score itself: a verified
+        /// Prospeo lookup or the unlock cache.
+        ///
+        /// A low score no longer withholds the address - it is returned either
+        /// way and this is what lets the caller say so.
+        /// </summary>
+        public int? Confidence { get; set; }
+
+        /// <summary>
+        /// The score at or above which <see cref="Confidence"/> needs no comment.
+        /// Sent alongside it so the extension does not hardcode the same number.
+        /// </summary>
+        public int? ConfidenceThreshold { get; set; }
+
         public static UnlockEmailResult Succeeded(
             string? contactId,
             string email,

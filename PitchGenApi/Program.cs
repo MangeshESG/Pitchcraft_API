@@ -202,6 +202,10 @@ builder.Services.AddScoped<IAiModelSettingsService, AiModelSettingsService>();
 // (Settings > Security)
 builder.Services.AddScoped<ISecuritySettingsService, SecuritySettingsService>();
 
+// Admin-editable AI instructions, e.g. the extension's email research prompt
+// (Settings > Admin > Prompts)
+builder.Services.AddScoped<IPromptSettingsService, PromptSettingsService>();
+
 // Per-contact personalization inputs shared by email and LinkedIn generation
 builder.Services.AddScoped<IContactPromptContextService, ContactPromptContextService>();
 

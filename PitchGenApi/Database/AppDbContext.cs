@@ -78,6 +78,8 @@ namespace PitchGenApi.Database
         public DbSet<AiModelSetting> ai_model_settings { get; set; }
         // ✅ Admin-controlled security switches (Settings > Security)
         public DbSet<SecuritySetting> app_security_settings { get; set; }
+        // ✅ Admin-editable AI instructions (Settings > Admin > Prompts)
+        public DbSet<PromptSetting> app_prompt_settings { get; set; }
         // ✅ LinkedIn messages krafted per contact + the "Sent" checkbox state
         public DbSet<LinkedInMessage> LinkedInMessages { get; set; }
         public DbSet<OutgoingMailboxGroup> OutgoingMailboxGroups { get; set; }
@@ -97,6 +99,19 @@ namespace PitchGenApi.Database
 
                 // One row per purpose — the settings are application-wide.
                 entity.HasIndex(e => e.purpose_key).IsUnique();
+            });
+            modelBuilder.Entity<PromptSetting>(entity =>
+            {
+                entity.ToTable("app_prompt_settings");
+                entity.HasKey(e => e.id);
+                entity.Property(e => e.prompt_key).IsRequired().HasMaxLength(100);
+                // The instruction runs to thousands of characters — nvarchar(max).
+                entity.Property(e => e.prompt_text).IsRequired();
+                entity.Property(e => e.updated_by).HasMaxLength(200);
+                entity.Property(e => e.updated_at).HasDefaultValueSql("GETUTCDATE()");
+
+                // One row per prompt — the instructions are application-wide.
+                entity.HasIndex(e => e.prompt_key).IsUnique();
             });
             modelBuilder.Entity<SecuritySetting>(entity =>
             {
