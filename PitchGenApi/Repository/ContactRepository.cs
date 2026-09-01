@@ -810,7 +810,6 @@ public class ContactRepository
             .Where(x =>
                 x.ClientId == clientId &&
                 x.IsSuccess &&
-                !x.IsDeleted &&
                 (
                     x.ContactId == contactId ||
                     (hasContactEmail && x.ToEmail != null && x.ToEmail.ToLower() == contactEmail)
@@ -821,7 +820,6 @@ public class ContactRepository
             .AsNoTracking()
             .Where(x =>
                 x.ClientId == clientId &&
-                (x.IsDeleted == null || x.IsDeleted == false) &&
                 (
                     x.ContactId == contactId ||
                     (hasContactEmail && x.FromEmail != null && x.FromEmail.ToLower() == contactEmail) ||
@@ -833,7 +831,6 @@ public class ContactRepository
             .AsNoTracking()
             .Where(x =>
                 x.ClientId == clientId &&
-                !x.IsDeleted &&
                 (
                     x.Contactid == contactId ||
                     (hasContactEmail && x.FromEmail != null && x.FromEmail.ToLower() == contactEmail) ||
