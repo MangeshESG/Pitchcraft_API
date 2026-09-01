@@ -217,6 +217,21 @@ builder.Services.AddHttpClient<IHunterEmailService, HunterEmailService>(client =
     client.Timeout = TimeSpan.FromSeconds(20);
 });
 
+// Prospeo, the first stage of both the extension unlock and the Audience
+// Assurance email check.
+builder.Services.AddHttpClient<IProspeoEmailService, ProspeoEmailService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// Audience Assurance. A batch of 50 contacts with web search enabled routinely
+// runs for minutes, so this client's timeout is far longer than the others —
+// it is the background worker waiting, not a user.
+builder.Services.AddHttpClient<IContactValidationService, ContactValidationService>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(10);
+});
+
 builder.Services.Configure<DeepSeekSettings>(
     builder.Configuration.GetSection("DeepSeekSettings"));
 

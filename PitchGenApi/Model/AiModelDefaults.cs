@@ -42,6 +42,27 @@ namespace PitchGenApi.Model
         /// </summary>
         public const string ProfileSummaryModel = "gpt-5.6-luna";
 
+        /// <summary>
+        /// Model used to score contacts against a targeting brief. Needs the
+        /// live web to establish what a company actually does, so it defaults
+        /// to the same searching model as find-email.
+        /// </summary>
+        public const string ContactFitModel = "gpt-5.6-luna";
+
+        /// <summary>
+        /// Model used for the data integrity check. This check never searches —
+        /// it is pure logic over the supplied record — so the cheapest capable
+        /// model is the right default. That is what keeps it nearly free to run
+        /// over a whole database.
+        /// </summary>
+        public const string DataIntegrityModel = "deepseek-v4-flash";
+
+        /// <summary>
+        /// Model used to confirm a contact is still current. The most
+        /// search-heavy of the checks, so it needs live web access.
+        /// </summary>
+        public const string LiveContactModel = "gpt-5.6-luna";
+
         public static string ForPurpose(string purposeKey) =>
             purposeKey switch
             {
@@ -51,6 +72,9 @@ namespace PitchGenApi.Model
                 AiModelPurposes.ContactQA => ContactQAModel,
                 AiModelPurposes.FindEmail => FindEmailModel,
                 AiModelPurposes.ProfileSummary => ProfileSummaryModel,
+                AiModelPurposes.ContactFit => ContactFitModel,
+                AiModelPurposes.DataIntegrity => DataIntegrityModel,
+                AiModelPurposes.LiveContact => LiveContactModel,
                 _ => EmailGenerationModel
             };
 

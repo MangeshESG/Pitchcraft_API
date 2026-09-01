@@ -1431,8 +1431,25 @@ public class ContactRepository
             };
         }
     }
-    public async Task<bool> CreditDeduction(int clientId)
+    public Task<bool> CreditDeduction(int clientId) => CreditDeduction(clientId, 1);
+
+    /// <summary>
+    /// Deducts <paramref name="units"/> credits in one go.
+    ///
+    /// Most callers spend one credit per action, but a validation run is
+    /// priced per batch — one credit per ten contacts — so the amount has to
+    /// be variable. Deducting in a single call rather than looping keeps the
+    /// balance consistent: a loop that fails halfway would leave the client
+    /// charged for work that never ran.
+    ///
+    /// All-or-nothing. If the plan cannot cover the full amount, nothing is
+    /// deducted and the caller is told to stop rather than half-charged.
+    /// </summary>
+    public async Task<bool> CreditDeduction(int clientId, int units)
     {
+        if (units <= 0)
+            return true;
+
         var finalCredit = await _context.FinalUserCredit
             .FirstOrDefaultAsync(f => f.ClientId == clientId);
 
@@ -1442,8 +1459,8 @@ public class ContactRepository
         bool isDeducted = false;
 
         // Case 1: Use TotalCredit if available and monthly limit not reached
-        if ((finalCredit.TotalCredit ?? 0) > 0 &&
-            (finalCredit.LimitUsed ?? 0) < (finalCredit.MonthlyLimit ?? 0))
+        if ((finalCredit.TotalCredit ?? 0) >= units &&
+            (finalCredit.LimitUsed ?? 0) + units <= (finalCredit.MonthlyLimit ?? 0))
         {
             var activePlan = await _context.UserCredits
                 .Where(u =>
@@ -1452,38 +1469,38 @@ public class ContactRepository
                     u.Status.ToLower() == "active" &&
                     u.Plane != "Custom Credit" &&
                     u.Plane != "Internal" &&
-                    (u.Credits ?? 0) > 0)
+                    (u.Credits ?? 0) >= units)
                 .OrderByDescending(u => u.StartDate ?? u.CreatedAt)
                 .FirstOrDefaultAsync();
 
             if (activePlan == null)
                 return false;
 
-            finalCredit.TotalCredit -= 1;
-            finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + 1;
-            finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + 1;
+            finalCredit.TotalCredit -= units;
+            finalCredit.UsedCredit = (finalCredit.UsedCredit ?? 0) + units;
+            finalCredit.LimitUsed = (finalCredit.LimitUsed ?? 0) + units;
 
-            activePlan.Credits -= 1;
+            activePlan.Credits -= units;
             _context.UserCredits.Update(activePlan);
 
             isDeducted = true;
         }
         // Case 2: Use CustomLimit
-        else if ((finalCredit.CustomLimit ?? 0) > 0)
+        else if ((finalCredit.CustomLimit ?? 0) >= units)
         {
             var activePlan = await _context.UserCredits
                 .FirstOrDefaultAsync(u =>
                     u.ClientId == clientId &&
                     u.Status.ToLower() == "active" &&
                     (u.Plane == "Custom Credit" || u.Plane == "Internal") &&
-                    (u.Credits ?? 0) > 0);
+                    (u.Credits ?? 0) >= units);
 
             if (activePlan != null)
             {
-                finalCredit.CustomLimit -= 1;
-                finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + 1;
+                finalCredit.CustomLimit -= units;
+                finalCredit.CustomCreditUsed = (finalCredit.CustomCreditUsed ?? 0) + units;
 
-                activePlan.Credits -= 1;
+                activePlan.Credits -= units;
 
                 _context.UserCredits.Update(activePlan);
 
@@ -1493,6 +1510,72 @@ public class ContactRepository
 
         if (!isDeducted)
             return false;
+
+        finalCredit.UpdatedAt = DateTime.UtcNow;
+        _context.FinalUserCredit.Update(finalCredit);
+
+        await _context.SaveChangesAsync();
+        return true;
+    }
+
+    /// <summary>
+    /// Puts credits back after a run did less work than it was charged for —
+    /// a model that skips 12 of 50 contacts should not be paid for them.
+    ///
+    /// Mirrors <see cref="CreditDeduction(int, int)"/> in reverse, and is
+    /// deliberately best-effort: a refund that cannot be applied is logged by
+    /// the caller, never allowed to fail the job that earned it.
+    /// </summary>
+    public async Task<bool> CreditRefund(int clientId, int units)
+    {
+        if (units <= 0)
+            return true;
+
+        var finalCredit = await _context.FinalUserCredit
+            .FirstOrDefaultAsync(f => f.ClientId == clientId);
+
+        if (finalCredit == null)
+            return false;
+
+        // Refund to whichever bucket the deduction came out of. Custom credit
+        // is only ever used once the monthly allowance is exhausted, so a
+        // non-zero CustomCreditUsed is what marks that path.
+        bool usedCustom = (finalCredit.CustomCreditUsed ?? 0) >= units &&
+                          (finalCredit.UsedCredit ?? 0) < units;
+
+        var activePlan = usedCustom
+            ? await _context.UserCredits.FirstOrDefaultAsync(u =>
+                u.ClientId == clientId &&
+                u.Status != null &&
+                u.Status.ToLower() == "active" &&
+                (u.Plane == "Custom Credit" || u.Plane == "Internal"))
+            : await _context.UserCredits
+                .Where(u =>
+                    u.ClientId == clientId &&
+                    u.Status != null &&
+                    u.Status.ToLower() == "active" &&
+                    u.Plane != "Custom Credit" &&
+                    u.Plane != "Internal")
+                .OrderByDescending(u => u.StartDate ?? u.CreatedAt)
+                .FirstOrDefaultAsync();
+
+        if (activePlan == null)
+            return false;
+
+        if (usedCustom)
+        {
+            finalCredit.CustomLimit = (finalCredit.CustomLimit ?? 0) + units;
+            finalCredit.CustomCreditUsed = Math.Max(0, (finalCredit.CustomCreditUsed ?? 0) - units);
+        }
+        else
+        {
+            finalCredit.TotalCredit = (finalCredit.TotalCredit ?? 0) + units;
+            finalCredit.UsedCredit = Math.Max(0, (finalCredit.UsedCredit ?? 0) - units);
+            finalCredit.LimitUsed = Math.Max(0, (finalCredit.LimitUsed ?? 0) - units);
+        }
+
+        activePlan.Credits = (activePlan.Credits ?? 0) + units;
+        _context.UserCredits.Update(activePlan);
 
         finalCredit.UpdatedAt = DateTime.UtcNow;
         _context.FinalUserCredit.Update(finalCredit);

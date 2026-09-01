@@ -84,6 +84,14 @@ namespace PitchGenApi.Database
         public DbSet<LinkedInMessage> LinkedInMessages { get; set; }
         public DbSet<OutgoingMailboxGroup> OutgoingMailboxGroups { get; set; }
         public DbSet<OutgoingMailboxGroupMember> OutgoingMailboxGroupMembers { get; set; }
+
+        // ✅ Audience Assurance — the four validation checks run over contacts
+        public DbSet<ContactFitBrief> contact_fit_briefs { get; set; }
+        public DbSet<ContactValidation> contact_validations { get; set; }
+        public DbSet<ContactValidationJob> contact_validation_jobs { get; set; }
+        public DbSet<ContactValidationJobItem> contact_validation_job_items { get; set; }
+        public DbSet<CompanyIntelligence> company_intelligence { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");
@@ -230,6 +238,66 @@ namespace PitchGenApi.Database
                 entity.HasIndex(e => new { e.ClientId, e.ContactId, e.BodyHash })
                       .IsUnique()
                       .HasFilter("[direction] = 'inbound' AND [body_hash] IS NOT NULL");
+            });
+
+            // ✅ Audience Assurance. The tables were created by hand in SQL, as
+            // the rest of the schema since InitialCreate was — so this
+            // configuration is the only description of their shape in the
+            // codebase. Keep it in step with the database by hand.
+            modelBuilder.Entity<ContactFitBrief>(entity =>
+            {
+                entity.ToTable("contact_fit_briefs");
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.ClientId, e.Name }).IsUnique();
+
+                // At most one default per client, enforced in the database so a
+                // concurrent "set default" cannot leave two.
+                entity.HasIndex(e => e.ClientId)
+                      .IsUnique()
+                      .HasFilter("[is_default] = 1");
+            });
+
+            modelBuilder.Entity<ContactValidation>(entity =>
+            {
+                entity.ToTable("contact_validations");
+                entity.HasKey(e => e.Id);
+
+                // One row per contact — every write is an upsert on this key.
+                entity.HasIndex(e => new { e.ClientId, e.ContactId }).IsUnique();
+            });
+
+            modelBuilder.Entity<ContactValidationJob>(entity =>
+            {
+                entity.ToTable("contact_validation_jobs");
+                entity.HasKey(e => e.Id);
+                entity.Property(e => e.CalculatedCost).HasColumnType("decimal(18,6)");
+
+                // The cost log reads newest-first per client.
+                entity.HasIndex(e => new { e.ClientId, e.CreatedAt });
+
+                // The background runner claims work by status.
+                entity.HasIndex(e => e.Status);
+            });
+
+            modelBuilder.Entity<ContactValidationJobItem>(entity =>
+            {
+                entity.ToTable("contact_validation_job_items");
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.JobId, e.ContactId }).IsUnique();
+            });
+
+            modelBuilder.Entity<CompanyIntelligence>(entity =>
+            {
+                entity.ToTable("company_intelligence");
+                entity.HasKey(e => e.Id);
+
+                // Domain is the preferred lookup key; the filter keeps rows that
+                // only have a company name out of the unique constraint.
+                entity.HasIndex(e => new { e.ClientId, e.Domain })
+                      .IsUnique()
+                      .HasFilter("[domain] IS NOT NULL");
+
+                entity.HasIndex(e => new { e.ClientId, e.CompanyNameNormalised });
             });
 
             base.OnModelCreating(modelBuilder);

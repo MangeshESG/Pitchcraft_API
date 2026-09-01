@@ -187,6 +187,7 @@ namespace PitchGenApi.Services
                     PromptTokens = promptTokens,
                     CompletionTokens = completionTokens,
                     TotalTokens = totalTokens,
+                    CachedTokens = parsed["usage"]?["prompt_cache_hit_tokens"]?.Value<int>() ?? 0,
                     CurrentCost = currentCost,
                     IsSuccess = true
                 };
@@ -316,6 +317,11 @@ namespace PitchGenApi.Services
                     parsed["usage"]?["total_tokens"]?.Value<int>()
                     ?? promptTokens + completionTokens;
 
+                int cachedTokens =
+                    parsed["usage"]?["input_tokens_details"]?["cached_tokens"]?.Value<int>()
+                    ?? parsed["usage"]?["prompt_cache_hit_tokens"]?.Value<int>()
+                    ?? 0;
+
                 // DeepSeek bills web search as the extra model tokens it consumes,
                 // so there is no separate per-search charge to add here.
                 decimal currentCost =
@@ -333,6 +339,8 @@ namespace PitchGenApi.Services
                     PromptTokens = promptTokens,
                     CompletionTokens = completionTokens,
                     TotalTokens = totalTokens,
+                    CachedTokens = cachedTokens,
+                    WebSearchCalls = CountWebSearchCalls(parsed),
                     CurrentCost = currentCost,
                     IsSuccess = true
                 };
@@ -353,6 +361,25 @@ namespace PitchGenApi.Services
                     IsSuccess = false
                 };
             }
+        }
+
+        /// <summary>
+        /// How many server-side web searches the model actually ran, counted from
+        /// the Responses output items.
+        ///
+        /// This is the number that decides what a research request costs — search
+        /// is charged per call, and one request may make none or ten. Counting it
+        /// per response is the only way to attribute the bill afterwards.
+        /// </summary>
+        public static int CountWebSearchCalls(JObject parsed)
+        {
+            if (parsed["output"] is not JArray outputs) return 0;
+
+            return outputs.Count(item =>
+                string.Equals(
+                    item["type"]?.ToString(),
+                    WebSearchToolType + "_call",
+                    StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>

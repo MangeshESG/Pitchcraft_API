@@ -36,6 +36,122 @@ namespace PitchGenApi.Controllers
 
         }
 
+        // ===========================================================
+        // AUDIENCE ASSURANCE COLUMNS
+        //
+        // Every list view gets the validation scores as ordinary
+        // columns. The table generates its columns from the keys each
+        // row carries and flattens one level of nesting, so returning
+        // one nested object per contact is all it takes for the
+        // columns to appear — the same mechanism custom attributes
+        // already use.
+        //
+        // A contact with no validation row returns nulls, and the
+        // table drops a column no row has a value for, so these stay
+        // invisible until a check has actually been run.
+        // ===========================================================
+
+        /// <summary>
+        /// Validation rows for a page of contacts, keyed by contact id.
+        ///
+        /// Only for call sites holding a genuinely small, already-paginated
+        /// list. For an unbounded set — every contact in a list or a segment —
+        /// use the IQueryable overload instead, which never ships the ids.
+        /// </summary>
+        private async Task<Dictionary<int, ContactValidation>> LoadValidationsAsync(
+            int clientId,
+            List<int> contactIds)
+        {
+            if (contactIds.Count == 0)
+                return new Dictionary<int, ContactValidation>();
+
+            var rows = await _context.contact_validations
+                .AsNoTracking()
+                .Where(v => v.ClientId == clientId && contactIds.Contains(v.ContactId))
+                .ToListAsync();
+
+            return rows.ToDictionary(v => v.ContactId);
+        }
+
+        /// <summary>
+        /// Validation rows for whatever set of contacts a query describes.
+        ///
+        /// The list and segment views load every contact they hold rather than
+        /// a page, so passing their ids back to the server would mean shipping
+        /// tens of thousands of integers up the wire to ask about them. This
+        /// sends the *description* of the set instead — one set-based join
+        /// SQL Server resolves against the (client_id, contact_id) index —
+        /// so the cost grows with the number of validated contacts rather
+        /// than with the size of the list being viewed.
+        /// </summary>
+        private async Task<Dictionary<int, ContactValidation>> LoadValidationsAsync(
+            int clientId,
+            IQueryable<int> contactIdQuery)
+        {
+            var rows = await _context.contact_validations
+                .AsNoTracking()
+                .Where(v => v.ClientId == clientId && contactIdQuery.Contains(v.ContactId))
+                .ToListAsync();
+
+            return rows.ToDictionary(v => v.ContactId);
+        }
+
+        /// <summary>
+        /// The validation fields for one contact, in the shape the grid
+        /// flattens into columns. Null for a contact that has never been
+        /// checked, which keeps the columns off an unvalidated list.
+        /// </summary>
+        private static object? ValidationColumnsFor(
+            IReadOnlyDictionary<int, ContactValidation> validations,
+            int contactId)
+        {
+            if (!validations.TryGetValue(contactId, out var v))
+                return null;
+
+            // The grid shows the four scores in one "Checks" cell, so it needs a
+            // single column key to hang that cell on. `checks` carries how many
+            // checks have actually run: the renderer ignores the number and
+            // builds the chips from the individual scores, but the table drops
+            // any column no row has a value for, so a zero here is what keeps
+            // the column off a list nothing has been run against.
+            var checksRun =
+                (v.ContactFitConfidence.HasValue ? 1 : 0) +
+                (v.DataIntegrityConfidence.HasValue ? 1 : 0) +
+                (v.LiveContactConfidence.HasValue ? 1 : 0) +
+                (v.EmailValidityConfidence.HasValue ? 1 : 0);
+
+            // The most recent of the four, so one column can answer "is any of
+            // this still worth trusting?" without four date columns to read.
+            var lastChecked = new[]
+            {
+                v.ContactFitCheckedAt,
+                v.DataIntegrityCheckedAt,
+                v.LiveContactCheckedAt,
+                v.EmailCheckedAt
+            }.Where(date => date.HasValue).Max();
+
+            return new
+            {
+                checks = checksRun == 0 ? (int?)null : checksRun,
+                lastChecked,
+                contactFitConfidence = v.ContactFitConfidence,
+                contactFitComments = v.ContactFitComments,
+                contactFitCheckedAt = v.ContactFitCheckedAt,
+                dataIntegrityConfidence = v.DataIntegrityConfidence,
+                dataIntegrityComments = v.DataIntegrityComments,
+                dataIntegrityCheckedAt = v.DataIntegrityCheckedAt,
+                liveContactConfidence = v.LiveContactConfidence,
+                liveContactComments = v.LiveContactComments,
+                liveContactCheckedAt = v.LiveContactCheckedAt,
+                emailValidityConfidence = v.EmailValidityConfidence,
+                emailValidityComments = v.EmailValidityComments,
+                emailCheckedAt = v.EmailCheckedAt,
+                validationSources = v.SourcesJson,
+                isVerified = v.IsVerified,
+                verifiedAt = v.VerifiedAt
+            };
+        }
+
         [HttpPost("custom-field")]
         public async Task<IActionResult> CreateCustomField([FromBody] CreateCustomFieldDto dto)
         {
@@ -1327,6 +1443,14 @@ namespace PitchGenApi.Controllers
                             )
                     );
 
+                // Described as a query, not as the id list above: a data file
+                // can hold tens of thousands of contacts.
+                var validations = await LoadValidationsAsync(
+                    clientId,
+                    _context.contacts
+                        .Where(c => c.DataFileId == dataFileId)
+                        .Select(c => c.id));
+
                 var contacts = contactsRaw
                     .Select(c => new
                     {
@@ -1355,7 +1479,8 @@ namespace PitchGenApi.Controllers
                         unsubscribe = !string.IsNullOrWhiteSpace(c.email) && unsubscribedSet.Contains(c.email) ? "Yes" : "No",
                         customFields = customFieldsByContact.TryGetValue(c.id, out var fields)
                             ? fields
-                            : new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                            : new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase),
+                        validation = ValidationColumnsFor(validations, c.id)
                     })
                     .ToList();
 
@@ -2656,6 +2781,14 @@ namespace PitchGenApi.Controllers
                 }
 
 
+                // Described as a query rather than as an id list — a segment
+                // can hold tens of thousands of contacts.
+                var validations = await LoadValidationsAsync(
+                    clientId,
+                    _context.segmentContacts
+                        .Where(sc => sc.SegmentId == segmentId)
+                        .Select(sc => sc.ContactId));
+
                 // Step 5: unsubscribe flag add karo
                 var contacts = contactsRaw
                     .Select(c => new
@@ -2683,7 +2816,8 @@ namespace PitchGenApi.Controllers
                         hasLinkedInInfo = !string.IsNullOrEmpty(c.linkedIninformation),
 
                         hasNotes = notesSet.Contains(c.id),
-                        unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No"
+                        unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No",
+                        validation = ValidationColumnsFor(validations, c.id)
                     })
                     .ToList();
 
@@ -3110,6 +3244,10 @@ namespace PitchGenApi.Controllers
                         .ToListAsync())
                     : new HashSet<string>();
 
+                var validations = await LoadValidationsAsync(
+                    clientId,
+                    contactsRaw.Select(c => c.id).ToList());
+
                 var contacts = contactsRaw.Select(c => new
                 {
                     c.id,
@@ -3132,7 +3270,8 @@ namespace PitchGenApi.Controllers
                     c.CompanyLinkedInURL,
                     c.linkedIninformation,
                     c.web_search_data,
-                    unsubscribe = c.email != null && unsubscribedSet.Contains(c.email) ? "Yes" : "No"
+                    unsubscribe = c.email != null && unsubscribedSet.Contains(c.email) ? "Yes" : "No",
+                    validation = ValidationColumnsFor(validations, c.id)
                 }).ToList();
 
                 return Ok(new
@@ -3994,6 +4133,10 @@ namespace PitchGenApi.Controllers
                     });
                 }
 
+                // Only the page being returned, like the email bodies above —
+                // a saved view can match tens of thousands of contacts.
+                var pagedValidations = await LoadValidationsAsync(dto.ClientId, pagedIds);
+
                 var pagedContacts = pagedRaw.Select(p =>
                 {
                     dynamic d = p;
@@ -4033,7 +4176,8 @@ namespace PitchGenApi.Controllers
                         linkedIninformation = d.linkedIninformation,
                         hasNotes = d.hasNotes,
                         hasLinkedInInfo = d.hasLinkedInInfo,
-                        customFields = d.customFields
+                        customFields = d.customFields,
+                        validation = ValidationColumnsFor(pagedValidations, id)
                     };
                 }).ToList();
 

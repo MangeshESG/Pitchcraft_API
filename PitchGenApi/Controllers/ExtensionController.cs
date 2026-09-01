@@ -24,6 +24,7 @@ namespace PitchGenApi.Controllers
         private readonly IAiModelSettingsService _aiModelSettings;
         private readonly IPromptSettingsService _promptSettings;
         private readonly IHunterEmailService _hunterService;
+        private readonly IProspeoEmailService _prospeoService;
 
         public ExtensionController(
             IExtensionRepository extensionRepository,
@@ -35,7 +36,8 @@ namespace PitchGenApi.Controllers
             DeepSeekPitchService deepSeekService,
             IAiModelSettingsService aiModelSettings,
             IPromptSettingsService promptSettings,
-            IHunterEmailService hunterService)
+            IHunterEmailService hunterService,
+            IProspeoEmailService prospeoService)
         {
             _extensionRepository = extensionRepository;
             _extensionProfileService = extensionProfileService;
@@ -47,6 +49,7 @@ namespace PitchGenApi.Controllers
             _aiModelSettings = aiModelSettings;
             _promptSettings = promptSettings;
             _hunterService = hunterService;
+            _prospeoService = prospeoService;
         }
 
         [HttpPost("EX_prospeo-unlock")]
@@ -171,164 +174,88 @@ namespace PitchGenApi.Controllers
             }
 
             // ----------------------------------------------------- mode 2: Prospeo
-            var apiKey = _configuration["Prospeo:ApiKey"];
+            // The call itself lives in IProspeoEmailService, shared with the
+            // Audience Assurance email check. Everything around it — the cache,
+            // the credit and this trace — is specific to the unlock and stays
+            // here.
+            var lookup = await _prospeoService.FindEmailAsync(
+                request.LinkedInUrl,
+                cancellationToken);
+
             var prospeo = new UnlockProspeoDiagnostics
             {
-                ApiKeyConfigured = !string.IsNullOrWhiteSpace(apiKey),
-                Endpoint = "https://api.prospeo.io/enrich-person"
+                ApiKeyConfigured = lookup.ApiKeyConfigured,
+                Endpoint = lookup.Endpoint,
+                RequestBody = lookup.RequestBody ?? "",
+                HttpStatus = lookup.HttpStatus,
+                RawResponse = lookup.RawResponse,
+                Revealed = lookup.Revealed,
+                EmailStatus = lookup.EmailStatus,
+                RejectedBecause = lookup.RejectedBecause
             };
             diagnostics.Prospeo = prospeo;
 
-            if (string.IsNullOrWhiteSpace(apiKey))
+            if (!lookup.Found)
             {
-                prospeo.RejectedBecause = "No Prospeo:ApiKey is configured.";
-                Stage("prospeo", "skipped", prospeo.RejectedBecause, 0);
+                // "Never asked", "asked and it errored" and "asked and it had
+                // nothing" are three different things to whoever reads the
+                // trace, so they stay three different stage outcomes.
+                var outcome =
+                    !lookup.ApiKeyConfigured ? "skipped"
+                    : lookup.HttpStatus is null or >= 400 ? "error"
+                    : "miss";
+
+                var modeReason =
+                    !lookup.ApiKeyConfigured
+                        ? "Prospeo was skipped because no API key is configured, so the AI fallback ran."
+                    : outcome == "error"
+                        ? "The Prospeo call did not complete, so the AI fallback ran."
+                        : "Prospeo had no verified address, so the AI fallback ran.";
+
+                Stage("prospeo", outcome,
+                    lookup.RejectedBecause ?? "Prospeo returned no usable address.",
+                    lookup.ElapsedMs);
+
                 return Finish(
                     await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
                     "ai",
-                    "Prospeo was skipped because no API key is configured, so the AI fallback ran.");
+                    modeReason);
             }
 
-            var prospeoTimer = System.Diagnostics.Stopwatch.StartNew();
+            Stage("prospeo", "hit", "Prospeo returned a verified address.", lookup.ElapsedMs);
 
-            try
+            var email = lookup.Email!;
+
+            var completed = await _extensionRepository.CompleteProspeoUnlockAsync(
+                request.ContactID,
+                request.ClientID,
+                request.LinkedInUrl,
+                email);
+
+            if (!completed)
             {
-                var prospeoBody = new
-                {
-                    only_verified_email = true,
-                    enrich_mobile = false,
-                    data = new { linkedin_url = request.LinkedInUrl.Trim() }
-                };
-                prospeo.RequestBody = JsonConvert.SerializeObject(prospeoBody, Formatting.Indented);
-
-                using var httpRequest = new HttpRequestMessage(
-                    HttpMethod.Post,
-                    prospeo.Endpoint);
-                httpRequest.Headers.Add("X-KEY", apiKey);
-                httpRequest.Content = JsonContent.Create(prospeoBody);
-
-                var client = _httpClientFactory.CreateClient();
-                using var response = await client.SendAsync(httpRequest, cancellationToken);
-                prospeo.HttpStatus = (int)response.StatusCode;
-
-                // Read the body as text first so the raw payload survives into the
-                // trace even when it fails to deserialise.
-                var rawBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                prospeo.RawResponse = rawBody;
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    prospeo.RejectedBecause =
-                        $"Prospeo replied {(int)response.StatusCode} {response.StatusCode}.";
-                    prospeoTimer.Stop();
-                    Stage("prospeo", "error", prospeo.RejectedBecause,
-                        prospeoTimer.ElapsedMilliseconds);
-                    return Finish(
-                        await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
-                        "ai",
-                        "Prospeo returned an error status, so the AI fallback ran.");
-                }
-
-                ProspeoEnrichResponseDto? result = null;
-                try
-                {
-                    result = System.Text.Json.JsonSerializer
-                        .Deserialize<ProspeoEnrichResponseDto>(rawBody);
-                }
-                catch (System.Text.Json.JsonException ex)
-                {
-                    prospeo.RejectedBecause = "Prospeo returned unreadable JSON: " + ex.Message;
-                }
-
-                var emailResult = result?.Person?.Email;
-                var email = emailResult?.Email?.Trim();
-                prospeo.Revealed = emailResult?.Revealed;
-                prospeo.EmailStatus = emailResult?.Status;
-
-                if (prospeo.RejectedBecause == null)
-                {
-                    prospeo.RejectedBecause =
-                        result?.Error == true
-                            ? "Prospeo flagged the response as an error."
-                        : emailResult == null
-                            ? "Prospeo returned no email object for this profile."
-                        : !emailResult.Revealed
-                            ? "Prospeo did not reveal the address."
-                        : !string.Equals(emailResult.Status, "VERIFIED", StringComparison.OrdinalIgnoreCase)
-                            ? "Prospeo status was '" + emailResult.Status + "', not VERIFIED."
-                        : string.IsNullOrWhiteSpace(email)
-                            ? "Prospeo returned an empty address."
-                        : null;
-                }
-
-                if (prospeo.RejectedBecause != null)
-                {
-                    prospeoTimer.Stop();
-                    Stage("prospeo", "miss", prospeo.RejectedBecause,
-                        prospeoTimer.ElapsedMilliseconds);
-                    return Finish(
-                        await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
-                        "ai",
-                        "Prospeo had no verified address, so the AI fallback ran.");
-                }
-
-                prospeoTimer.Stop();
-                Stage("prospeo", "hit", "Prospeo returned a verified address.",
-                    prospeoTimer.ElapsedMilliseconds);
-
-                var completed = await _extensionRepository.CompleteProspeoUnlockAsync(
-                    request.ContactID,
-                    request.ClientID,
-                    request.LinkedInUrl,
-                    email);
-
-                if (!completed)
-                {
-                    return Finish(
-                        UnlockEmailResult.Failed(
-                            request.ContactID,
-                            "No unlock credit is available. Please buy credits to unlock this email."),
-                        "prospeo",
-                        "Prospeo found the address but the credit could not be deducted.");
-                }
-
-                var sameAsRejected = rejectedEmail != null &&
-                    string.Equals(email, rejectedEmail, StringComparison.OrdinalIgnoreCase);
-
                 return Finish(
-                    UnlockEmailResult.Succeeded(
+                    UnlockEmailResult.Failed(
                         request.ContactID,
-                        email,
-                        sameAsRejected
-                            ? "Prospeo re-verified the same address that was cached, and one credit was deducted."
-                            : "Verified email unlocked and one credit deducted."),
+                        "No unlock credit is available. Please buy credits to unlock this email."),
                     "prospeo",
+                    "Prospeo found the address but the credit could not be deducted.");
+            }
+
+            var sameAsRejected = rejectedEmail != null &&
+                string.Equals(email, rejectedEmail, StringComparison.OrdinalIgnoreCase);
+
+            return Finish(
+                UnlockEmailResult.Succeeded(
+                    request.ContactID,
+                    email,
                     sameAsRejected
-                        ? "Prospeo was asked again and returned the same verified address the cache held."
-                        : "Prospeo returned a verified address, so the AI fallback never ran.");
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                prospeoTimer.Stop();
-                prospeo.RejectedBecause = "The Prospeo call timed out.";
-                Stage("prospeo", "error", prospeo.RejectedBecause,
-                    prospeoTimer.ElapsedMilliseconds);
-                return Finish(
-                    await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
-                    "ai",
-                    "The Prospeo call timed out, so the AI fallback ran.");
-            }
-            catch (HttpRequestException ex)
-            {
-                prospeoTimer.Stop();
-                prospeo.RejectedBecause = "The Prospeo call failed: " + ex.Message;
-                Stage("prospeo", "error", prospeo.RejectedBecause,
-                    prospeoTimer.ElapsedMilliseconds);
-                return Finish(
-                    await CompleteAiFallbackUnlockAsync(request, diagnostics, rejectedEmail),
-                    "ai",
-                    "The Prospeo call could not be made, so the AI fallback ran.");
-            }
+                        ? "Prospeo re-verified the same address that was cached, and one credit was deducted."
+                        : "Verified email unlocked and one credit deducted."),
+                "prospeo",
+                sameAsRejected
+                    ? "Prospeo was asked again and returned the same verified address the cache held."
+                    : "Prospeo returned a verified address, so the AI fallback never ran.");
         }
 
         /// <summary>

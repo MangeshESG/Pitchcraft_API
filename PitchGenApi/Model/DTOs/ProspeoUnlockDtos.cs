@@ -24,6 +24,46 @@ namespace PitchGenApi.Model.DTOs
         public bool ForceRefresh { get; set; }
     }
 
+    /// <summary>
+    /// One Prospeo lookup, in the shape both the unlock flow and the Audience
+    /// Assurance email check read. Carries the raw exchange so a failed lookup
+    /// can be diagnosed from the admin trace without re-running it — and a
+    /// re-run costs a Prospeo credit.
+    /// </summary>
+    public sealed class ProspeoLookupResult
+    {
+        public bool ApiKeyConfigured { get; set; }
+
+        public string Endpoint { get; set; } = "https://api.prospeo.io/enrich-person";
+
+        /// <summary>The request body, for the admin trace.</summary>
+        public string? RequestBody { get; set; }
+
+        public int? HttpStatus { get; set; }
+
+        /// <summary>The verbatim Prospeo response body.</summary>
+        public string? RawResponse { get; set; }
+
+        public string? Email { get; set; }
+
+        /// <summary>Prospeo's own status, e.g. "VERIFIED".</summary>
+        public string? EmailStatus { get; set; }
+
+        /// <summary>Whether Prospeo actually revealed the address, as opposed to knowing of one.</summary>
+        public bool? Revealed { get; set; }
+
+        /// <summary>Why this lookup produced nothing usable, when it did not.</summary>
+        public string? RejectedBecause { get; set; }
+
+        public int ElapsedMs { get; set; }
+
+        /// <summary>True only when a verified address came back.</summary>
+        public bool Found => !string.IsNullOrWhiteSpace(Email);
+
+        public static ProspeoLookupResult Skipped(string reason) =>
+            new() { RejectedBecause = reason };
+    }
+
     public sealed class ProspeoEnrichResponseDto
     {
         [JsonPropertyName("error")]
