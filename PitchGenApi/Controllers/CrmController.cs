@@ -722,20 +722,31 @@ namespace PitchGenApi.Controllers
                     {
                         var candidate = request.contacts[index];
                         var normalizedEmail = candidate.email?.Trim().ToLowerInvariant();
+                        var hasEmail = !string.IsNullOrWhiteSpace(normalizedEmail);
 
-                        if (string.IsNullOrWhiteSpace(normalizedEmail))
+                        // A row with no address is imported rather than dropped:
+                        // Audience Assurance can discover one from a LinkedIn
+                        // profile or a company domain, so a row is only useless
+                        // when there is nothing at all to identify the person by.
+                        if (!hasEmail &&
+                            string.IsNullOrWhiteSpace(candidate.fullName) &&
+                            string.IsNullOrWhiteSpace(candidate.firstName) &&
+                            string.IsNullOrWhiteSpace(candidate.lastName) &&
+                            string.IsNullOrWhiteSpace(candidate.linkedInUrl))
                         {
                             skippedContacts.Add(new
                             {
                                 rowNumber = candidate.sourceRowNumber ?? index + 2,
                                 email = candidate.email,
                                 fullName = candidate.fullName,
-                                reason = "Email is required"
+                                reason = "The row has no email, name or LinkedIn URL"
                             });
                             continue;
                         }
 
-                        if (existingEmailSet.Contains(normalizedEmail))
+                        // Duplicate detection keys on the address, so rows without
+                        // one skip it rather than all colliding on the empty string.
+                        if (hasEmail && existingEmailSet.Contains(normalizedEmail!))
                         {
                             skippedContacts.Add(new
                             {
@@ -747,7 +758,7 @@ namespace PitchGenApi.Controllers
                             continue;
                         }
 
-                        if (!incomingEmailSet.Add(normalizedEmail))
+                        if (hasEmail && !incomingEmailSet.Add(normalizedEmail!))
                         {
                             skippedContacts.Add(new
                             {
@@ -818,7 +829,7 @@ namespace PitchGenApi.Controllers
                             first_name = firstName,
                             last_name = lastName,
                             full_name = fullName,
-                            email = c.email?.Trim(),
+                            email = string.IsNullOrWhiteSpace(c.email) ? null : c.email.Trim(),
                             website = c.website,
                             company_name = c.companyName,
                             job_title = c.jobTitle,
@@ -902,36 +913,57 @@ namespace PitchGenApi.Controllers
         {
             try
             {
-                if (request.clientId <= 0 || string.IsNullOrWhiteSpace(request.email))
+                if (request.clientId <= 0)
                 {
                     return BadRequest(new
                     {
                         success = false,
-                        message = "A valid clientId and email are required"
+                        message = "A valid clientId is required"
                     });
                 }
 
-                var normalizedEmail = request.email.Trim().ToLowerInvariant();
-                var duplicateContact = await (
-                    from existingContactRow in _context.contacts
-                    join file in _context.data_files on existingContactRow.DataFileId equals (int?)file.id
-                    where file.client_id == request.clientId &&
-                          existingContactRow.email != null &&
-                          existingContactRow.email.Trim().ToLower() == normalizedEmail
-                    select new { existingContactRow.id, existingContactRow.DataFileId }
-                ).FirstOrDefaultAsync();
-
-                if (duplicateContact != null)
+                // The address is optional: a contact can be added from a LinkedIn
+                // profile alone and have its address discovered later. Something
+                // still has to identify the person.
+                if (string.IsNullOrWhiteSpace(request.email) &&
+                    string.IsNullOrWhiteSpace(request.fullName) &&
+                    string.IsNullOrWhiteSpace(request.firstName) &&
+                    string.IsNullOrWhiteSpace(request.lastName) &&
+                    string.IsNullOrWhiteSpace(request.linkedInUrl))
                 {
-                    return Conflict(new
+                    return BadRequest(new
                     {
                         success = false,
-                        code = "DUPLICATE_EMAIL",
-                        message = "A contact with this email address already exists",
-                        email = request.email.Trim(),
-                        contactId = duplicateContact.id,
-                        dataFileId = duplicateContact.DataFileId
+                        message = "Add an email, a name or a LinkedIn URL for this contact"
                     });
+                }
+
+                // Only addresses can collide, so a contact without one skips the
+                // duplicate check rather than matching every other blank.
+                if (!string.IsNullOrWhiteSpace(request.email))
+                {
+                    var normalizedEmail = request.email.Trim().ToLowerInvariant();
+                    var duplicateContact = await (
+                        from existingContactRow in _context.contacts
+                        join file in _context.data_files on existingContactRow.DataFileId equals (int?)file.id
+                        where file.client_id == request.clientId &&
+                              existingContactRow.email != null &&
+                              existingContactRow.email.Trim().ToLower() == normalizedEmail
+                        select new { existingContactRow.id, existingContactRow.DataFileId }
+                    ).FirstOrDefaultAsync();
+
+                    if (duplicateContact != null)
+                    {
+                        return Conflict(new
+                        {
+                            success = false,
+                            code = "DUPLICATE_EMAIL",
+                            message = "A contact with this email address already exists",
+                            email = request.email.Trim(),
+                            contactId = duplicateContact.id,
+                            dataFileId = duplicateContact.DataFileId
+                        });
+                    }
                 }
 
                 DataFile dataFile = null;
@@ -1004,7 +1036,7 @@ namespace PitchGenApi.Controllers
                     first_name = firstName,
                     last_name = lastName,
                     full_name = fullName,
-                    email = request.email?.Trim(),
+                    email = string.IsNullOrWhiteSpace(request.email) ? null : request.email.Trim(),
                     website = request.website,
                     company_name = request.companyName,
                     job_title = request.jobTitle,
@@ -1085,7 +1117,7 @@ namespace PitchGenApi.Controllers
                 contact.last_name = lastName;
                 contact.full_name = fullName;
 
-                contact.email = model.email?.Trim();
+                contact.email = string.IsNullOrWhiteSpace(model.email) ? null : model.email.Trim();
                 contact.job_title = model.jobTitle;
                 contact.website = model.website;
                 contact.linkedin_url = model.linkedInUrl;

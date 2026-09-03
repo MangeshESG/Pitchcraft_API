@@ -1,4 +1,4 @@
-namespace PitchGenApi.Services
+﻿namespace PitchGenApi.Services
 {
     using System.Diagnostics;
     using System.Text;
@@ -1273,6 +1273,15 @@ namespace PitchGenApi.Services
             var itemsByContact = items.ToDictionary(i => i.ContactId);
             var contactIds = contacts.Select(c => c.id).ToList();
 
+            // Loaded once: a discovered address is only written back if no other
+            // contact of this client already holds it, and that check needs the
+            // client's own contacts rather than every contact in the table.
+            var clientFileIds = await _context.data_files
+                .AsNoTracking()
+                .Where(df => df.client_id == job.ClientId)
+                .Select(df => df.id)
+                .ToListAsync(cancellationToken);
+
             var existing = await _context.contact_validations
                 .Where(v => v.ClientId == job.ClientId && contactIds.Contains(v.ContactId))
                 .ToListAsync(cancellationToken);
@@ -1300,12 +1309,27 @@ namespace PitchGenApi.Services
                     byContact[contact.id] = row;
                 }
 
-                var (confidence, status, source, comments) =
-                    await VerifyOneAddressAsync(contact, cancellationToken);
+                var outcome = await VerifyOneAddressAsync(contact, cancellationToken);
+                var comments = outcome.Comments;
 
-                row.EmailValidityConfidence = confidence;
-                row.EmailValidityStatus = status;
-                row.EmailValiditySource = source;
+                // A contact with no address on file gets the discovered one
+                // written back. Finding an address and leaving it in a comment
+                // where nothing can send to it would waste the lookup, which is
+                // the expensive part of this check.
+                if (string.IsNullOrWhiteSpace(contact.email) &&
+                    !string.IsNullOrWhiteSpace(outcome.FoundEmail))
+                {
+                    var (filled, reason) = await FillMissingEmailAsync(
+                        contact.id, clientFileIds, outcome.FoundEmail!, cancellationToken);
+
+                    comments = filled
+                        ? comments + " It has been saved to this contact."
+                        : comments + " " + reason;
+                }
+
+                row.EmailValidityConfidence = outcome.Confidence;
+                row.EmailValidityStatus = outcome.Status;
+                row.EmailValiditySource = outcome.Source;
                 row.EmailValidityComments = comments;
                 row.EmailCheckedAt = now;
                 row.UpdatedAt = now;
@@ -1318,9 +1342,28 @@ namespace PitchGenApi.Services
             }
         }
 
-        private async Task<(int Confidence, string? Status, string Source, string Comments)>
-            VerifyOneAddressAsync(Contact contact, CancellationToken cancellationToken)
+        /// <summary>
+        /// What one lookup established.
+        ///
+        /// <see cref="FoundEmail"/> is carried separately from the comments so a
+        /// contact with an empty address field can be filled in from it: for
+        /// those contacts the check is discovery, not verification, and the
+        /// address is the result rather than a footnote about it.
+        /// </summary>
+        private sealed record EmailCheckOutcome(
+            int Confidence,
+            string? Status,
+            string Source,
+            string Comments,
+            string? FoundEmail);
+
+        private async Task<EmailCheckOutcome> VerifyOneAddressAsync(
+            Contact contact,
+            CancellationToken cancellationToken)
         {
+            var stored = contact.email?.Trim();
+            var hasStored = !string.IsNullOrWhiteSpace(stored);
+
             // Prospeo matches on a LinkedIn profile, so a contact without one
             // goes straight to Hunter rather than spending a lookup that cannot
             // succeed.
@@ -1330,17 +1373,23 @@ namespace PitchGenApi.Services
 
                 if (prospeo.Found)
                 {
+                    if (!hasStored)
+                        return new EmailCheckOutcome(98, prospeo.EmailStatus, "prospeo",
+                            $"No address was on file. Prospeo found and verified {prospeo.Email}.",
+                            prospeo.Email);
+
                     var matchesStored = string.Equals(
-                        prospeo.Email, contact.email?.Trim(), StringComparison.OrdinalIgnoreCase);
+                        prospeo.Email, stored, StringComparison.OrdinalIgnoreCase);
 
                     // A verified address that differs from the stored one is not
                     // a pass: the record on file is still the wrong address, and
                     // saying so is the whole value of the check.
                     return matchesStored
-                        ? (98, prospeo.EmailStatus, "prospeo",
-                           "Prospeo verified the address on file.")
-                        : (60, prospeo.EmailStatus, "prospeo",
-                           $"Prospeo verified a different address for this person: {prospeo.Email}. The address on file may be out of date.");
+                        ? new EmailCheckOutcome(98, prospeo.EmailStatus, "prospeo",
+                            "Prospeo verified the address on file.", prospeo.Email)
+                        : new EmailCheckOutcome(60, prospeo.EmailStatus, "prospeo",
+                            $"Prospeo verified a different address for this person: {prospeo.Email}. The address on file may be out of date.",
+                            prospeo.Email);
                 }
             }
 
@@ -1352,28 +1401,86 @@ namespace PitchGenApi.Services
                         FullName = contact.full_name ?? $"{contact.first_name} {contact.last_name}".Trim(),
                         CompanyUrl = contact.website,
                         Company = contact.company_name,
-                        EmailHint = contact.email
+                        EmailHint = stored
                     },
                     cancellationToken);
 
                 if (hunter.Found)
                 {
+                    if (!hasStored)
+                        return new EmailCheckOutcome(hunter.Score, hunter.VerificationStatus, "hunter",
+                            $"No address was on file. Hunter found {hunter.Email} with a confidence of {hunter.Score}.",
+                            hunter.Email);
+
                     var matchesStored = string.Equals(
-                        hunter.Email, contact.email?.Trim(), StringComparison.OrdinalIgnoreCase);
+                        hunter.Email, stored, StringComparison.OrdinalIgnoreCase);
 
                     return matchesStored
-                        ? (hunter.Score, hunter.VerificationStatus, "hunter",
-                           $"Hunter confirmed the address on file with a confidence of {hunter.Score}.")
-                        : (Math.Min(hunter.Score, 60), hunter.VerificationStatus, "hunter",
-                           $"Hunter found a different address for this person: {hunter.Email}. The address on file may be out of date.");
+                        ? new EmailCheckOutcome(hunter.Score, hunter.VerificationStatus, "hunter",
+                            $"Hunter confirmed the address on file with a confidence of {hunter.Score}.",
+                            hunter.Email)
+                        : new EmailCheckOutcome(Math.Min(hunter.Score, 60), hunter.VerificationStatus, "hunter",
+                            $"Hunter found a different address for this person: {hunter.Email}. The address on file may be out of date.",
+                            hunter.Email);
                 }
 
-                return (10, null, "hunter",
-                    hunter.RejectedBecause ?? "Neither provider could confirm an address for this contact.");
+                return new EmailCheckOutcome(10, null, "hunter",
+                    hunter.RejectedBecause ??
+                        (hasStored
+                            ? "Neither provider could confirm an address for this contact."
+                            : "No address is on file and neither provider could find one."),
+                    null);
             }
 
-            return (0, null, "none",
-                "No email verification provider is configured. An admin needs to add a Prospeo or Hunter API key.");
+            return new EmailCheckOutcome(0, null, "none",
+                "No email verification provider is configured. An admin needs to add a Prospeo or Hunter API key.",
+                null);
+        }
+
+        /// <summary>
+        /// Writes a discovered address onto a contact that had none.
+        ///
+        /// Refuses if another of the client's contacts already holds it: the
+        /// whole product keys on address uniqueness per client, and a lookup
+        /// that quietly created a duplicate would be worse than one that found
+        /// nothing. The contact is re-read tracked because the run loads its
+        /// contacts read-only.
+        /// </summary>
+        private async Task<(bool Filled, string Reason)> FillMissingEmailAsync(
+            int contactId,
+            List<int> clientFileIds,
+            string discovered,
+            CancellationToken cancellationToken)
+        {
+            var email = discovered.Trim();
+
+            var duplicate = await _context.contacts
+                .AsNoTracking()
+                .AnyAsync(c => c.id != contactId &&
+                               c.email != null &&
+                               c.email.ToLower() == email.ToLower() &&
+                               c.DataFileId.HasValue &&
+                               clientFileIds.Contains(c.DataFileId.Value),
+                    cancellationToken);
+
+            if (duplicate)
+                return (false, "It was not saved: another contact already holds this address.");
+
+            var tracked = await _context.contacts
+                .FirstOrDefaultAsync(c => c.id == contactId, cancellationToken);
+
+            if (tracked == null)
+                return (false, "It could not be saved: the contact no longer exists.");
+
+            // Re-checked on the tracked row in case something else filled the
+            // field while the lookup was in flight.
+            if (!string.IsNullOrWhiteSpace(tracked.email))
+                return (false, "It was not saved: an address was added to this contact meanwhile.");
+
+            tracked.email = email;
+            tracked.updated_at = DateTime.UtcNow;
+
+            return (true, "");
         }
 
         // =================================================================
