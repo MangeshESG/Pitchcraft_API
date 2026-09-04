@@ -45,6 +45,25 @@ namespace PitchGenApi.Services
             _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
         }
 
+        /// <summary>
+        /// Flattens the exception chain into one line. A TLS failure surfaces as
+        /// HttpRequestException("The SSL connection could not be established, see
+        /// inner exception") - the sentence that names the actual cause (an
+        /// untrusted certificate, a cipher mismatch, a closed transport) lives in
+        /// the inner exception, so reporting only ex.Message throws it away.
+        /// </summary>
+        private static string Describe(Exception ex)
+        {
+            var parts = new List<string>();
+
+            for (Exception? current = ex; current is not null; current = current.InnerException)
+            {
+                parts.Add($"{current.GetType().Name}: {current.Message}");
+            }
+
+            return string.Join(" -> ", parts);
+        }
+
         public async Task<PitchResult> GeneratePitchAsync(EnquiryRequest request)
         {
             try
@@ -241,7 +260,7 @@ namespace PitchGenApi.Services
             {
                 return new PitchResult
                 {
-                    Content = $"DeepSeek request failed: {ex.Message}",
+                    Content = $"DeepSeek request failed: {Describe(ex)}",
                     IsSuccess = false
                 };
             }
@@ -394,7 +413,7 @@ namespace PitchGenApi.Services
             {
                 return new PitchResult
                 {
-                    Content = $"DeepSeek web search failed: {ex.Message}",
+                    Content = $"DeepSeek web search failed: {Describe(ex)}",
                     IsSuccess = false
                 };
             }

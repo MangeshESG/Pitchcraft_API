@@ -235,7 +235,16 @@ builder.Services.AddHttpClient<IContactValidationService, ContactValidationServi
 builder.Services.Configure<DeepSeekSettings>(
     builder.Configuration.GetSection("DeepSeekSettings"));
 
-builder.Services.AddHttpClient<DeepSeekPitchService>();
+// api.deepseek.com refuses anything below TLS 1.2, and on Windows Server the
+// default handler lets schannel pick the protocol - which is how the same
+// build reaches OpenAI fine but fails DeepSeek with "The SSL connection could
+// not be established". Pinned the way CampaignPromptService and ZohoService
+// already are.
+builder.Services.AddHttpClient<DeepSeekPitchService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+    });
 
 
 builder.Services.AddSingleton<JwtService>();
