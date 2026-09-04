@@ -85,7 +85,10 @@ namespace PitchGenApi.Services
                 decimal inputPricePerMillion = rate?.InputPrice ?? 0.27m;
                 decimal outputPricePerMillion = rate?.OutputPrice ?? 1.10m;
                 double temperature = Convert.ToDouble(rate?.Temperature ?? 0.7m);
-                int maxTokens = rate?.MaxTokens ?? 2000;
+
+                // The caller's budget wins: the rate row is sized for one email,
+                // which is far too small for a batched JSON reply.
+                int maxTokens = request.MaxTokens ?? rate?.MaxTokens ?? 2000;
 
                 var messages = new List<object>();
 
@@ -166,6 +169,40 @@ namespace PitchGenApi.Services
 
                 string output =
                     parsed["choices"]?[0]?["message"]?["content"]?.ToString() ?? "";
+
+                // A 200 can still be a generation that ran out of budget, and
+                // DeepSeek says so only in finish_reason. Returning that as a
+                // success hands the caller a half-written reply — JSON cut off
+                // mid-array — which then fails somewhere far less obvious.
+                string finishReason =
+                    parsed["choices"]?[0]?["finish_reason"]?.ToString() ?? "";
+
+                if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new PitchResult
+                    {
+                        Content = $"Response truncated: hit max_tokens ({maxTokens}). "
+                                + "Raise MaxTokens for this model in ModelRates, or ask for less in one call.",
+                        IsSuccess = false,
+                        PromptTokens = parsed["usage"]?["prompt_tokens"]?.Value<int>() ?? 0,
+                        CompletionTokens = parsed["usage"]?["completion_tokens"]?.Value<int>() ?? 0,
+                        CachedTokens = parsed["usage"]?["prompt_cache_hit_tokens"]?.Value<int>() ?? 0
+                    };
+                }
+
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    return new PitchResult
+                    {
+                        Content = string.IsNullOrWhiteSpace(finishReason)
+                            ? "The model returned no content."
+                            : $"The model returned no content (finish_reason: {finishReason}).",
+                        IsSuccess = false,
+                        PromptTokens = parsed["usage"]?["prompt_tokens"]?.Value<int>() ?? 0,
+                        CompletionTokens = parsed["usage"]?["completion_tokens"]?.Value<int>() ?? 0,
+                        CachedTokens = parsed["usage"]?["prompt_cache_hit_tokens"]?.Value<int>() ?? 0
+                    };
+                }
 
                 int promptTokens =
                     parsed["usage"]?["prompt_tokens"]?.Value<int>() ?? 0;
@@ -253,7 +290,7 @@ namespace PitchGenApi.Services
 
                 decimal inputPricePerMillion = rate?.InputPrice ?? 0.27m;
                 decimal outputPricePerMillion = rate?.OutputPrice ?? 1.10m;
-                int maxTokens = rate?.MaxTokens ?? 2000;
+                int maxTokens = request.MaxTokens ?? rate?.MaxTokens ?? 2000;
 
                 // DeepSeek documents `instructions` for system context and `input` for
                 // the request itself. Sending the search instructions as a plain

@@ -35,6 +35,33 @@
         private const int ContactsPerCredit = 10;
 
         /// <summary>
+        /// How long one batch may wait on a provider before it is abandoned.
+        ///
+        /// The HttpClient timeout is ten minutes, which is a ceiling for a
+        /// request, not a budget for a queue: a single wedged call at that
+        /// length holds a runner slot long enough for every other client to
+        /// notice. Three minutes is generous for fifty contacts even with web
+        /// search, and it stays well inside <see cref="DefaultStaleAfter"/> so
+        /// a slow batch is never mistaken for a dead one.
+        /// </summary>
+        private static readonly TimeSpan DefaultModelCallTimeout = TimeSpan.FromMinutes(3);
+
+        /// <summary>
+        /// How quiet a running job must go before it is treated as abandoned.
+        /// Must stay comfortably above <see cref="DefaultModelCallTimeout"/>,
+        /// or a legitimately slow batch would be requeued underneath itself and
+        /// run twice.
+        /// </summary>
+        private static readonly TimeSpan DefaultStaleAfter = TimeSpan.FromMinutes(10);
+
+        /// <summary>
+        /// Claims allowed before a job is failed for good. A run that reliably
+        /// kills its process would otherwise be requeued forever, taking a
+        /// runner slot with it every time.
+        /// </summary>
+        private const int DefaultMaxAttempts = 3;
+
+        /// <summary>
         /// How long a cached company classification is trusted. Companies get
         /// acquired and rebranded, so a stale row is re-researched rather than
         /// believed forever.
@@ -95,6 +122,33 @@
         /// </summary>
         private decimal WebSearchCostPerCall =>
             _configuration.GetValue<decimal?>("Validation:WebSearchCostPerCall") ?? 0.01m;
+
+        private TimeSpan ModelCallTimeout
+        {
+            get
+            {
+                var seconds = _configuration.GetValue<int?>("Validation:ModelCallTimeoutSeconds");
+                return seconds is > 0 ? TimeSpan.FromSeconds(seconds.Value) : DefaultModelCallTimeout;
+            }
+        }
+
+        private TimeSpan StaleAfter
+        {
+            get
+            {
+                var minutes = _configuration.GetValue<int?>("Validation:StaleJobMinutes");
+                return minutes is > 0 ? TimeSpan.FromMinutes(minutes.Value) : DefaultStaleAfter;
+            }
+        }
+
+        private int MaxAttempts
+        {
+            get
+            {
+                var configured = _configuration.GetValue<int?>("Validation:MaxAttempts");
+                return configured is > 0 ? configured.Value : DefaultMaxAttempts;
+            }
+        }
 
         // =================================================================
         // Queueing
@@ -249,6 +303,107 @@
         // Running
         // =================================================================
 
+        /// <summary>
+        /// The claim itself: one UPDATE, guarded by ROWLOCK/UPDLOCK so two
+        /// runner instances racing this at once cannot both grab the same row,
+        /// and READPAST so one racing the other simply skips what it can't
+        /// lock instead of blocking on it. This is the statement that makes
+        /// the job's status trustworthy — before this, "queued" in the
+        /// database and "already being worked" in memory could both be true
+        /// at once, which is what job 66 showed on the API response.
+        /// </summary>
+        public async Task<List<int>> ClaimQueuedJobsAsync(int maxJobs, string owner, CancellationToken cancellationToken = default)
+        {
+            if (maxJobs <= 0)
+                return new List<int>();
+
+            var now = DateTime.UtcNow;
+
+            // UPDATE TOP (n) alone has no ORDER BY, so on its own it would
+            // claim an arbitrary set rather than the oldest. The ordering and
+            // the row locks both live in the inner subquery — READPAST there
+            // means one runner instance racing another simply skips whatever
+            // it cannot lock rather than blocking on it — and the outer UPDATE
+            // joins onto exactly those ids to set the real columns.
+            var claimed = await _context.Database.SqlQuery<int>($@"
+                UPDATE t
+                SET status = {ValidationJobStatuses.Running},
+                    started_at = {now},
+                    heartbeat_at = {now},
+                    owner = {owner},
+                    attempts = t.attempts + 1
+                OUTPUT inserted.id
+                FROM contact_validation_jobs AS t
+                INNER JOIN (
+                    SELECT TOP ({maxJobs}) id
+                    FROM contact_validation_jobs WITH (READPAST, UPDLOCK, ROWLOCK)
+                    WHERE status = {ValidationJobStatuses.Queued}
+                    ORDER BY created_at
+                ) AS next_jobs ON next_jobs.id = t.id
+            ").ToListAsync(cancellationToken);
+
+            return claimed;
+        }
+
+        /// <summary>
+        /// Recovers runs whose process died without saying so. A job stays
+        /// "running" but its heartbeat stops the moment the worker that owned
+        /// it goes away — a deploy, an app-pool recycle, an unhandled crash —
+        /// and nothing else ever notices, so the job sits there indefinitely,
+        /// its reserved credits never refunded and its slot never freed.
+        ///
+        /// A job under <see cref="MaxAttempts"/> goes back to "queued" for
+        /// another try. One at the limit is failed outright and refunded,
+        /// rather than requeued forever.
+        /// </summary>
+        public async Task<int> ReapStaleJobsAsync(CancellationToken cancellationToken = default)
+        {
+            var cutoff = DateTime.UtcNow - StaleAfter;
+
+            var stale = await _context.contact_validation_jobs
+                .Where(j => j.Status == ValidationJobStatuses.Running &&
+                            (j.HeartbeatAt ?? j.StartedAt ?? j.CreatedAt) < cutoff)
+                .ToListAsync(cancellationToken);
+
+            if (stale.Count == 0)
+                return 0;
+
+            foreach (var job in stale)
+            {
+                if (job.Attempts >= MaxAttempts)
+                {
+                    job.Status = ValidationJobStatuses.Failed;
+                    job.ErrorMessage =
+                        $"Abandoned by the worker that was running it, and not recovered after {job.Attempts} attempt(s).";
+                    job.CompletedAt = DateTime.UtcNow;
+
+                    await RefundUnearnedCreditsAsync(job, cancellationToken);
+
+                    _logger.LogWarning(
+                        "Validation job {JobId} failed after {Attempts} stale attempts.",
+                        job.Id, job.Attempts);
+                }
+                else
+                {
+                    // Back to the queue rather than resumed in place: the batch
+                    // in flight when the process died is of unknown state, and
+                    // ProcessJobAsync re-reads every item fresh on its next run
+                    // rather than trusting what a dead worker left behind.
+                    job.Status = ValidationJobStatuses.Queued;
+                    job.StartedAt = null;
+                    job.HeartbeatAt = null;
+                    job.Owner = null;
+
+                    _logger.LogWarning(
+                        "Validation job {JobId} requeued after going stale (attempt {Attempts}).",
+                        job.Id, job.Attempts);
+                }
+            }
+
+            await _context.SaveChangesAsync(cancellationToken);
+            return stale.Count;
+        }
+
         public async Task ProcessJobAsync(int jobId, CancellationToken cancellationToken = default)
         {
             var job = await _context.contact_validation_jobs
@@ -259,12 +414,22 @@
 
             var timer = Stopwatch.StartNew();
 
-            job.Status = ValidationJobStatuses.Running;
-            job.StartedAt = DateTime.UtcNow;
-            await _context.SaveChangesAsync(cancellationToken);
-
             try
             {
+                // Normally the runner has already flipped this to running as
+                // part of claiming it; this only covers a direct call. Either
+                // way the heartbeat starts here, and it is inside the try so a
+                // failure to write it cannot strand the job the way it used to
+                // — the reaper will find it and put it back.
+                if (job.Status != ValidationJobStatuses.Running)
+                {
+                    job.Status = ValidationJobStatuses.Running;
+                    job.StartedAt = DateTime.UtcNow;
+                }
+
+                job.HeartbeatAt = DateTime.UtcNow;
+                await _context.SaveChangesAsync(cancellationToken);
+
                 var items = await _context.contact_validation_job_items
                     .Where(i => i.JobId == jobId)
                     .ToListAsync(cancellationToken);
@@ -293,6 +458,15 @@
                     : job.ProcessedCount == 0
                         ? ValidationJobStatuses.Failed
                         : ValidationJobStatuses.Partial;
+
+                // A run whose batches all failed threw nothing, so without this
+                // the job carries no reason at all and the log can only say
+                // "failed". The per-item errors hold the answer; lift the most
+                // common one onto the job.
+                if (job.FailedCount > 0 && string.IsNullOrWhiteSpace(job.ErrorMessage))
+                {
+                    job.ErrorMessage = MostCommonItemError(items);
+                }
             }
             catch (Exception ex)
             {
@@ -309,15 +483,20 @@
                 timer.Stop();
                 job.ElapsedMs = (int)timer.ElapsedMilliseconds;
                 job.CompletedAt = DateTime.UtcNow;
+                job.HeartbeatAt = DateTime.UtcNow;
 
                 // In the finally so a crashed run refunds too. Charging for
                 // fifty contacts after processing ten would be the worst
                 // possible failure mode of a paid feature.
-                await RefundUnearnedCreditsAsync(job, cancellationToken);
+                await RefundUnearnedCreditsAsync(job, CancellationToken.None);
 
                 try
                 {
-                    await _context.SaveChangesAsync(cancellationToken);
+                    // Deliberately not the job's token. On shutdown that token
+                    // is already cancelled, and passing it here is what left
+                    // job 2 stuck at "running" for two days: the work had
+                    // stopped but the row never said so.
+                    await _context.SaveChangesAsync(CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
@@ -421,15 +600,30 @@
 
                 ModelCallResult call;
 
+                // Bounded independently of HttpClient's own (much longer)
+                // timeout: a batch that hangs this long is what used to hold a
+                // runner slot for up to ten minutes and freeze every other
+                // client's queue behind it.
+                using var batchTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                batchTimeout.CancelAfter(ModelCallTimeout);
+
                 try
                 {
-                    call = await CallModelAsync(job, prompt, cancellationToken);
+                    call = await CallModelAsync(job, prompt, batch.Length, batchTimeout.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    MarkBatchFailed(batch, itemsByContact,
+                        $"The model call timed out after {ModelCallTimeout.TotalSeconds:0}s.");
+                    continue;
                 }
                 catch (Exception ex)
                 {
                     MarkBatchFailed(batch, itemsByContact, "The model call failed: " + ex.Message);
                     continue;
                 }
+
+                job.HeartbeatAt = DateTime.UtcNow;
 
                 job.InputTokens += call.InputTokens;
                 job.CachedTokens += call.CachedTokens;
@@ -460,6 +654,23 @@
                 job.ProcessedCount = items.Count(i => i.Status == ValidationItemStatuses.Completed);
                 await _context.SaveChangesAsync(cancellationToken);
             }
+        }
+
+        /// <summary>
+        /// The error that stopped the most contacts, so a job that failed the
+        /// same way fifty times reports that reason once.
+        /// </summary>
+        private static string? MostCommonItemError(IEnumerable<ContactValidationJobItem> items)
+        {
+            var error = items
+                .Where(i => i.Status == ValidationItemStatuses.Failed &&
+                            !string.IsNullOrWhiteSpace(i.Error))
+                .GroupBy(i => i.Error!)
+                .OrderByDescending(g => g.Count())
+                .Select(g => g.Key)
+                .FirstOrDefault();
+
+            return error == null ? null : Truncate(error, 500);
         }
 
         private static void MarkBatchFailed(
@@ -774,6 +985,7 @@
         private async Task<ModelCallResult> CallModelAsync(
             ContactValidationJob job,
             string prompt,
+            int batchCount,
             CancellationToken cancellationToken)
         {
             var model = job.ModelName ?? AiModelDefaults.ForPurpose(job.CheckType);
@@ -781,7 +993,12 @@
 
             if (LooksLikeDeepSeek(model))
             {
-                var request = new EnquiryRequest { Prompt = prompt, ModelName = model };
+                var request = new EnquiryRequest
+                {
+                    Prompt = prompt,
+                    ModelName = model,
+                    MaxTokens = OutputBudgetFor(batchCount)
+                };
 
                 // clientId 0: this run already reserved its credits up front, and
                 // the pitch service would otherwise deduct one more per batch.
@@ -802,19 +1019,33 @@
                 };
             }
 
-            return await CallOpenAiAsync(model, prompt, needsSearch, cancellationToken);
+            return await CallOpenAiAsync(model, prompt, needsSearch, batchCount, cancellationToken);
         }
+
+        /// <summary>
+        /// Output budget for one batch.
+        ///
+        /// ModelRates.MaxTokens is sized for writing a single email, so it is
+        /// nowhere near enough for a reply carrying one object per contact —
+        /// and going over does not error, it truncates the JSON mid-array and
+        /// loses the whole batch. Roughly 120 tokens per contact covers an ID,
+        /// a score and a sentence or two of comments, with a fixed allowance on
+        /// top for the wrapper and any preamble.
+        /// </summary>
+        private static int OutputBudgetFor(int batchCount) =>
+            Math.Clamp(batchCount * 120 + 1000, 4000, 32000);
 
         private async Task<ModelCallResult> CallOpenAiAsync(
             string model,
             string prompt,
             bool needsSearch,
+            int batchCount,
             CancellationToken cancellationToken)
         {
             var rate = await _context.ModelRates.FirstOrDefaultAsync(
                 m => m.ModelName == model, cancellationToken);
 
-            var maxTokens = rate?.MaxTokens ?? 8000;
+            var maxTokens = Math.Max(rate?.MaxTokens ?? 0, OutputBudgetFor(batchCount));
 
             var body = new Dictionary<string, object>
             {
@@ -1338,6 +1569,7 @@
                 item.Error = null;
 
                 job.ProcessedCount = items.Count(i => i.Status == ValidationItemStatuses.Completed);
+                job.HeartbeatAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync(cancellationToken);
             }
         }

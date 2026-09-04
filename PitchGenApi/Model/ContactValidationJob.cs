@@ -105,6 +105,33 @@ namespace PitchGenApi.Model
         [Column("created_by")]
         [MaxLength(200)]
         public string? CreatedBy { get; set; }
+
+        /// <summary>
+        /// Which process claimed the run, as machine:pid. Diagnostic only — the
+        /// claim itself is enforced by the atomic status flip, not by this — but
+        /// when a job goes stale this is the only record of where it went.
+        /// </summary>
+        [Column("owner")]
+        [MaxLength(100)]
+        public string? Owner { get; set; }
+
+        /// <summary>
+        /// Touched every time the run saves a batch. A running job whose
+        /// heartbeat has stopped is a job whose process died: nothing else can
+        /// tell the difference between that and a slow provider, and without it
+        /// an abandoned run stays "running" forever and its credits are never
+        /// returned.
+        /// </summary>
+        [Column("heartbeat_at")]
+        public DateTime? HeartbeatAt { get; set; }
+
+        /// <summary>
+        /// How many times a runner has claimed this job. Incremented by the
+        /// claim, so a run that keeps killing its process is eventually failed
+        /// and refunded rather than requeued forever.
+        /// </summary>
+        [Column("attempts")]
+        public int Attempts { get; set; }
     }
 
     /// <summary>

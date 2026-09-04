@@ -243,6 +243,9 @@ builder.Services.AddSingleton<JwtService>();
 // ===============================
 // ✅ Background Jobs
 // ===============================
+// Singleton so the runner writes to the same instance the status endpoint
+// reads. Registered before the hosted service that depends on it.
+builder.Services.AddSingleton<PitchGenApi.Background.ValidationRunnerDiagnostics>();
 builder.Services.AddHostedService<BackgroundWorkerService>();
 builder.Services.AddScoped<IInboxRefreshJob, InboxRefreshJob>();
 

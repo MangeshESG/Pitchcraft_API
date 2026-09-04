@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
+using PitchGenApi.Background;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model;
@@ -23,13 +24,96 @@ namespace PitchGenApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IContactValidationService _validationService;
+        private readonly ValidationRunnerDiagnostics _runnerDiagnostics;
+        private readonly IServiceScopeFactory _scopeFactory;
 
         public ContactValidationController(
             AppDbContext context,
-            IContactValidationService validationService)
+            IContactValidationService validationService,
+            ValidationRunnerDiagnostics runnerDiagnostics,
+            IServiceScopeFactory scopeFactory)
         {
             _context = context;
             _validationService = validationService;
+            _runnerDiagnostics = runnerDiagnostics;
+            _scopeFactory = scopeFactory;
+        }
+
+        // =============================================================
+        // Runner health
+        // =============================================================
+
+        /// <summary>
+        /// What the background runner is doing right now, readable over HTTP.
+        ///
+        /// The console output of the deployed process is not reachable, so
+        /// when runs pile up at "queued" there is otherwise no way to tell
+        /// whether the loop never started, crashed, or is running and failing
+        /// every cycle. <c>isAlive</c> is the field that matters: the loop
+        /// polls every three seconds, so anything but a single-digit
+        /// <c>secondsSinceLastPoll</c> means it is not running.
+        /// </summary>
+        [HttpGet("runner/status")]
+        public IActionResult RunnerStatus()
+        {
+            return Ok(new { success = true, runner = _runnerDiagnostics.Snapshot() });
+        }
+
+        /// <summary>
+        /// Claims and runs queued jobs on demand, without waiting for the
+        /// background loop.
+        ///
+        /// An escape hatch, not the normal path: if the hosted service is not
+        /// running on a given deployment, this is what gets a stuck queue
+        /// moving without a redeploy or a database edit. It uses the same
+        /// atomic claim as the runner, so calling it while the runner is alive
+        /// is safe — the two cannot pick up the same job.
+        /// </summary>
+        [HttpPost("runner/drain")]
+        public async Task<IActionResult> DrainQueue([FromQuery] int maxJobs = 3)
+        {
+            if (maxJobs is < 1 or > 25)
+                return BadRequest(new { success = false, message = "maxJobs must be between 1 and 25." });
+
+            var owner = $"manual-drain:{Environment.MachineName}";
+
+            var claimed = await _validationService.ClaimQueuedJobsAsync(maxJobs, owner);
+
+            if (claimed.Count == 0)
+                return Ok(new { success = true, claimed = 0, message = "Nothing was queued." });
+
+            // Deliberately not awaited: these runs take minutes and the request
+            // must not be held open for them. Each gets its own scope because
+            // this request's scope is disposed as soon as the response is sent.
+            foreach (var jobId in claimed)
+            {
+                var id = jobId;
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var scope = _scopeFactory.CreateScope();
+
+                        var service = scope.ServiceProvider
+                            .GetRequiredService<IContactValidationService>();
+
+                        await service.ProcessJobAsync(id, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"❌ Manual drain of job {id} failed: {ex}");
+                    }
+                });
+            }
+
+            return Ok(new
+            {
+                success = true,
+                claimed = claimed.Count,
+                jobIds = claimed,
+                message = "Claimed and started. Poll job/{id} for progress."
+            });
         }
 
         // =============================================================
