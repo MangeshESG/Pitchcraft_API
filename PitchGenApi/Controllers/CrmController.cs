@@ -4072,6 +4072,19 @@ namespace PitchGenApi.Controllers
                         .Select(n => n.ContactId).Distinct().ToListAsync())
                     .Where(id => contactIdSet.Contains(id)));
 
+                // A view filtered on an Audience Assurance score needs the
+                // scores for every contact it could return, not just the page
+                // it ends up returning — the score is what decides the page.
+                // Loading them for the whole view is the expensive case, so it
+                // only happens when the saved filter actually asks for one.
+                var filtersOnValidation = ValidationFilterHelper.UsesValidationFields(payload);
+                // Described as a query rather than as ids: a view can hold tens
+                // of thousands of contacts, and this way the set never leaves
+                // the database to come back as an IN clause.
+                var validationsForFilter = filtersOnValidation
+                    ? await LoadValidationsAsync(dto.ClientId, query.Select(c => c.id))
+                    : new Dictionary<int, ContactValidation>();
+
                 var customValuesRaw = await (
                     from v in _context.contact_custom_field_values.AsNoTracking()
                     join f in _context.crm_custom_fields.AsNoTracking() on v.field_id equals f.id
@@ -4098,6 +4111,19 @@ namespace PitchGenApi.Controllers
                 {
                     var customFields = customByContact.TryGetValue(c.id, out var found)
                         ? found : new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    // Flat, alongside the contact's own columns, because the
+                    // filter resolves a field by looking for a property of that
+                    // name on the row. Null on every row when the filter does
+                    // not mention them, which costs nothing: they are read by
+                    // the filter only, never returned.
+                    validationsForFilter.TryGetValue(c.id, out var validation);
+                    var lastChecked = new[]
+                    {
+                        validation?.ContactFitCheckedAt,
+                        validation?.DataIntegrityCheckedAt,
+                        validation?.LiveContactCheckedAt,
+                        validation?.EmailCheckedAt
+                    }.Where(date => date.HasValue).Max();
                     result.Add(new
                     {
                         c.id,
@@ -4121,7 +4147,13 @@ namespace PitchGenApi.Controllers
                         linkedIninformation = c.linkedIninformation,
                         hasNotes = notesSet.Contains(c.id),
                         hasLinkedInInfo = !string.IsNullOrWhiteSpace(c.linkedIninformation),
-                        customFields
+                        customFields,
+                        contactFitConfidence = validation?.ContactFitConfidence,
+                        dataIntegrityConfidence = validation?.DataIntegrityConfidence,
+                        liveContactConfidence = validation?.LiveContactConfidence,
+                        emailValidityConfidence = validation?.EmailValidityConfidence,
+                        isVerified = validation?.IsVerified,
+                        lastChecked
                     });
                 }
 
@@ -4167,7 +4199,11 @@ namespace PitchGenApi.Controllers
 
                 // Only the page being returned, like the email bodies above —
                 // a saved view can match tens of thousands of contacts.
-                var pagedValidations = await LoadValidationsAsync(dto.ClientId, pagedIds);
+                // Already loaded above when the filter needed them, and that
+                // set covers every contact in the view — including this page.
+                var pagedValidations = filtersOnValidation
+                    ? validationsForFilter
+                    : await LoadValidationsAsync(dto.ClientId, pagedIds);
 
                 var pagedContacts = pagedRaw.Select(p =>
                 {
