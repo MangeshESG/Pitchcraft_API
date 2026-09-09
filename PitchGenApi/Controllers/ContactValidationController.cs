@@ -24,19 +24,110 @@ namespace PitchGenApi.Controllers
     {
         private readonly AppDbContext _context;
         private readonly IContactValidationService _validationService;
+        private readonly IValidationSettingsService _validationSettings;
         private readonly ValidationRunnerDiagnostics _runnerDiagnostics;
         private readonly IServiceScopeFactory _scopeFactory;
 
         public ContactValidationController(
             AppDbContext context,
             IContactValidationService validationService,
+            IValidationSettingsService validationSettings,
             ValidationRunnerDiagnostics runnerDiagnostics,
             IServiceScopeFactory scopeFactory)
         {
             _context = context;
             _validationService = validationService;
+            _validationSettings = validationSettings;
             _runnerDiagnostics = runnerDiagnostics;
             _scopeFactory = scopeFactory;
+        }
+
+        // =============================================================
+        // Admin tuning
+        // =============================================================
+
+        /// <summary>
+        /// The tuning values behind a run, for the admin page.
+        ///
+        /// Readable without an admin check: the numbers are not sensitive, and
+        /// the page that shows them is already admin-only. Changing one is
+        /// what requires proving it.
+        /// </summary>
+        [HttpGet("settings")]
+        public async Task<IActionResult> GetSettings()
+        {
+            var metadata = await _validationSettings.GetBatchSizeMetadataAsync();
+
+            return Ok(new
+            {
+                success = true,
+                batchSize = await _validationSettings.GetBatchSizeAsync(),
+                defaultBatchSize = ValidationSettingKeys.DefaultBatchSize,
+                minBatchSize = ValidationSettingKeys.MinBatchSize,
+                maxBatchSize = ValidationSettingKeys.MaxBatchSize,
+                updatedAt = metadata?.UpdatedAt,
+                updatedBy = metadata?.UpdatedBy
+            });
+        }
+
+        /// <summary>
+        /// Sets how many contacts go into one model request. Applies to the
+        /// next run — a run already going keeps the size it started with.
+        /// </summary>
+        [HttpPost("settings/batch-size")]
+        public async Task<IActionResult> UpdateBatchSize(
+            [FromBody] UpdateValidationBatchSizeRequest request)
+        {
+            if (request == null)
+                return BadRequest(new { success = false, message = "Request body is required." });
+
+            if (request.BatchSize < ValidationSettingKeys.MinBatchSize ||
+                request.BatchSize > ValidationSettingKeys.MaxBatchSize)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message =
+                        $"The batch size must be between {ValidationSettingKeys.MinBatchSize} " +
+                        $"and {ValidationSettingKeys.MaxBatchSize}."
+                });
+            }
+
+            // This changes what every client's runs cost, so the caller has to
+            // be an admin — the UI hiding the page is not enough on its own.
+            var isAdmin = await _context.ClientDetails
+                .AsNoTracking()
+                .Where(client => client.Id == request.UpdatedBy)
+                .Select(client => (bool?)client.IsAdmin)
+                .FirstOrDefaultAsync();
+
+            if (isAdmin != true)
+            {
+                return StatusCode(403, new
+                {
+                    success = false,
+                    message = "Only an admin can change validation settings."
+                });
+            }
+
+            var saved = await _validationSettings.SetBatchSizeAsync(
+                request.BatchSize,
+                request.UpdatedBy.ToString());
+
+            return Ok(new
+            {
+                success = true,
+                batchSize = saved,
+                message = $"Runs will now send {saved} contact{(saved == 1 ? "" : "s")} per request."
+            });
+        }
+
+        public class UpdateValidationBatchSizeRequest
+        {
+            public int BatchSize { get; set; }
+
+            /// <summary>Client id of the admin making the change.</summary>
+            public int UpdatedBy { get; set; }
         }
 
         // =============================================================
@@ -401,6 +492,37 @@ namespace PitchGenApi.Controllers
                 row.VerifiedAt = request.IsVerified ? now : null;
                 row.VerifiedBy = request.IsVerified ? request.VerifiedBy : null;
                 row.UpdatedAt = now;
+
+                if (request.IsVerified)
+                {
+                    // Marking a contact verified is a person saying they have
+                    // checked the record themselves, so every check that has
+                    // actually run is stored at 100 — their judgement outranks
+                    // the model's, and the score is what the grid sorts,
+                    // filters and exports on, so it has to be the one that
+                    // carries the verdict.
+                    //
+                    // A check that never ran keeps its null. Writing 100 there
+                    // would claim an email had been validated when no email
+                    // check has ever been run against it, which is the one
+                    // thing a confidence score must never do.
+                    //
+                    // This overwrites the model's number rather than shadowing
+                    // it: removing the mark afterwards leaves the 100s in
+                    // place, and only re-running a check produces a fresh
+                    // score.
+                    if (row.ContactFitConfidence.HasValue)
+                        row.ContactFitConfidence = 100;
+
+                    if (row.DataIntegrityConfidence.HasValue)
+                        row.DataIntegrityConfidence = 100;
+
+                    if (row.LiveContactConfidence.HasValue)
+                        row.LiveContactConfidence = 100;
+
+                    if (row.EmailValidityConfidence.HasValue)
+                        row.EmailValidityConfidence = 100;
+                }
             }
 
             await _context.SaveChangesAsync();

@@ -24,13 +24,6 @@
     /// </summary>
     public class ContactValidationService : IContactValidationService
     {
-        /// <summary>
-        /// Contacts per model request. The spec's own guidance is 50-100; 50
-        /// keeps the returned JSON array comfortably inside max_output_tokens,
-        /// since every contact costs output tokens for its comments.
-        /// </summary>
-        private const int DefaultBatchSize = 50;
-
         /// <summary>Contacts covered by one credit.</summary>
         private const int ContactsPerCredit = 10;
 
@@ -72,6 +65,7 @@
         private readonly ContactRepository _contactRepository;
         private readonly IAiModelSettingsService _aiModelSettings;
         private readonly IPromptSettingsService _promptSettings;
+        private readonly IValidationSettingsService _validationSettings;
         private readonly IProspeoEmailService _prospeoService;
         private readonly IHunterEmailService _hunterService;
         private readonly DeepSeekPitchService _deepSeekService;
@@ -85,6 +79,7 @@
             ContactRepository contactRepository,
             IAiModelSettingsService aiModelSettings,
             IPromptSettingsService promptSettings,
+            IValidationSettingsService validationSettings,
             IProspeoEmailService prospeoService,
             IHunterEmailService hunterService,
             DeepSeekPitchService deepSeekService,
@@ -97,6 +92,7 @@
             _contactRepository = contactRepository;
             _aiModelSettings = aiModelSettings;
             _promptSettings = promptSettings;
+            _validationSettings = validationSettings;
             _prospeoService = prospeoService;
             _hunterService = hunterService;
             _deepSeekService = deepSeekService;
@@ -106,14 +102,13 @@
             _openAiApiKey = openAiOptions.Value.ApiKey;
         }
 
-        private int BatchSize
-        {
-            get
-            {
-                var configured = _configuration.GetValue<int?>("Validation:BatchSize");
-                return configured is > 0 and <= 200 ? configured.Value : DefaultBatchSize;
-            }
-        }
+        /// <summary>
+        /// Contacts per model request, as the admin page has it — read once
+        /// per run rather than held, so moving the number takes effect on the
+        /// next run without a redeploy or a restart.
+        /// </summary>
+        private Task<int> GetBatchSizeAsync(CancellationToken cancellationToken) =>
+            _validationSettings.GetBatchSizeAsync(cancellationToken);
 
         /// <summary>
         /// What one server-side web search costs, in dollars. Not returned by
@@ -580,7 +575,9 @@
 
             var itemsByContact = items.ToDictionary(i => i.ContactId);
 
-            foreach (var batch in contacts.Chunk(BatchSize))
+            var batchSize = await GetBatchSizeAsync(cancellationToken);
+
+            foreach (var batch in contacts.Chunk(batchSize))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 

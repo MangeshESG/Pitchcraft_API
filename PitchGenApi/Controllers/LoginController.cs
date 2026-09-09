@@ -437,6 +437,97 @@ namespace PitchGenApi.Controllers
         }
 
 
+        /// <summary>
+        /// Sets a client's password without knowing the old one — the way back
+        /// in for an account that cannot sign in.
+        ///
+        /// <c>profile/{clientId}/change-password</c> cannot help here: it
+        /// verifies the current password first, which is precisely what is
+        /// unknown when someone is locked out. This is the admin counterpart,
+        /// so it proves the caller is an admin instead.
+        /// </summary>
+        [HttpPost("admin/set-password")]
+        public async Task<IActionResult> SetPasswordByAdmin(
+            [FromBody] AdminSetPasswordRequest request)
+        {
+            try
+            {
+                if (request == null || string.IsNullOrWhiteSpace(request.NewPassword))
+                    return BadRequest(new { message = "A new password is required." });
+
+                if (request.NewPassword.Length < 8)
+                    return BadRequest(new { message = "New password must be at least 8 characters." });
+
+                // Handing out someone else's account is the most dangerous
+                // thing in this controller, so the caller has to be an admin.
+                var isAdmin = await _context.ClientDetails
+                    .AsNoTracking()
+                    .Where(client => client.Id == request.RequestedBy)
+                    .Select(client => (bool?)client.IsAdmin)
+                    .FirstOrDefaultAsync();
+
+                if (isAdmin != true)
+                    return StatusCode(403, new { message = "Only an admin can set another user's password." });
+
+                var identifier = request.Username?.Trim();
+
+                var matches = await _context.ClientDetails
+                    .Where(user =>
+                        (request.ClientId > 0 && user.Id == request.ClientId) ||
+                        (identifier != null && identifier != "" &&
+                         (user.Username == identifier || user.Email == identifier)))
+                    .ToListAsync();
+
+                if (matches.Count == 0)
+                    return NotFound(new { message = "No account matches that id or username." });
+
+                // Login resolves a username with FirstOrDefault, so with two
+                // matching rows it signs in whichever the database hands back
+                // first. Setting the password on one of them would look like it
+                // had worked and change nothing, so say so instead.
+                if (matches.Count > 1)
+                {
+                    return BadRequest(new
+                    {
+                        message =
+                            $"{matches.Count} accounts match that username or email " +
+                            $"(ids {string.Join(", ", matches.Select(m => m.Id))}). " +
+                            "Pass clientId to say which one."
+                    });
+                }
+
+                var target = matches[0];
+                target.PasswordHash = PasswordHasher.HashPassword(request.NewPassword);
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    success = true,
+                    clientId = target.Id,
+                    username = target.Username,
+                    message = $"Password set for {target.Username}."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { message = ex.Message });
+            }
+        }
+
+        public class AdminSetPasswordRequest
+        {
+            /// <summary>The account to change. Use this, or Username.</summary>
+            public int ClientId { get; set; }
+
+            /// <summary>Username or email of the account, when the id is unknown.</summary>
+            public string? Username { get; set; }
+
+            public string NewPassword { get; set; } = "";
+
+            /// <summary>Client id of the admin making the change.</summary>
+            public int RequestedBy { get; set; }
+        }
+
         [HttpPost("admin/create-user")]
         public async Task<IActionResult> CreateUserByAdmin(
         [FromBody] AdminCreateUserRequest request)

@@ -108,10 +108,14 @@ namespace PitchGenApi.Model
         /// Set by hand from "Mark as verified" — the user has checked this
         /// contact themselves, or corrected it after the AI got it wrong.
         ///
-        /// A later run never clears this. Overriding a mistaken AI correction
-        /// is the entire point of the flag, so the UI shows the new score
-        /// beside the manual mark and its date rather than silently discarding
-        /// the human judgement.
+        /// Setting it also writes 100 into every confidence column that already
+        /// holds a score: a person who has checked the record outranks the
+        /// model, and the score column is what the grid sorts, filters and
+        /// exports on. Columns for checks that never ran stay null.
+        ///
+        /// A later run never clears the flag, but it does write its own fresh
+        /// score over the 100 — the run is new evidence, and the mark and its
+        /// date stay beside it to say a person had looked.
         /// </summary>
         [Column("is_verified")]
         public bool IsVerified { get; set; }

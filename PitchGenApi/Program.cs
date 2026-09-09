@@ -206,6 +206,10 @@ builder.Services.AddScoped<ISecuritySettingsService, SecuritySettingsService>();
 // (Settings > Admin > Prompts)
 builder.Services.AddScoped<IPromptSettingsService, PromptSettingsService>();
 
+// Audience Assurance tuning, e.g. contacts per model request
+// (Settings > Admin > Validation)
+builder.Services.AddScoped<IValidationSettingsService, ValidationSettingsService>();
+
 // Per-contact personalization inputs shared by email and LinkedIn generation
 builder.Services.AddScoped<IContactPromptContextService, ContactPromptContextService>();
 
@@ -277,16 +281,21 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 });
 
 // ===============================
-// ✅ Ensure wwwroot/uploads exists
+// ✅ Ensure the static-file folders exist
 // ===============================
-var webRootPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+// ContentRootPath rather than Directory.GetCurrentDirectory(): under IIS the
+// working directory is not reliably the app folder. And PhysicalFileProvider
+// throws DirectoryNotFoundException on a missing path, which kills startup
+// before the process ever listens — an ANCM 502.5 with nothing else to go on.
+// Publish drops empty folders, so email-attachments has to be created here the
+// same way uploads always was.
+var webRootPath = Path.Combine(app.Environment.ContentRootPath, "wwwroot");
 var uploadsPath = Path.Combine(webRootPath, "uploads");
+var emailAttachmentsPath = Path.Combine(webRootPath, "email-attachments");
 
-if (!Directory.Exists(webRootPath))
-    Directory.CreateDirectory(webRootPath);
-
-if (!Directory.Exists(uploadsPath))
-    Directory.CreateDirectory(uploadsPath);
+Directory.CreateDirectory(webRootPath);
+Directory.CreateDirectory(uploadsPath);
+Directory.CreateDirectory(emailAttachmentsPath);
 
 // ===============================
 // ✅ Swagger
@@ -307,16 +316,14 @@ app.UseHttpsRedirection();
 // Serve /uploads publicly
 app.UseStaticFiles(new StaticFileOptions
 {
-    FileProvider = new PhysicalFileProvider(
-        Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads")),
+    FileProvider = new PhysicalFileProvider(uploadsPath),
     RequestPath = "/uploads"
 });
 
 // ✅ Serve /email-attachments publicly
 app.UseStaticFiles(new StaticFileOptions
 {
-    FileProvider = new PhysicalFileProvider(
-        Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "email-attachments")),
+    FileProvider = new PhysicalFileProvider(emailAttachmentsPath),
     RequestPath = "/email-attachments"
 });
 
