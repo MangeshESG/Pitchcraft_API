@@ -990,11 +990,21 @@
 
             if (LooksLikeDeepSeek(model))
             {
+                var deepSeekRate = await _context.ModelRates.FirstOrDefaultAsync(
+                    m => m.ModelName == model, cancellationToken);
+
+                // Math.Max, not a plain assignment: EnquiryRequest.MaxTokens wins
+                // outright inside the pitch service, so assigning the computed
+                // budget here would silently discard a larger configured
+                // ModelRates.MaxTokens. The OpenAI path below takes the larger of
+                // the two; this one has to agree with it.
                 var request = new EnquiryRequest
                 {
                     Prompt = prompt,
                     ModelName = model,
-                    MaxTokens = OutputBudgetFor(batchCount)
+                    MaxTokens = Math.Max(
+                        deepSeekRate?.MaxTokens ?? 0,
+                        OutputBudgetFor(batchCount, needsSearch))
                 };
 
                 // clientId 0: this run already reserved its credits up front, and
@@ -1028,9 +1038,20 @@
         /// loses the whole batch. Roughly 120 tokens per contact covers an ID,
         /// a score and a sentence or two of comments, with a fixed allowance on
         /// top for the wrapper and any preamble.
+        ///
+        /// A web search check needs far more than the answer costs. On the
+        /// Responses endpoint the model's own reasoning and its running search
+        /// commentary are billed against this same ceiling, and they dwarf the
+        /// results: a ten contact batch can burn four thousand reasoning tokens
+        /// over a dozen search rounds before writing a single result. When the
+        /// ceiling runs out mid-research the reply comes back with no results
+        /// object at all, which is indistinguishable downstream from a model
+        /// that answered in the wrong format.
         /// </summary>
-        private static int OutputBudgetFor(int batchCount) =>
-            Math.Clamp(batchCount * 120 + 1000, 4000, 32000);
+        private static int OutputBudgetFor(int batchCount, bool usesWebSearch) =>
+            usesWebSearch
+                ? Math.Clamp(batchCount * 800 + 4000, 16000, 64000)
+                : Math.Clamp(batchCount * 120 + 1000, 4000, 32000);
 
         private async Task<ModelCallResult> CallOpenAiAsync(
             string model,
@@ -1042,7 +1063,7 @@
             var rate = await _context.ModelRates.FirstOrDefaultAsync(
                 m => m.ModelName == model, cancellationToken);
 
-            var maxTokens = Math.Max(rate?.MaxTokens ?? 0, OutputBudgetFor(batchCount));
+            var maxTokens = Math.Max(rate?.MaxTokens ?? 0, OutputBudgetFor(batchCount, needsSearch));
 
             var body = new Dictionary<string, object>
             {

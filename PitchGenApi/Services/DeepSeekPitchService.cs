@@ -374,8 +374,8 @@ namespace PitchGenApi.Services
                     ?? promptTokens + completionTokens;
 
                 int cachedTokens =
-                    parsed["usage"]?["input_tokens_details"]?["cached_tokens"]?.Value<int>()
-                    ?? parsed["usage"]?["prompt_cache_hit_tokens"]?.Value<int>()
+                    parsed.SelectToken("usage.input_tokens_details.cached_tokens")?.Value<int>()
+                    ?? parsed.SelectToken("usage.prompt_cache_hit_tokens")?.Value<int>()
                     ?? 0;
 
                 // DeepSeek bills web search as the extra model tokens it consumes,
@@ -383,6 +383,53 @@ namespace PitchGenApi.Services
                 decimal currentCost =
                     (promptTokens * inputPricePerMillion / 1_000_000m) +
                     (completionTokens * outputPricePerMillion / 1_000_000m);
+
+                // A run that spends its whole output budget researching comes
+                // back status "incomplete" — or simply with the search calls and
+                // no closing answer — and the tokens are spent either way. Say so
+                // here: left to the caller it reads as a model that answered in
+                // the wrong format, which sends the next person to fix the parser
+                // rather than the budget.
+                string status = parsed["status"]?.ToString() ?? "";
+
+                // SelectToken, not parsed["incomplete_details"]?["reason"]: the
+                // field is present and JSON null on every complete response, and
+                // a JValue holding null is not a C# null, so ?. does not short
+                // circuit and indexing into it throws InvalidOperationException.
+                string incompleteReason =
+                    parsed.SelectToken("incomplete_details.reason")?.ToString() ?? "";
+
+                bool ranOut =
+                    status.Equals("incomplete", StringComparison.OrdinalIgnoreCase) ||
+                    incompleteReason.Length > 0;
+
+                if (ranOut || string.IsNullOrWhiteSpace(output))
+                {
+                    string reason = ranOut
+                        ? $"DeepSeek stopped before answering (status '{status}'"
+                          + (incompleteReason.Length > 0 ? $", reason '{incompleteReason}'" : "")
+                          + $"): the {maxTokens:N0} token output budget was spent on reasoning and "
+                          + $"{CountWebSearchCalls(parsed)} web searches. Raise max_output_tokens or "
+                          + "reduce the batch size."
+                        : $"DeepSeek returned no answer text after {CountWebSearchCalls(parsed)} web "
+                          + $"searches and {completionTokens:N0} output tokens against a "
+                          + $"{maxTokens:N0} token budget.";
+
+                    // Tokens and cost are still reported: the caller adds them to
+                    // the job before it checks IsSuccess, so a failed batch is
+                    // billed as accurately as a successful one.
+                    return new PitchResult
+                    {
+                        Content = reason,
+                        PromptTokens = promptTokens,
+                        CompletionTokens = completionTokens,
+                        TotalTokens = totalTokens,
+                        CachedTokens = cachedTokens,
+                        WebSearchCalls = CountWebSearchCalls(parsed),
+                        CurrentCost = currentCost,
+                        IsSuccess = false
+                    };
+                }
 
                 if (clientId > 0)
                 {
@@ -442,6 +489,15 @@ namespace PitchGenApi.Services
         /// Falls back to walking the Responses API output items when the convenience
         /// output_text field isn't present. Web search calls sit in the same array
         /// and carry no text, so they're skipped naturally.
+        ///
+        /// Only assistant answers count. The same array also carries reasoning
+        /// items, whose content is the model's private chain of thought, and
+        /// commentary messages it narrates between searches ("Let me check the
+        /// remaining contacts"). Both have a text field, so taking every text
+        /// field returned pages of prose with the answer buried in it — or, when
+        /// the model ran out of budget before answering, pages of prose with no
+        /// answer in it at all. Callers that expect JSON then fail on a reply
+        /// that never contained any.
         /// </summary>
         private static string ExtractResponsesText(JObject parsed)
         {
@@ -451,10 +507,21 @@ namespace PitchGenApi.Services
 
             foreach (var item in outputs)
             {
+                if (!string.Equals(item["type"]?.ToString(), "message", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (string.Equals(item["phase"]?.ToString(), "commentary", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
                 if (item["content"] is not JArray contentArray) continue;
 
                 foreach (var content in contentArray)
                 {
+                    // output_text is the answer; refusals and any other content
+                    // type are not something a caller can parse.
+                    if (!string.Equals(content["type"]?.ToString(), "output_text", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
                     string? text = content["text"]?.ToString();
                     if (!string.IsNullOrWhiteSpace(text))
                         sb.AppendLine(text.Trim());
