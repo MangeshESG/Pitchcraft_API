@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace PitchGenApi.Model
@@ -7,11 +7,12 @@ namespace PitchGenApi.Model
     /// One validation run, and what it actually cost.
     ///
     /// The cost columns are the point of this table. Web search dominates the
-    /// price of a run — roughly a cent per search against a fifth of a cent of
-    /// tokens for a whole 100-contact batch — and how many searches a batch
-    /// needs cannot be predicted, only measured. Every run therefore records
-    /// its real token usage and its real search count so cost per 100 contacts
-    /// can be derived from production data before credit pricing is set.
+    /// price of a run, not as a separate fee but through the tokens it burns:
+    /// the searching, the reasoning between searches and the running commentary
+    /// are all billed as model output, and how many searches a batch needs
+    /// cannot be predicted, only measured. Every run therefore records its real
+    /// token usage and its real search count so cost per 100 contacts can be
+    /// derived from production data before credit pricing is set.
     /// </summary>
     [Table("contact_validation_jobs")]
     public class ContactValidationJob
@@ -80,7 +81,11 @@ namespace PitchGenApi.Model
         [Column("web_search_calls")]
         public int WebSearchCalls { get; set; }
 
-        /// <summary>Tokens priced from ModelRates, plus searches at the configured per-call rate.</summary>
+        /// <summary>
+        /// Token cost priced from ModelRates. Search is not added separately:
+        /// both providers bill server-side search as the extra model tokens it
+        /// consumes, and those tokens are already counted here.
+        /// </summary>
         [Column("calculated_cost")]
         public decimal CalculatedCost { get; set; }
 

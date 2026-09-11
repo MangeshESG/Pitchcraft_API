@@ -115,8 +115,6 @@
         /// the providers, so it has to be configured; without it a run's
         /// reported cost would only ever show the near-zero token half.
         /// </summary>
-        private decimal WebSearchCostPerCall =>
-            _configuration.GetValue<decimal?>("Validation:WebSearchCostPerCall") ?? 0.01m;
 
         private TimeSpan ModelCallTimeout
         {
@@ -577,6 +575,10 @@
 
             var batchSize = await GetBatchSizeAsync(cancellationToken);
 
+            // Whether this check is only meaningful with live evidence. Used
+            // below to reject a batch that came back without having searched.
+            var needsSearch = ValidationCheckTypes.UsesWebSearch(job.CheckType);
+
             foreach (var batch in contacts.Chunk(batchSize))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -627,12 +629,53 @@
                 job.OutputTokens += call.OutputTokens;
                 job.TotalTokens += call.InputTokens + call.OutputTokens;
                 job.WebSearchCalls += call.WebSearchCalls;
-                job.CalculatedCost += call.TokenCost + call.WebSearchCalls * WebSearchCostPerCall;
+
+                // Tokens only. Both providers bill server-side search as the
+                // extra model tokens it consumes, and those tokens are already
+                // in the usage figures above, so a per-call fee on top invents
+                // cost nobody charged — a 53-search run reported $0.53 of fee
+                // against roughly $0.34 of actual tokens, more than doubling
+                // the number every pricing decision was being read from.
+                job.CalculatedCost += call.TokenCost;
 
                 if (!call.IsSuccess)
                 {
                     MarkBatchFailed(batch, itemsByContact, call.Error ?? "The model returned nothing.");
                     continue;
+                }
+
+                // A research check that did not search answered from training
+                // data, and it does so over HTTP 200 with well-formed JSON —
+                // there is nothing further downstream that can tell the
+                // difference. Fail it here instead of writing a verdict that
+                // looks identical to a verified one.
+                //
+                // This is the guard that matters when a model alias changes
+                // under us: DeepSeek's compatibility table lists web_search
+                // among built-in tools it ignores, and deepseek-v4-pro is
+                // routed to V4.1-Flash after 2026-09-14. Whichever way that
+                // lands, it surfaces here as a failed batch rather than as
+                // silently invented verification.
+                if (needsSearch && call.WebSearchCalls == 0)
+                {
+                    var returned = call.OutputItemTypes.Count > 0
+                        ? string.Join(", ", call.OutputItemTypes)
+                        : "nothing";
+
+                    MarkBatchFailed(batch, itemsByContact,
+                        $"The model answered without searching the web, so the result is not " +
+                        $"verified evidence. Model '{job.ModelName}' was sent the web_search tool " +
+                        $"with tool_choice forcing it, and returned no search items. " +
+                        $"The response contained: {returned}.");
+                    continue;
+                }
+
+                if (call.SearchEvidence.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "Validation job {JobId} batch searched: {Evidence}",
+                        job.Id,
+                        string.Join(" | ", call.SearchEvidence));
                 }
 
                 var parsed = ParseResults(call.Content);
@@ -969,6 +1012,8 @@
             public int CachedTokens { get; init; }
             public int OutputTokens { get; init; }
             public int WebSearchCalls { get; init; }
+            public IReadOnlyList<string> SearchEvidence { get; init; } = Array.Empty<string>();
+            public IReadOnlyList<string> OutputItemTypes { get; init; } = Array.Empty<string>();
             public decimal TokenCost { get; init; }
         }
 
@@ -1022,6 +1067,8 @@
                     CachedTokens = result.CachedTokens,
                     OutputTokens = result.CompletionTokens,
                     WebSearchCalls = result.WebSearchCalls,
+                    SearchEvidence = result.SearchEvidence,
+                    OutputItemTypes = result.OutputItemTypes,
                     TokenCost = result.CurrentCost
                 };
             }
@@ -1075,7 +1122,11 @@
             if (needsSearch)
             {
                 body["tools"] = new object[] { new { type = "web_search", external_web_access = true } };
-                body["tool_choice"] = "auto";
+                // "required" rather than "auto": a research check that answers
+                // from memory is worthless here, and auto lets the model decide
+                // it already knows. The zero-search guard in the batch loop is
+                // the backstop for a model that ignores this.
+                body["tool_choice"] = "required";
                 body["include"] = new[] { "web_search_call.action.sources" };
             }
 
@@ -1121,6 +1172,8 @@
             var incompleteReason = OpenAiResponseGuard.GetIncompleteReason(parsed);
 
             var searches = CountWebSearchCalls(parsed);
+            var evidence = ExtractSearchEvidence(parsed);
+            var itemTypes = ExtractOutputItemTypes(parsed);
 
             if (incompleteReason != null || string.IsNullOrWhiteSpace(content))
             {
@@ -1132,6 +1185,8 @@
                     CachedTokens = cachedTokens,
                     OutputTokens = outputTokens,
                     WebSearchCalls = searches,
+                    SearchEvidence = evidence,
+                    OutputItemTypes = itemTypes,
                     TokenCost = tokenCost
                 };
             }
@@ -1144,6 +1199,8 @@
                 CachedTokens = cachedTokens,
                 OutputTokens = outputTokens,
                 WebSearchCalls = searches,
+                SearchEvidence = evidence,
+                OutputItemTypes = itemTypes,
                 TokenCost = tokenCost
             };
         }
@@ -1154,6 +1211,56 @@
 
             return outputs.Count(item =>
                 item["type"]?.ToString()?.Contains("web_search", StringComparison.OrdinalIgnoreCase) == true);
+        }
+
+        /// <summary>
+        /// What was searched for and which pages were opened, one entry per
+        /// search action, so a stored score can be traced back to its evidence.
+        /// Mirrors the DeepSeek-side extractor; both endpoints put an "action"
+        /// on the search item.
+        /// </summary>
+        /// <summary>Distinct output item types, for telling a skipped search apart from an unrecognised one.</summary>
+        private static List<string> ExtractOutputItemTypes(JObject parsed)
+        {
+            if (parsed["output"] is not JArray outputs) return new List<string>();
+
+            return outputs
+                .Select(item => item["type"]?.ToString())
+                .Where(type => !string.IsNullOrWhiteSpace(type))
+                .Select(type => type!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static List<string> ExtractSearchEvidence(JObject parsed)
+        {
+            var evidence = new List<string>();
+
+            if (parsed["output"] is not JArray outputs) return evidence;
+
+            foreach (var item in outputs)
+            {
+                if (item["type"]?.ToString()?.Contains("web_search", StringComparison.OrdinalIgnoreCase) != true)
+                    continue;
+
+                var action = item["action"];
+                if (action == null) continue;
+
+                var kind = action["type"]?.ToString();
+                if (string.IsNullOrWhiteSpace(kind)) kind = "search";
+
+                var query = action["query"]?.ToString();
+                var url = action["url"]?.ToString();
+
+                if (!string.IsNullOrWhiteSpace(query))
+                    evidence.Add($"{kind}: {query}");
+                else if (!string.IsNullOrWhiteSpace(url))
+                    evidence.Add($"{kind}: {url}");
+                else
+                    evidence.Add(kind);
+            }
+
+            return evidence;
         }
 
         private static string ExtractResponsesText(JObject parsed)

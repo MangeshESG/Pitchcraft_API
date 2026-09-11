@@ -14,9 +14,20 @@ namespace PitchGenApi.Services
         // /chat/completions (whose tools array only takes caller-run functions).
         private const string WebSearchToolType = "web_search";
 
-        // Only deepseek-v4-flash serves the Responses API today; deepseek-v4-pro
-        // does not. Used to add a hint when the API rejects the request.
-        private const string ResponsesApiModel = "deepseek-v4-flash";
+        // Whether a given DeepSeek model actually runs this tool is not
+        // something to hard-code, and not something their docs settle. The
+        // Responses compatibility table lists web_search among built-in tools
+        // that are "Ignored"; other sections of the same guide describe it as
+        // supported and server-side. Measured 2026-09-10, deepseek-v4-pro ran
+        // searches and both flash names ran none — but a model alias can change
+        // that overnight, and DeepSeek's changelog routes deepseek-v4-pro to
+        // V4.1-Flash after 2026-09-14.
+        //
+        // So capability is never inferred from the model name here. The request
+        // asks for search, and the caller checks WebSearchCalls on the way out
+        // to find out whether it happened. A model that ignores the tool returns
+        // HTTP 200 with zero web_search_call items and an answer written from
+        // memory, which is indistinguishable from a real answer until counted.
 
         private readonly HttpClient _httpClient;
         private readonly AppDbContext _context;
@@ -325,7 +336,20 @@ namespace PitchGenApi.Services
                         {
                             new { type = WebSearchToolType }
                         }
-                    }
+                    },
+                    // Offering the tool only permits a search; tool_choice is
+                    // what asks for one. Research callers want evidence, not a
+                    // model deciding it already knows the answer.
+                    //
+                    // DeepSeek documents tool_choice as none/auto/required or a
+                    // specific *function* tool, so naming a built-in this way may
+                    // not be honoured. It is sent anyway because their stated
+                    // rule is that unsupported parameters are silently ignored
+                    // rather than rejected: if it works the search is forced, and
+                    // if it does not this costs nothing. Either way the
+                    // WebSearchCalls count, not this field, is what proves a
+                    // search ran.
+                    { "tool_choice", new { type = WebSearchToolType } }
                 };
 
                 if (!string.IsNullOrWhiteSpace(request.ScrappedData))
@@ -344,19 +368,18 @@ namespace PitchGenApi.Services
                     httpContent
                 );
 
-                var responseContent = await response.Content.ReadAsStringAsync();
+              var responseContent = await response.Content.ReadAsStringAsync();
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    // Only deepseek-v4-flash serves this endpoint so far, and that is
-                    // the likeliest cause of a rejection here.
-                    string hint = apiModelName.Equals(ResponsesApiModel, StringComparison.OrdinalIgnoreCase)
-                        ? ""
-                        : $" (web search requires '{ResponsesApiModel}'; '{apiModelName}' is configured)";
-
+                    // A 400 here is usually the configured model not serving the
+                    // Responses API at all, or rejecting tool_choice on a
+                    // built-in tool. Name the model so the reader can check it
+                    // against DeepSeek's current model list rather than guessing.
                     return new PitchResult
                     {
-                        Content = $"DeepSeek web search error ({(int)response.StatusCode}){hint}: {responseContent}",
+                        Content = $"DeepSeek web search error ({(int)response.StatusCode}) "
+                                + $"on model '{apiModelName}': {responseContent}",
                         IsSuccess = false
                     };
                 }
@@ -426,6 +449,8 @@ namespace PitchGenApi.Services
                         TotalTokens = totalTokens,
                         CachedTokens = cachedTokens,
                         WebSearchCalls = CountWebSearchCalls(parsed),
+                        SearchEvidence = ExtractSearchEvidence(parsed),
+                        OutputItemTypes = ExtractOutputItemTypes(parsed),
                         CurrentCost = currentCost,
                         IsSuccess = false
                     };
@@ -444,6 +469,8 @@ namespace PitchGenApi.Services
                     TotalTokens = totalTokens,
                     CachedTokens = cachedTokens,
                     WebSearchCalls = CountWebSearchCalls(parsed),
+                    SearchEvidence = ExtractSearchEvidence(parsed),
+                    OutputItemTypes = ExtractOutputItemTypes(parsed),
                     CurrentCost = currentCost,
                     IsSuccess = true
                 };
@@ -478,11 +505,77 @@ namespace PitchGenApi.Services
         {
             if (parsed["output"] is not JArray outputs) return 0;
 
+            // Contains, not an exact match on "web_search_call": if DeepSeek
+            // ever labels the item differently — a suffixed or versioned type,
+            // say — an exact comparison silently reports zero searches, which
+            // now fails a batch. Reading a variant as a search is the safer
+            // error of the two, and the OpenAI-side counter already matches
+            // this way.
             return outputs.Count(item =>
-                string.Equals(
-                    item["type"]?.ToString(),
-                    WebSearchToolType + "_call",
-                    StringComparison.OrdinalIgnoreCase));
+                item["type"]?.ToString()?.Contains(WebSearchToolType, StringComparison.OrdinalIgnoreCase) == true);
+        }
+
+        /// <summary>
+        /// The queries the model ran and the pages it opened, read from the
+        /// action on each web_search_call item.
+        ///
+        /// A score without its evidence cannot be defended or re-checked later:
+        /// "contact fit 82, four searches" says nothing about what was read, and
+        /// the searching is the expensive half of producing it. DeepSeek
+        /// documents the action shapes as search / open_page / find_in_page;
+        /// anything unrecognised is kept by type rather than dropped, because an
+        /// unfamiliar action still records that something was consulted.
+        /// </summary>
+        /// <summary>
+        /// Every distinct item type the response carried, in order.
+        ///
+        /// Reported so that "no search happened" can be told apart from "the
+        /// search was labelled something we do not recognise". Without it a
+        /// zero-search result is an accusation against the model that may
+        /// actually be a parsing bug on this side, and the two are impossible
+        /// to separate after the response is discarded.
+        /// </summary>
+        public static List<string> ExtractOutputItemTypes(JObject parsed)
+        {
+            if (parsed["output"] is not JArray outputs) return new List<string>();
+
+            return outputs
+                .Select(item => item["type"]?.ToString())
+                .Where(type => !string.IsNullOrWhiteSpace(type))
+                .Select(type => type!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        public static List<string> ExtractSearchEvidence(JObject parsed)
+        {
+            var evidence = new List<string>();
+
+            if (parsed["output"] is not JArray outputs) return evidence;
+
+            foreach (var item in outputs)
+            {
+                if (item["type"]?.ToString()?.Contains(WebSearchToolType, StringComparison.OrdinalIgnoreCase) != true)
+                    continue;
+
+                var action = item["action"];
+                if (action == null) continue;
+
+                var kind = action["type"]?.ToString();
+                if (string.IsNullOrWhiteSpace(kind)) kind = "search";
+
+                var query = action["query"]?.ToString();
+                var url = action["url"]?.ToString();
+
+                if (!string.IsNullOrWhiteSpace(query))
+                    evidence.Add($"{kind}: {query}");
+                else if (!string.IsNullOrWhiteSpace(url))
+                    evidence.Add($"{kind}: {url}");
+                else
+                    evidence.Add(kind);
+            }
+
+            return evidence;
         }
 
         /// <summary>
