@@ -42,6 +42,58 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         return $"<{value}>";
     }
 
+    private static bool DetectAutoReply(string? subject, string? body, string? rawHeaders)
+    {
+        var headers = rawHeaders ?? string.Empty;
+
+        // Auto-Submitted is the standard and strongest signal. "no" explicitly
+        // means that the message was not generated automatically.
+        if (Regex.IsMatch(
+                headers,
+                @"(?im)^\s*Auto-Submitted\s*:\s*(?!no(?:\s|;|$))\S+"))
+        {
+            Console.WriteLine(
+                $"🤖 Auto reply detected: Auto-Submitted header. Subject: {subject ?? "(no subject)"}");
+            return true;
+        }
+
+        if (Regex.IsMatch(
+                headers,
+                @"(?im)^\s*X-(?:AutoReply|Autorespond)\s*:\s*(?!no(?:\s|;|$))\S+"))
+        {
+            Console.WriteLine(
+                $"🤖 Auto reply detected: X-AutoReply/X-Autorespond header. Subject: {subject ?? "(no subject)"}");
+            return true;
+        }
+
+        var subjectText = subject ?? string.Empty;
+        if (Regex.IsMatch(
+                subjectText,
+                @"^\s*(?:(?:re|fw|fwd)\s*:\s*)*(?:automatic\s+reply|auto(?:matic)?[- ]?response|auto[- ]?reply|out\s+of\s+(?:the\s+)?office|ooo\b|away\s+from\s+(?:the\s+)?office|vacation\s+(?:reply|response))",
+                RegexOptions.IgnoreCase))
+        {
+            Console.WriteLine(
+                $"🤖 Auto reply detected: subject pattern matched. Subject: {subjectText}");
+            return true;
+        }
+
+        var bodyText = System.Net.WebUtility.HtmlDecode(
+            Regex.Replace(body ?? string.Empty, @"<[^>]+>", " "));
+
+        var matchedBodyPattern = Regex.IsMatch(
+            bodyText,
+            @"\b(?:this\s+is\s+an\s+automated\s+(?:reply|response)|i\s+am\s+(?:currently\s+)?out\s+of\s+(?:the\s+)?office|i(?:'|’)m\s+(?:currently\s+)?out\s+of\s+(?:the\s+)?office|i\s+will\s+be\s+away\s+until|i\s+am\s+(?:currently\s+)?unavailable\s+and\s+will\s+return)\b",
+            RegexOptions.IgnoreCase);
+
+        if (matchedBodyPattern)
+        {
+            Console.WriteLine(
+                $"🤖 Auto reply detected: body pattern matched. Subject: {subject ?? "(no subject)"}");
+        }
+
+        return matchedBodyPattern;
+    }
+
     public async Task SyncEmailsAsync(Inboxcredentials setting)
     {
         Console.WriteLine($"\n🚀 Starting sync for: {setting.Username}");
@@ -269,6 +321,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     continue;
                 }
 
+                var isAutoReply = DetectAutoReply(
+                    msg.Subject,
+                    rawBody,
+                    msg.Headers.ToString());
+
                 var fromEmail =
                     msg.From.Mailboxes.FirstOrDefault()?.Address;
 
@@ -392,7 +449,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                         FromName = fromName,
 
-                        ToEmail = msg.To.ToString(),
+                        ToEmail = setting.EmailAddress,
 
                         Inboxid = setting.Id,
 
@@ -403,6 +460,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                     500)),
 
                         Body = body,
+                        IsAutoReply = isAutoReply,
                         Provider = "SMTP",
                         TrackingId = trackingId ?? sent.TrackingId,
 
@@ -478,7 +536,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                             FileSize = fileSize,
 
-                                            Provider = provider,
+                                            Provider = "SMTP",
 
                                             CreatedAt = DateTime.UtcNow
                                         });
@@ -546,7 +604,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             FromName = fromName,
                             Provider = "SMTP",
 
-                            ToEmail = msg.To.ToString(),
+                            ToEmail = setting.EmailAddress,
 
                             Subject = (msg.Subject ?? "")
                                 .Substring(0,
@@ -557,6 +615,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             Inboxid = setting.Id,
 
                             Body = body,
+                            IsAutoReply = isAutoReply,
 
                             TrackingId = Guid.NewGuid(),
 
@@ -614,7 +673,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                             FromName = fromName,
 
-                            ToEmail = msg.To.ToString(),
+                            ToEmail = setting.EmailAddress,
 
                             Subject = (msg.Subject ?? "")
                                 .Substring(0,
@@ -625,6 +684,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             Contactid = contactResult.ContactId,
 
                             Body = body,
+                            IsAutoReply = isAutoReply,
 
                             Date = msg.Date.UtcDateTime,
 
@@ -704,7 +764,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                                 FileSize = fileSize,
 
-                                                Provider = provider,
+                                                Provider = "SMTP",
 
                                                 CreatedAt = DateTime.UtcNow
                                             });
@@ -874,7 +934,6 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                     string subject = GetHeader(headers, "Subject");
                     string fromHeader = GetHeader(headers, "From");
-                    string toHeader = GetHeader(headers, "To");
 
                     string fromName = "";
                     string fromAddress = fromHeader;
@@ -1009,6 +1068,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         continue;
                     }
 
+                    var isAutoReply = DetectAutoReply(
+                        subject,
+                        body,
+                        rawHeadersText);
+
                     if (replyExists || inboxExistsAlready)
                     {
                         Console.WriteLine("⚠️ Duplicate Gmail mail skipped");
@@ -1067,11 +1131,12 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             InReplyTo = inReplyTo,
                             FromEmail = fromAddress,
                             FromName = fromName,
-                            ToEmail = toHeader,
+                            ToEmail = tokenData.Email,
 
                             Subject = subject,
                             Inboxid = tokenData.Id,
                             Body = cleanbody,
+                            IsAutoReply = isAutoReply,
                             TrackingId = trackingId ?? sentMail.TrackingId,
                             Date = emailDate,
                             Provider = "Gmail",
@@ -1127,10 +1192,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 InReplyTo = inReplyTo,
                                 FromEmail = fromAddress,
                                 FromName = fromName,
-                                ToEmail = toHeader,
+                                ToEmail = tokenData.Email,
                                 Subject = subject,
                                 Inboxid = tokenData.Id,
                                 Body = cleanbody,
+                                IsAutoReply = isAutoReply,
                                 TrackingId = inboxExists.TrackingId,
                                 Date = emailDate,
                                 Provider = "Gmail",
@@ -1155,10 +1221,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 InReplyTo = inReplyTo,
                                 FromEmail = fromAddress,
                                 FromName = fromName,
-                                ToEmail = toHeader,
+                                ToEmail = tokenData.Email,
                                 Subject = subject,
                                 Inboxid = tokenData.Id,
                                 Body = cleanbody,
+                                IsAutoReply = isAutoReply,
                                 TrackingId = Guid.NewGuid(),
                                 Date = emailDate,
                                 Provider = "Gmail",
@@ -1196,10 +1263,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 InReplyTo = inReplyTo,
                                 FromEmail = fromAddress,
                                 FromName = fromName,
-                                ToEmail = toHeader,
+                                ToEmail = tokenData.Email,
                                 Subject = subject,
                                 Contactid = contactResult.ContactId,
                                 Body = cleanbody,
+                                IsAutoReply = isAutoReply,
                                 Date = emailDate,
                                 IsRead = false,
                                 Provider = "Gmail",
@@ -1368,22 +1436,6 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     string fromName =
                         msg.from?.emailAddress?.name ?? "";
 
-                    string toEmail = "";
-
-                    if (msg.toRecipients != null)
-                    {
-                        var recipients = new List<string>();
-
-                        foreach (var r in msg.toRecipients)
-                        {
-                            var email = r.emailAddress?.address?.ToString();
-
-                            if (!string.IsNullOrWhiteSpace(email))
-                                recipients.Add(email);
-                        }
-
-                        toEmail = string.Join(";", recipients);
-                    }
                     // =========================================
                     // SKIP OWN MAILS
                     // =========================================
@@ -1557,6 +1609,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         continue;
                     }
 
+                    var isAutoReply = DetectAutoReply(
+                        subject,
+                        body,
+                        rawHeadersText);
+
                     if (replyExists || inboxExistsAlready)
                     {
                         Console.WriteLine("⚠️ Duplicate Outlook mail skipped");
@@ -1606,7 +1663,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                             FromEmail = from,
 
-                            ToEmail = toEmail,
+                            ToEmail = tokenData.Email,
 
                             FromName = fromName,
 
@@ -1615,6 +1672,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             Inboxid = tokenData.Id,
 
                             Body = cleanbody,
+                            IsAutoReply = isAutoReply,
                             Provider = "Outlook",
                             TrackingId = sentMail.TrackingId,
 
@@ -1686,7 +1744,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                 FromEmail = from,
 
-                                ToEmail = toEmail,
+                                ToEmail = tokenData.Email,
 
                                 FromName = fromName,
 
@@ -1695,6 +1753,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 Inboxid = tokenData.Id,
                                 Provider = "Outlook",
                                 Body = cleanbody,
+                                IsAutoReply = isAutoReply,
 
                                 TrackingId = inboxExists.TrackingId,
 
@@ -1729,7 +1788,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                 FromEmail = from,
 
-                                ToEmail = toEmail,
+                                ToEmail = tokenData.Email,
 
                                 FromName = fromName,
 
@@ -1738,6 +1797,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 Inboxid = tokenData.Id,
                                 Provider = "Outlook",
                                 Body = cleanbody,
+                                IsAutoReply = isAutoReply,
 
                                 TrackingId = Guid.NewGuid(),
 
@@ -1787,13 +1847,14 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                 FromName = fromName,
 
-                                ToEmail = toEmail,
+                                ToEmail = tokenData.Email,
 
                                 Subject = subject,
 
                                 Contactid = contactResult.ContactId,
 
                                 Body = cleanbody,
+                                IsAutoReply = isAutoReply,
 
                                 Date = emailDate,
                                 Provider = "Outlook",

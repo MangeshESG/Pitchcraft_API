@@ -617,6 +617,7 @@ public class InboxRepository : IInboxRepository
                         Date = i.Date,
 
                         IsRead = i.IsRead,
+                        IsAutoReply = i.IsAutoReply,
 
                         ContactId = i.Contactid ?? groupContactId,
 
@@ -703,6 +704,7 @@ public class InboxRepository : IInboxRepository
                         Date = r.Date,
 
                         IsRead = r.IsRead ?? false,
+                        IsAutoReply = r.IsAutoReply,
 
                         ContactId = r.ContactId ?? groupContactId,
 
@@ -1167,6 +1169,7 @@ public class InboxRepository : IInboxRepository
                 Date = inbox.Date,
 
                 IsRead = inbox.IsRead,
+                IsAutoReply = inbox.IsAutoReply,
 
                 ContactId = inbox.Contactid,
 
@@ -1209,6 +1212,7 @@ public class InboxRepository : IInboxRepository
                     Date = r.Date,
 
                     IsRead = r.IsRead ?? false,
+                    IsAutoReply = r.IsAutoReply,
 
                     ContactId = r.ContactId,
 
@@ -1466,6 +1470,7 @@ public class InboxRepository : IInboxRepository
                         Date = i.Date,
 
                         IsRead = i.IsRead,
+                        IsAutoReply = i.IsAutoReply,
 
                         ContactId = i.Contactid,
 
@@ -1556,6 +1561,7 @@ public class InboxRepository : IInboxRepository
                         Date = r.Date,
 
                         IsRead = r.IsRead ?? false,
+                        IsAutoReply = r.IsAutoReply,
 
                         ContactId = r.ContactId,
 
@@ -1836,6 +1842,7 @@ public class InboxRepository : IInboxRepository
                         ToEmail = i.ToEmail,
                         Date = i.Date,
                         IsRead = i.IsRead,
+                        IsAutoReply = i.IsAutoReply,
                         ContactId = i.Contactid,
                         ContactName = i.FromName,
                         Attachments = attachments
@@ -1898,6 +1905,7 @@ public class InboxRepository : IInboxRepository
                         ToEmail = r.ToEmail,
                         Date = r.Date,
                         IsRead = r.IsRead ?? false,
+                        IsAutoReply = r.IsAutoReply,
                         ContactId = r.ContactId,
                         ContactName = contact?.full_name ?? r.FromEmail,
                         Attachments = attachments

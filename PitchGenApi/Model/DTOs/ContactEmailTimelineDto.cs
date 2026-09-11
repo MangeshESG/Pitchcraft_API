@@ -42,6 +42,7 @@
         public string Subject { get; set; }
         public string Body { get; set; }
         public bool IsRead { get; set; }
+        public bool IsAutoReply { get; set; }
         public List<EmailEventDto> Events { get; set; }
         public List<EmailReplyDto> Replies { get; set; }   // ✅ add
     }
@@ -73,4 +74,5 @@ public class EmailReplyDto
     public string Body { get; set; }
     public DateTime? Date { get; set; }
     public bool IsRead { get; set; }
+    public bool IsAutoReply { get; set; }
 }

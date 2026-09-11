@@ -22,6 +22,7 @@
         public DateTime? Date { get; set; }
         public bool? IsRead { get; set; } = false;
         public bool? IsDeleted { get; set; } = false;
+        public bool IsAutoReply { get; set; }
 
         public DateTime? CreatedAt { get; set; } = DateTime.UtcNow;
     }

@@ -30,6 +30,7 @@
         public DateTime? Date { get; set; }
 
         public bool IsRead { get; set; }
+        public bool IsAutoReply { get; set; }
 
         public int? ContactId { get; set; }
 

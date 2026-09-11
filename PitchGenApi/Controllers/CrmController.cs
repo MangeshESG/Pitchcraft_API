@@ -1614,6 +1614,16 @@ namespace PitchGenApi.Controllers
             var errorCount = await emailLogsQuery.CountAsync(log => !log.IsSuccess);
             var bounceback = await emailLogsQuery.CountAsync(log => log.IsBounced);
 
+            var autoReplies = await _context.EmailReplies
+                .AsNoTracking()
+                .CountAsync(reply => reply.ClientId == clientId
+                    && reply.IsAutoReply
+                    && (!campaignId.HasValue || reply.CampaignId == campaignId.Value)
+                    && (!outboxId.HasValue || (reply.TrackingId.HasValue && _context.EmailLogs.Any(log =>
+                        log.TrackingId == reply.TrackingId && log.outboxid == outboxId.Value)))
+                    && (!startDate.HasValue || reply.Date >= startDate.Value.Date)
+                    && (!endDateInclusive.HasValue || reply.Date <= endDateInclusive.Value));
+
             var trackingQuery = _context.EmailTrackingLogs
                 .AsNoTracking()
                 .Where(t => t.ClientId == clientId
@@ -1652,7 +1662,8 @@ namespace PitchGenApi.Controllers
                 clicks = uniqueClicks,
                 totalClicks,
                 errors = errorCount,
-                bounceback
+                bounceback,
+                autoReplies
             });
         }
 
@@ -2129,7 +2140,11 @@ namespace PitchGenApi.Controllers
                     t.ContactId,
                     t.SegmentId,
                     t.CampaignId,
-                    SentAt = e != null ? e.SentAt : null
+                    SentAt = e != null ? e.SentAt : null,
+                    IsAutoReply = _context.EmailReplies.Any(r =>
+                        r.ClientId == t.ClientId &&
+                        r.TrackingId == t.TrackingId &&
+                        r.IsAutoReply)
                 }
             );
 
@@ -4273,7 +4288,8 @@ namespace PitchGenApi.Controllers
                     SentCount = 0,
                     OpenCount = 0,
                     ClickCount = 0,
-                    BounceBackCount = 0
+                    BounceBackCount = 0,
+                    AutoReplyCount = 0
                 });
             }
 
@@ -4326,6 +4342,10 @@ namespace PitchGenApi.Controllers
                 .Distinct()
                 .CountAsync();
 
+            var autoReplyCount = await _context.EmailReplies
+                .AsNoTracking()
+                .CountAsync(reply => reply.ContactId == contactId && reply.IsAutoReply);
+
             var result = new
             {
                 ContactId = contactId,
@@ -4336,7 +4356,9 @@ namespace PitchGenApi.Controllers
 
                 ClickCount = clickCount,
 
-                BounceBackCount = bouncedTrackingIds.Count
+                BounceBackCount = bouncedTrackingIds.Count,
+
+                AutoReplyCount = autoReplyCount
             };
 
             return Ok(result);
