@@ -42,6 +42,7 @@ namespace PitchGenApi.Model.DTOs
         public string? ToEmail { get; set; }
         public string? Subject { get; set; }
         public string? Body { get; set; }
+        public bool IsAutoReply { get; set; }
 
         // Kept so callers written against the old "sent email with nested
         // replies" shape keep working; every reply is also a top-level entry

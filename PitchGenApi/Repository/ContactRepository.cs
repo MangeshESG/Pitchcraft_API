@@ -434,7 +434,7 @@ public class ContactRepository
                         Subject = i.Subject,
                         Body = i.Body,
                         FromEmail = i.FromEmail,
-                        ToEmail = contact.email,
+                        ToEmail = i.ToEmail,
                         Date = i.Date,
                         IsRead = i.IsRead,
                         ContactId = i.Contactid,
@@ -492,7 +492,7 @@ public class ContactRepository
                         Subject = r.Subject,
                         Body = r.Body,
                         FromEmail = r.FromEmail,
-                        ToEmail = contact.email,
+                        ToEmail = r.ToEmail,
                         Date = r.Date,
                         IsRead = r.IsRead ?? false,
                         ContactId = r.ContactId,
@@ -1027,7 +1027,8 @@ public class ContactRepository
                 SenderEmailId = reply.FromEmail,
                 ToEmail = reply.ToEmail,
                 Subject = reply.Subject,
-                Body = reply.Body
+                Body = reply.Body,
+                IsAutoReply = reply.IsAutoReply
             });
         }
 
@@ -1047,7 +1048,8 @@ public class ContactRepository
                 SenderEmailId = inbox.FromEmail,
                 ToEmail = inbox.ToEmail,
                 Subject = inbox.Subject,
-                Body = inbox.Body
+                Body = inbox.Body,
+                IsAutoReply = inbox.IsAutoReply
             });
         }
 
@@ -1077,7 +1079,8 @@ public class ContactRepository
                     Subject = r.Subject,
                     Body = r.Body,
                     Date = r.SentAt,
-                    IsRead = true
+                    IsRead = true,
+                    IsAutoReply = r.IsAutoReply
                 })
                 .ToList();
         }
