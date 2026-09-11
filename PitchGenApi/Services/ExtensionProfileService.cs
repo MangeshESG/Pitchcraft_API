@@ -1,4 +1,4 @@
-namespace PitchGenApi.Services
+﻿namespace PitchGenApi.Services
 {
     using Microsoft.EntityFrameworkCore;
     using PitchGenApi.Database;
@@ -20,17 +20,20 @@ namespace PitchGenApi.Services
         private readonly IAiModelSettingsService _aiModelSettings;
         private readonly IPitchService _pitchService;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly QwenPitchService _qwenService;
 
         public ExtensionProfileService(
             AppDbContext context,
             IAiModelSettingsService aiModelSettings,
             IPitchService pitchService,
-            DeepSeekPitchService deepSeekService)
+            DeepSeekPitchService deepSeekService,
+            QwenPitchService qwenService)
         {
             _context = context;
             _aiModelSettings = aiModelSettings;
             _pitchService = pitchService;
             _deepSeekService = deepSeekService;
+            _qwenService = qwenService;
         }
 
         // ---------------------------------------------------------------- lookup
@@ -258,6 +261,7 @@ namespace PitchGenApi.Services
 
             var modelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.ProfileSummary);
             var isDeepSeek = IsDeepSeekModel(modelName);
+            var isQwen = IsQwenModel(modelName);
 
             var profileText = request.ProfileText!.Trim();
 
@@ -279,14 +283,16 @@ namespace PitchGenApi.Services
 
             PitchResult result;
 
-            // Same path as find-email: DeepSeek or OpenAI depending on the model
-            // an admin chose for this purpose. Both deduct the one credit for the
-            // client they are handed.
+            // Same path as find-email: DeepSeek, Qwen or OpenAI depending on the
+            // model an admin chose for this purpose. All three deduct the one
+            // credit for the client they are handed.
             try
             {
                 result = isDeepSeek
                     ? await _deepSeekService.GenerateWebSearchAsync(enquiryRequest, request.ClientId)
-                    : await _pitchService.GenerateWebSearchAsync(enquiryRequest, request.ClientId);
+                    : isQwen
+                        ? await _qwenService.GenerateWebSearchAsync(enquiryRequest, request.ClientId)
+                        : await _pitchService.GenerateWebSearchAsync(enquiryRequest, request.ClientId);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -357,6 +363,9 @@ namespace PitchGenApi.Services
 
         private static bool IsDeepSeekModel(string? modelName)
             => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
+
+        private static bool IsQwenModel(string? modelName)
+            => modelName?.StartsWith("qwen", StringComparison.OrdinalIgnoreCase) == true;
 
         /// <summary>
         /// Strips a ```json fence and any chatter around the object so what is

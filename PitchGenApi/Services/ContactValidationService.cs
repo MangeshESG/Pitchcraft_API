@@ -69,6 +69,7 @@
         private readonly IProspeoEmailService _prospeoService;
         private readonly IHunterEmailService _hunterService;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly QwenPitchService _qwenService;
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
         private readonly ILogger<ContactValidationService> _logger;
@@ -83,6 +84,7 @@
             IProspeoEmailService prospeoService,
             IHunterEmailService hunterService,
             DeepSeekPitchService deepSeekService,
+            QwenPitchService qwenService,
             HttpClient httpClient,
             IConfiguration configuration,
             IOptions<OpenAISettings> openAiOptions,
@@ -96,6 +98,7 @@
             _prospeoService = prospeoService;
             _hunterService = hunterService;
             _deepSeekService = deepSeekService;
+            _qwenService = qwenService;
             _httpClient = httpClient;
             _configuration = configuration;
             _logger = logger;
@@ -266,11 +269,17 @@
             if (checkType == ValidationCheckTypes.EmailVerification)
                 return "prospeo";
 
-            return LooksLikeDeepSeek(modelName) ? "deepseek" : "openai";
+            if (LooksLikeDeepSeek(modelName)) return "deepseek";
+            if (LooksLikeQwen(modelName)) return "qwen";
+
+            return "openai";
         }
 
         private static bool LooksLikeDeepSeek(string? modelName) =>
             modelName?.StartsWith("deepseek", StringComparison.OrdinalIgnoreCase) == true;
+
+        private static bool LooksLikeQwen(string? modelName) =>
+            modelName?.StartsWith("qwen", StringComparison.OrdinalIgnoreCase) == true;
 
         private async Task<List<int>> OwnedContactIdsAsync(int clientId, List<int> contactIds)
         {
@@ -662,10 +671,15 @@
                         ? string.Join(", ", call.OutputItemTypes)
                         : "nothing";
 
+                    // "asked to use it", not "with tool_choice forcing it": that
+                    // was only ever true of the OpenAI path. Qwen accepts
+                    // tool_choice and ignores it for built-in tools, so on that
+                    // provider the old wording sent the reader looking for a
+                    // broken parameter when the model had simply declined.
                     MarkBatchFailed(batch, itemsByContact,
                         $"The model answered without searching the web, so the result is not " +
                         $"verified evidence. Model '{job.ModelName}' was sent the web_search tool " +
-                        $"with tool_choice forcing it, and returned no search items. " +
+                        $"and asked to use it, and returned no search items. " +
                         $"The response contained: {returned}.");
                     continue;
                 }
@@ -1033,9 +1047,13 @@
             var model = job.ModelName ?? AiModelDefaults.ForPurpose(job.CheckType);
             var needsSearch = ValidationCheckTypes.UsesWebSearch(job.CheckType);
 
-            if (LooksLikeDeepSeek(model))
+            // DeepSeek and Qwen share this branch because they share a service
+            // shape — the same two methods returning the same PitchResult — so
+            // only the dispatch below differs between them. OpenAI does not:
+            // its check is assembled request-by-request in CallOpenAiAsync.
+            if (LooksLikeDeepSeek(model) || LooksLikeQwen(model))
             {
-                var deepSeekRate = await _context.ModelRates.FirstOrDefaultAsync(
+                var providerRate = await _context.ModelRates.FirstOrDefaultAsync(
                     m => m.ModelName == model, cancellationToken);
 
                 // Math.Max, not a plain assignment: EnquiryRequest.MaxTokens wins
@@ -1048,15 +1066,19 @@
                     Prompt = prompt,
                     ModelName = model,
                     MaxTokens = Math.Max(
-                        deepSeekRate?.MaxTokens ?? 0,
+                        providerRate?.MaxTokens ?? 0,
                         OutputBudgetFor(batchCount, needsSearch))
                 };
 
                 // clientId 0: this run already reserved its credits up front, and
                 // the pitch service would otherwise deduct one more per batch.
-                var result = needsSearch
-                    ? await _deepSeekService.GenerateWebSearchAsync(request, 0)
-                    : await _deepSeekService.GeneratePitchAsync(request);
+                var result = LooksLikeQwen(model)
+                    ? (needsSearch
+                        ? await _qwenService.GenerateWebSearchAsync(request, 0)
+                        : await _qwenService.GeneratePitchAsync(request))
+                    : (needsSearch
+                        ? await _deepSeekService.GenerateWebSearchAsync(request, 0)
+                        : await _deepSeekService.GeneratePitchAsync(request));
 
                 return new ModelCallResult
                 {

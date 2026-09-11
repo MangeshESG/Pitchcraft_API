@@ -23,6 +23,7 @@ namespace PitchGenApi.Controllers
         private readonly ContactRepository _contactRepository;
         private readonly INoteRepository _noteRepository;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly QwenPitchService _qwenService;
         private readonly IAiModelSettingsService _aiModelSettings;
         private readonly IContactPromptContextService _promptContext;
 
@@ -32,6 +33,7 @@ namespace PitchGenApi.Controllers
             ContactRepository contactRepository,
             INoteRepository noteRepository,
             DeepSeekPitchService deepSeekService,
+            QwenPitchService qwenService,
             IAiModelSettingsService aiModelSettings,
             IContactPromptContextService promptContext)
         {
@@ -40,6 +42,7 @@ namespace PitchGenApi.Controllers
             _contactRepository = contactRepository;
             _noteRepository = noteRepository;
             _deepSeekService = deepSeekService;
+            _qwenService = qwenService;
             _aiModelSettings = aiModelSettings;
             _promptContext = promptContext;
         }
@@ -963,14 +966,21 @@ namespace PitchGenApi.Controllers
         private static bool IsDeepSeekModel(string? modelName)
             => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
 
+        private static bool IsQwenModel(string? modelName)
+            => modelName?.StartsWith("qwen", StringComparison.OrdinalIgnoreCase) == true;
+
         private Task<PitchResult> GeneratePitchByProviderAsync(EnquiryRequest request)
             => IsDeepSeekModel(request.ModelName)
                 ? _deepSeekService.GeneratePitchAsync(request)
-                : _pitchService.GeneratePitchAsync(request);
+                : IsQwenModel(request.ModelName)
+                    ? _qwenService.GeneratePitchAsync(request)
+                    : _pitchService.GeneratePitchAsync(request);
 
         private Task<PitchResult> GenerateWebSearchByProviderAsync(EnquiryRequest request, int clientId)
             => IsDeepSeekModel(request.ModelName)
                 ? _deepSeekService.GenerateWebSearchAsync(request, clientId)
-                : _pitchService.GenerateWebSearchAsync(request, clientId);
+                : IsQwenModel(request.ModelName)
+                    ? _qwenService.GenerateWebSearchAsync(request, clientId)
+                    : _pitchService.GenerateWebSearchAsync(request, clientId);
     }
 }

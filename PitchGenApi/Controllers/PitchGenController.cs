@@ -36,6 +36,7 @@ namespace PitchGenApi.Controllers
         private readonly ILogger<AuthController> _logger; // Add ILogger field
         private readonly IContactQAService _contactQAService;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly QwenPitchService _qwenService;
         private readonly IAiModelSettingsService _aiModelSettings;
 
 
@@ -54,6 +55,7 @@ namespace PitchGenApi.Controllers
             ILogger<AuthController> logger,
             IContactQAService contactQAService,
             DeepSeekPitchService deepSeekService,
+            QwenPitchService qwenService,
             IAiModelSettingsService aiModelSettings)
 
         {
@@ -68,6 +70,7 @@ namespace PitchGenApi.Controllers
             _logger = logger;
             _contactQAService = contactQAService;
             _deepSeekService = deepSeekService;
+            _qwenService = qwenService;
             _aiModelSettings = aiModelSettings;
 
 
@@ -1300,10 +1303,13 @@ namespace PitchGenApi.Controllers
 
                 // This endpoint carries no client to bill, so the OpenAI branch stays
                 // on GeneratePitchAsync (which searches but doesn't deduct credits) and
-                // the DeepSeek branch is called with clientId 0 for the same reason.
+                // the DeepSeek and Qwen branches are called with clientId 0 for the
+                // same reason.
                 var webSearchResult = IsDeepSeekModel(webSearchRequest.ModelName)
                     ? await _deepSeekService.GenerateWebSearchAsync(webSearchRequest, 0)
-                    : await _pitchservice.GeneratePitchAsync(webSearchRequest);
+                    : IsQwenModel(webSearchRequest.ModelName)
+                        ? await _qwenService.GenerateWebSearchAsync(webSearchRequest, 0)
+                        : await _pitchservice.GeneratePitchAsync(webSearchRequest);
 
                 if (!webSearchResult.IsSuccess)
                 {
@@ -1411,18 +1417,31 @@ namespace PitchGenApi.Controllers
             return modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
         }
 
+        private static bool IsQwenModel(string? modelName)
+        {
+            return modelName?.StartsWith("qwen", StringComparison.OrdinalIgnoreCase) == true;
+        }
+
         private Task<PitchResult> GeneratePitchByProviderAsync(EnquiryRequest request)
         {
-            return IsDeepSeekModel(request.ModelName)
-                ? _deepSeekService.GeneratePitchAsync(request)
-                : _pitchservice.GeneratePitchAsync(request);
+            if (IsDeepSeekModel(request.ModelName))
+                return _deepSeekService.GeneratePitchAsync(request);
+
+            if (IsQwenModel(request.ModelName))
+                return _qwenService.GeneratePitchAsync(request);
+
+            return _pitchservice.GeneratePitchAsync(request);
         }
 
         private Task<PitchResult> GenerateWebSearchByProviderAsync(EnquiryRequest request, int clientId)
         {
-            return IsDeepSeekModel(request.ModelName)
-                ? _deepSeekService.GenerateWebSearchAsync(request, clientId)
-                : _pitchservice.GenerateWebSearchAsync(request, clientId);
+            if (IsDeepSeekModel(request.ModelName))
+                return _deepSeekService.GenerateWebSearchAsync(request, clientId);
+
+            if (IsQwenModel(request.ModelName))
+                return _qwenService.GenerateWebSearchAsync(request, clientId);
+
+            return _pitchservice.GenerateWebSearchAsync(request, clientId);
         }
 
 

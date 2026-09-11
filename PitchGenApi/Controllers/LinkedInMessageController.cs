@@ -42,6 +42,7 @@ namespace PitchGenApi.Controllers
         private readonly ContactRepository _contactRepository;
         private readonly IPitchService _pitchService;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly QwenPitchService _qwenService;
         private readonly IAiModelSettingsService _aiModelSettings;
 
         public LinkedInMessageController(
@@ -50,6 +51,7 @@ namespace PitchGenApi.Controllers
             ContactRepository contactRepository,
             IPitchService pitchService,
             DeepSeekPitchService deepSeekService,
+            QwenPitchService qwenService,
             IAiModelSettingsService aiModelSettings)
         {
             _dbContext = dbContext;
@@ -57,6 +59,7 @@ namespace PitchGenApi.Controllers
             _contactRepository = contactRepository;
             _pitchService = pitchService;
             _deepSeekService = deepSeekService;
+            _qwenService = qwenService;
             _aiModelSettings = aiModelSettings;
         }
 
@@ -1099,9 +1102,14 @@ namespace PitchGenApi.Controllers
         private static bool IsDeepSeekModel(string? modelName)
             => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
 
+        private static bool IsQwenModel(string? modelName)
+            => modelName?.StartsWith("qwen", StringComparison.OrdinalIgnoreCase) == true;
+
         private Task<PitchResult> GeneratePitchByProviderAsync(EnquiryRequest request)
             => IsDeepSeekModel(request.ModelName)
                 ? _deepSeekService.GeneratePitchAsync(request)
-                : _pitchService.GeneratePitchAsync(request);
+                : IsQwenModel(request.ModelName)
+                    ? _qwenService.GeneratePitchAsync(request)
+                    : _pitchService.GeneratePitchAsync(request);
     }
 }

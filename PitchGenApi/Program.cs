@@ -250,6 +250,21 @@ builder.Services.AddHttpClient<DeepSeekPitchService>()
         SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
     });
 
+// Qwen, via Alibaba Cloud Model Studio's OpenAI-compatible endpoints.
+builder.Services.Configure<QwenSettings>(
+    builder.Configuration.GetSection("QwenSettings"));
+
+// Same TLS pin as DeepSeek above, for the same reason: the Model Studio hosts
+// refuse anything below TLS 1.2, and on Windows Server the default handler
+// leaves the protocol to schannel - which is how one build can reach OpenAI
+// fine and fail everything else with "The SSL connection could not be
+// established".
+builder.Services.AddHttpClient<QwenPitchService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+    });
+
 
 builder.Services.AddSingleton<JwtService>();
 

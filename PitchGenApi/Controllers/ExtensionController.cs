@@ -21,6 +21,7 @@ namespace PitchGenApi.Controllers
         private readonly ContactRepository _contactRepository;
         private readonly IPitchService _pitchService;
         private readonly DeepSeekPitchService _deepSeekService;
+        private readonly QwenPitchService _qwenService;
         private readonly IAiModelSettingsService _aiModelSettings;
         private readonly IPromptSettingsService _promptSettings;
         private readonly IHunterEmailService _hunterService;
@@ -34,6 +35,7 @@ namespace PitchGenApi.Controllers
             ContactRepository contactRepository,
             IPitchService pitchService,
             DeepSeekPitchService deepSeekService,
+            QwenPitchService qwenService,
             IAiModelSettingsService aiModelSettings,
             IPromptSettingsService promptSettings,
             IHunterEmailService hunterService,
@@ -46,6 +48,7 @@ namespace PitchGenApi.Controllers
             _contactRepository = contactRepository;
             _pitchService = pitchService;
             _deepSeekService = deepSeekService;
+            _qwenService = qwenService;
             _aiModelSettings = aiModelSettings;
             _promptSettings = promptSettings;
             _hunterService = hunterService;
@@ -567,7 +570,7 @@ namespace PitchGenApi.Controllers
                     Success = true,
                     ClientId = clientId,
                     Model = modelName,
-                    Provider = IsDeepSeekModel(modelName) ? "DeepSeek" : "OpenAI",
+                    Provider = ProviderLabel(modelName),
                     Results = aiSearch.Results,
 
                     // The employer facts the instruction asks for. Reported here
@@ -656,7 +659,9 @@ namespace PitchGenApi.Controllers
             };
             var searchResult = IsDeepSeekModel(modelName)
                 ? await _deepSeekService.GenerateWebSearchAsync(enquiryRequest, billingClientId)
-                : await _pitchService.GenerateWebSearchAsync(enquiryRequest, billingClientId);
+                : IsQwenModel(modelName)
+                    ? await _qwenService.GenerateWebSearchAsync(enquiryRequest, billingClientId)
+                    : await _pitchService.GenerateWebSearchAsync(enquiryRequest, billingClientId);
             var results = searchResult.IsSuccess
                 ? ParseFindEmailResults(searchResult.Content ?? "")
                 : new JArray();
@@ -724,7 +729,7 @@ namespace PitchGenApi.Controllers
 
             var ai = new UnlockAiDiagnostics
             {
-                Provider = IsDeepSeekModel(aiSearch.ModelName) ? "DeepSeek" : "OpenAI",
+                Provider = ProviderLabel(aiSearch.ModelName),
                 Model = aiSearch.ModelName ?? "",
                 Prompt = aiSearch.FinalPrompt ?? "",
                 Raw = aiSearch.SearchResult?.Content ?? "",
@@ -1108,6 +1113,19 @@ namespace PitchGenApi.Controllers
 
         private static bool IsDeepSeekModel(string? modelName)
             => modelName?.StartsWith("deepseek-", StringComparison.OrdinalIgnoreCase) == true;
+
+        private static bool IsQwenModel(string? modelName)
+            => modelName?.StartsWith("qwen", StringComparison.OrdinalIgnoreCase) == true;
+
+        /// <summary>
+        /// The provider label reported in the unlock diagnostics. Derived from
+        /// the model name rather than stored, so it stays correct whichever
+        /// model an admin picks for the purpose.
+        /// </summary>
+        private static string ProviderLabel(string? modelName) =>
+            IsDeepSeekModel(modelName) ? "DeepSeek"
+            : IsQwenModel(modelName) ? "Qwen"
+            : "OpenAI";
 
         /// <summary>
         /// The instruction asks for bare JSON, but models still wrap it in a
