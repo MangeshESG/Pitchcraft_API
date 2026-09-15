@@ -9,15 +9,32 @@
         public string ApiKey { get; set; } = string.Empty;
 
         /// <summary>
-        /// OpenAI-compatible base, up to and including "/compatible-mode/v1".
-        /// Both endpoint shapes work:
-        ///   https://dashscope-intl.aliyuncs.com/compatible-mode/v1              (Singapore / international)
-        ///   https://dashscope.aliyuncs.com/compatible-mode/v1                   (China Beijing)
-        ///   https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-        ///   https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
-        /// The workspace-scoped maas.aliyuncs.com form is the one Model Studio
-        /// documents now; the dashscope hosts are the older aliases and still
-        /// serve the same API.
+        /// OpenAI-compatible base, up to and including "/compatible-mode/v1",
+        /// in the workspace-scoped form:
+        ///
+        ///   https://{WorkspaceId}.cn-hongkong.maas.aliyuncs.com/compatible-mode/v1     China (Hong Kong)
+        ///   https://{WorkspaceId}.eu-central-1.maas.aliyuncs.com/compatible-mode/v1    Germany (Frankfurt)
+        ///   https://{WorkspaceId}.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1  Japan (Tokyo)
+        ///   https://{WorkspaceId}.us-east-1.maas.aliyuncs.com/compatible-mode/v1       US (Virginia)
+        ///   https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1  Singapore
+        ///   https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1      China (Beijing)
+        ///
+        /// Three things about this are not interchangeable, and all three have
+        /// to move together when the region does:
+        ///
+        /// 1. The API key is bound to the region it was created in. A key from
+        ///    one region returns 403 against another region's host, so there is
+        ///    no such thing as switching this URL on its own.
+        /// 2. The model list differs by region. Web search in particular only
+        ///    covers the Qwen3.8 series outside Singapore and Beijing — the 3.6
+        ///    models are not searchable in Hong Kong, Frankfurt, Tokyo or
+        ///    Virginia, so the ModelRates rows have to match the region.
+        /// 3. SearchCostPerThousandCalls below is region-priced.
+        ///
+        /// The older aliases — dashscope-intl.aliyuncs.com (Singapore) and
+        /// dashscope.aliyuncs.com (Beijing) — still serve the same API, but
+        /// Model Studio stops adding features to those hosts after
+        /// 2026-09-30, so new configuration should use the form above.
         /// </summary>
         public string BaseUrl { get; set; } = string.Empty;
 
@@ -30,13 +47,16 @@
         /// tokens *and* a separate per-call search fee, so a cost built from
         /// tokens alone under-reports every researched contact.
         ///
-        /// The published agent-policy rate is region-dependent and the gap is
-        /// large — $10.00 per 1,000 calls in Singapore against $0.573411 in
-        /// Beijing, US Virginia, Hong Kong, Tokyo and Frankfurt. It is a setting
-        /// rather than a constant so it can be kept in step with whichever
-        /// BaseUrl region above is actually in use.
+        /// The published rate is region-dependent and the gap is not marginal:
+        /// $0.573411 per 1,000 calls in Beijing, US Virginia, Hong Kong, Tokyo
+        /// and Frankfurt, against $10.00 in Singapore — about seventeen times
+        /// more. On a measured run that premium was roughly three quarters of
+        /// the entire bill, which is why this is a setting rather than a
+        /// constant: it has to be kept in step with whichever BaseUrl region is
+        /// actually in use, and getting it wrong misreports cost without
+        /// failing anything.
         /// </summary>
-        public decimal SearchCostPerThousandCalls { get; set; } = 10.00m;
+        public decimal SearchCostPerThousandCalls { get; set; } = 0.573411m;
 
         /// <summary>
         /// Search scale passed as search_options.search_strategy on the
