@@ -108,6 +108,14 @@ namespace PitchGenApi.Controllers
             if (!validations.TryGetValue(contactId, out var v))
                 return null;
 
+            return ValidationColumnsFor(v);
+        }
+
+        private static object? ValidationColumnsFor(ContactValidation? v)
+        {
+            if (v == null)
+                return null;
+
             // The grid shows the four scores in one "Checks" cell, so it needs a
             // single column key to hang that cell on. `checks` carries how many
             // checks have actually run: the renderer ignores the number and
@@ -1368,10 +1376,18 @@ namespace PitchGenApi.Controllers
 
         [HttpGet("contacts/List-by-CleinteId")]
         [HttpGet("contacts/List-by-ClientId")]
-        public async Task<IActionResult> GetContactsByClientAndDataFileIdList([FromQuery] int clientId, [FromQuery] int dataFileId)
+        public async Task<IActionResult> GetContactsByClientAndDataFileIdList(
+            [FromQuery] int clientId,
+            [FromQuery] int dataFileId,
+            [FromQuery] int pageNumber = 1,
+            [FromQuery] int pageSize = 0,
+            [FromQuery] string? search = null)
         {
             try
             {
+                var totalTimer = System.Diagnostics.Stopwatch.StartNew();
+                var queryTimer = System.Diagnostics.Stopwatch.StartNew();
+
                 if (clientId <= 0 || dataFileId <= 0)
                     return BadRequest(new
                     {
@@ -1379,28 +1395,56 @@ namespace PitchGenApi.Controllers
                         message = "Both clientId and dataFileId must be greater than 0."
                     });
 
-                var dataFileExists = await _context.data_files
-                    .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+                pageNumber = Math.Max(1, pageNumber);
+                pageSize = Math.Max(0, Math.Min(pageSize, 200));
 
-                if (!dataFileExists)
-                    return NotFound(new
-                    {
-                        success = false,
-                        message = "No data file found for this client."
-                    });
+                var contactsQuery =
+                    from contact in _context.contacts.AsNoTracking()
+                    join dataFile in _context.data_files.AsNoTracking()
+                        on contact.DataFileId.Value equals dataFile.id
+                    where dataFile.id == dataFileId && dataFile.client_id == clientId
+                    select contact;
 
-                var unsubscribedEmails = await _context.UnsubscribedContacts
-                    .Where(u => u.ClientId == clientId)
-                    .Select(u => u.Email)
-                    .ToListAsync();
+                if (!string.IsNullOrWhiteSpace(search))
+                {
+                    var searchPattern = $"%{search.Trim()}%";
+                    contactsQuery = contactsQuery.Where(c =>
+                        (c.full_name != null && EF.Functions.Like(c.full_name, searchPattern)) ||
+                        (c.first_name != null && EF.Functions.Like(c.first_name, searchPattern)) ||
+                        (c.last_name != null && EF.Functions.Like(c.last_name, searchPattern)) ||
+                        (c.email != null && EF.Functions.Like(c.email, searchPattern)) ||
+                        (c.company_name != null && EF.Functions.Like(c.company_name, searchPattern)) ||
+                        (c.job_title != null && EF.Functions.Like(c.job_title, searchPattern)) ||
+                        (c.country_or_address != null && EF.Functions.Like(c.country_or_address, searchPattern)));
+                }
 
-                var unsubscribedSet = new HashSet<string>(
-                    unsubscribedEmails.Where(x => !string.IsNullOrWhiteSpace(x)),
-                    StringComparer.OrdinalIgnoreCase
-                );
+                var contactCount = await contactsQuery.CountAsync();
+                Console.WriteLine($"[Contact List Timing] List {dataFileId} - Count: {queryTimer.ElapsedMilliseconds} ms");
+                queryTimer.Restart();
 
-                var contactsRaw = await _context.contacts
-                    .Where(c => c.DataFileId == dataFileId)
+                if (contactCount == 0)
+                {
+                    var dataFileExists = await _context.data_files
+                        .AsNoTracking()
+                        .AnyAsync(df => df.id == dataFileId && df.client_id == clientId);
+
+                    if (!dataFileExists)
+                        return NotFound(new
+                        {
+                            success = false,
+                            message = "No data file found for this client."
+                        });
+                }
+
+                var pagedContactsQuery = contactsQuery.OrderBy(c => c.id).AsQueryable();
+                if (pageSize > 0)
+                {
+                    pagedContactsQuery = pagedContactsQuery
+                        .Skip((pageNumber - 1) * pageSize)
+                        .Take(pageSize);
+                }
+
+                var contactsRaw = await pagedContactsQuery
                     .OrderBy(c => c.id)
                     .Select(c => new
                     {
@@ -1415,7 +1459,6 @@ namespace PitchGenApi.Controllers
                         c.linkedin_url,
                         c.country_or_address,
                         c.email_subject,
-                        c.email_body,
                         c.created_at,
                         c.updated_at,
                         c.email_sent_at,
@@ -1423,31 +1466,34 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.linkedIninformation,
-                        c.web_search_data
+                        hasLinkedInInfo = c.linkedIninformation != null && c.linkedIninformation != "",
+                        hasWebSearchData = c.web_search_data != null && c.web_search_data != "",
+                        hasNotes = _context.Notes.Any(n =>
+                            n.ClientId == clientId && n.ContactId == c.id),
+                        isUnsubscribed = c.email != null && _context.UnsubscribedContacts.Any(u =>
+                            u.ClientId == clientId && u.Email == c.email),
+                        validationRow = _context.contact_validations
+                            .AsNoTracking()
+                            .FirstOrDefault(v => v.ClientId == clientId && v.ContactId == c.id)
                     })
                     .ToListAsync();
+                Console.WriteLine($"[Contact List Timing] List {dataFileId} - Contacts including validations ({contactsRaw.Count}): {queryTimer.ElapsedMilliseconds} ms");
+                queryTimer.Restart();
 
                 if (!contactsRaw.Any())
                 {
                     return Ok(new
                     {
                         success = true,
-                        contactCount = 0,
+                        contactCount,
+                        pageNumber,
+                        pageSize,
+                        totalPages = pageSize > 0 ? (int)Math.Ceiling(contactCount / (double)pageSize) : 1,
                         contacts = new List<object>()
                     });
                 }
 
                 var contactIds = contactsRaw.Select(c => c.id).ToList();
-
-                var notesContactIds = await _context.Notes
-                    .Where(n => n.ClientId == clientId)
-                    .Select(n => n.ContactId)
-                    .Distinct()
-                    .ToListAsync();
-
-                var notesSet = new HashSet<int>(notesContactIds);
-
                 var customValues = await (
                     from v in _context.contact_custom_field_values
                     join f in _context.crm_custom_fields
@@ -1460,6 +1506,8 @@ namespace PitchGenApi.Controllers
                         v.value
                     }
                 ).ToListAsync();
+                Console.WriteLine($"[Contact List Timing] List {dataFileId} - Custom fields ({customValues.Count}): {queryTimer.ElapsedMilliseconds} ms");
+                queryTimer.Restart();
 
                 var customFieldsByContact = customValues
                     .GroupBy(x => x.contact_id)
@@ -1477,12 +1525,6 @@ namespace PitchGenApi.Controllers
 
                 // Described as a query, not as the id list above: a data file
                 // can hold tens of thousands of contacts.
-                var validations = await LoadValidationsAsync(
-                    clientId,
-                    _context.contacts
-                        .Where(c => c.DataFileId == dataFileId)
-                        .Select(c => c.id));
-
                 var contacts = contactsRaw
                     .Select(c => new
                     {
@@ -1497,7 +1539,6 @@ namespace PitchGenApi.Controllers
                         c.linkedin_url,
                         c.country_or_address,
                         c.email_subject,
-                        c.email_body,
                         c.created_at,
                         c.updated_at,
                         c.email_sent_at,
@@ -1505,21 +1546,26 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.web_search_data,
-                        hasLinkedInInfo = !string.IsNullOrEmpty(c.linkedIninformation),
-                        hasNotes = notesSet.Contains(c.id),
-                        unsubscribe = !string.IsNullOrWhiteSpace(c.email) && unsubscribedSet.Contains(c.email) ? "Yes" : "No",
+                        c.hasLinkedInInfo,
+                        c.hasWebSearchData,
+                        c.hasNotes,
+                        unsubscribe = c.isUnsubscribed ? "Yes" : "No",
                         customFields = customFieldsByContact.TryGetValue(c.id, out var fields)
                             ? fields
                             : new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase),
-                        validation = ValidationColumnsFor(validations, c.id)
+                        validation = ValidationColumnsFor(c.validationRow)
                     })
                     .ToList();
+
+                Console.WriteLine($"[Contact List Timing] List {dataFileId} - TOTAL: {totalTimer.ElapsedMilliseconds} ms");
 
                 return Ok(new
                 {
                     success = true,
-                    contactCount = contacts.Count,
+                    contactCount,
+                    pageNumber,
+                    pageSize,
+                    totalPages = pageSize > 0 ? (int)Math.Ceiling(contactCount / (double)pageSize) : 1,
                     contacts
                 });
             }
@@ -3197,6 +3243,9 @@ namespace PitchGenApi.Controllers
         {
             try
             {
+                var totalTimer = System.Diagnostics.Stopwatch.StartNew();
+                var queryTimer = System.Diagnostics.Stopwatch.StartNew();
+
                 if (clientId <= 0)
                     return BadRequest(new
                     {
@@ -3207,27 +3256,12 @@ namespace PitchGenApi.Controllers
                 pageNumber = Math.Max(1, pageNumber);
                 pageSize = Math.Max(0, Math.Min(pageSize, 200));
 
-                var dataFileIds = await _context.data_files
-                    .AsNoTracking()
-                    .Where(df => df.client_id == clientId)
-                    .Select(df => df.id)
-                    .ToListAsync();
-
-                if (!dataFileIds.Any())
-                    return Ok(new
-                    {
-                        success = true,
-                        dataFileCount = 0,
-                        contactCount = 0,
-                        pageNumber,
-                        pageSize,
-                        totalPages = 0,
-                        contacts = Array.Empty<object>()
-                    });
-
-                var contactsQuery = _context.contacts
-                    .AsNoTracking()
-                    .Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value));
+                var contactsQuery =
+                    from contact in _context.contacts.AsNoTracking()
+                    join dataFile in _context.data_files.AsNoTracking()
+                        on contact.DataFileId.Value equals dataFile.id
+                    where dataFile.client_id == clientId
+                    select contact;
 
                 if (!string.IsNullOrWhiteSpace(search))
                 {
@@ -3242,6 +3276,8 @@ namespace PitchGenApi.Controllers
                 }
 
                 var contactCount = await contactsQuery.CountAsync();
+                Console.WriteLine($"[Contact List Timing] All contacts - Count: {queryTimer.ElapsedMilliseconds} ms");
+                queryTimer.Restart();
 
                 var orderedContactsQuery = contactsQuery.OrderBy(c => c.id).AsQueryable();
                 if (pageSize > 0)
@@ -3272,28 +3308,47 @@ namespace PitchGenApi.Controllers
                         c.CompanyEmployeeCount,
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
-                        c.linkedIninformation,
-                        c.web_search_data
+                        hasLinkedInInfo = c.linkedIninformation != null && c.linkedIninformation != "",
+                        hasWebSearchData = c.web_search_data != null && c.web_search_data != "",
+                        hasNotes = _context.Notes.Any(n =>
+                            n.ClientId == clientId && n.ContactId == c.id),
+                        isUnsubscribed = c.email != null && _context.UnsubscribedContacts.Any(u =>
+                            u.ClientId == clientId && u.Email == c.email),
+                        validationRow = _context.contact_validations
+                            .AsNoTracking()
+                            .FirstOrDefault(v => v.ClientId == clientId && v.ContactId == c.id)
                     })
                     .ToListAsync();
+                Console.WriteLine($"[Contact List Timing] All contacts - Contacts including validations ({contactsRaw.Count}): {queryTimer.ElapsedMilliseconds} ms");
+                queryTimer.Restart();
 
-                var pageEmails = contactsRaw
-                    .Select(c => c.email)
-                    .Where(email => !string.IsNullOrWhiteSpace(email))
-                    .Distinct()
-                    .ToList();
+                var pageContactIds = contactsRaw.Select(c => c.id).ToList();
 
-                var unsubscribedSet = pageEmails.Any()
-                    ? new HashSet<string>(await _context.UnsubscribedContacts
-                        .AsNoTracking()
-                        .Where(u => u.ClientId == clientId && pageEmails.Contains(u.Email))
-                        .Select(u => u.Email)
-                        .ToListAsync())
-                    : new HashSet<string>();
+                var customValues = await (
+                    from value in _context.contact_custom_field_values.AsNoTracking()
+                    join field in _context.crm_custom_fields.AsNoTracking()
+                        on value.field_id equals field.id
+                    where pageContactIds.Contains(value.contact_id) && field.client_id == clientId
+                    select new
+                    {
+                        value.contact_id,
+                        field.field_name,
+                        value.value
+                    }).ToListAsync();
+                Console.WriteLine($"[Contact List Timing] All contacts - Custom fields ({customValues.Count}): {queryTimer.ElapsedMilliseconds} ms");
+                queryTimer.Restart();
 
-                var validations = await LoadValidationsAsync(
-                    clientId,
-                    contactsRaw.Select(c => c.id).ToList());
+                var customFieldsByContact = customValues
+                    .GroupBy(x => x.contact_id)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => group
+                            .Where(x => !string.IsNullOrWhiteSpace(x.field_name))
+                            .GroupBy(x => x.field_name.Trim(), StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(
+                                field => field.Key,
+                                field => field.Last().value,
+                                StringComparer.OrdinalIgnoreCase));
 
                 var contacts = contactsRaw.Select(c => new
                 {
@@ -3315,16 +3370,21 @@ namespace PitchGenApi.Controllers
                     c.CompanyEmployeeCount,
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
-                    c.linkedIninformation,
-                    c.web_search_data,
-                    unsubscribe = c.email != null && unsubscribedSet.Contains(c.email) ? "Yes" : "No",
-                    validation = ValidationColumnsFor(validations, c.id)
+                    c.hasLinkedInInfo,
+                    c.hasWebSearchData,
+                    c.hasNotes,
+                    unsubscribe = c.isUnsubscribed ? "Yes" : "No",
+                    customFields = customFieldsByContact.TryGetValue(c.id, out var fields)
+                        ? fields
+                        : new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase),
+                    validation = ValidationColumnsFor(c.validationRow)
                 }).ToList();
+
+                Console.WriteLine($"[Contact List Timing] All contacts - TOTAL: {totalTimer.ElapsedMilliseconds} ms");
 
                 return Ok(new
                 {
                     success = true,
-                    dataFileCount = dataFileIds.Count,
                     contactCount,
                     pageNumber,
                     pageSize,
