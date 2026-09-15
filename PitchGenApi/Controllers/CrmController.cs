@@ -225,9 +225,39 @@ namespace PitchGenApi.Controllers
                 .Where(TrackingFilterHelper.IsCompleteCondition).ToList();
 
             // Sequential Where clauses are exactly equivalent only for AND views.
-            if (groups.Skip(1).Any(g => string.Equals(g.JoinWithPrevious, "OR", StringComparison.OrdinalIgnoreCase)) ||
-                conditions.Skip(1).Any(c => string.Equals(c.JoinWithPrevious, "OR", StringComparison.OrdinalIgnoreCase)))
-                return false;
+            var hasOr = groups.Skip(1).Any(g => string.Equals(g.JoinWithPrevious, "OR", StringComparison.OrdinalIgnoreCase)) ||
+                conditions.Skip(1).Any(c => string.Equals(c.JoinWithPrevious, "OR", StringComparison.OrdinalIgnoreCase));
+            if (hasOr)
+            {
+                // A common dropdown shape is saved as:
+                // custom_X = A OR custom_X = B OR custom_X = C.
+                // It is exactly equivalent to one SQL IN predicate.
+                var firstField = conditions.FirstOrDefault()?.Field?.Trim() ?? "";
+                var isSingleCustomFieldEqualsGroup = groups.Count == 1 &&
+                    conditions.Count > 0 &&
+                    firstField.StartsWith("custom_", StringComparison.OrdinalIgnoreCase) &&
+                    conditions.All(c =>
+                        string.Equals(c.Field?.Trim(), firstField, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(c.Operator?.Trim(), "equals", StringComparison.OrdinalIgnoreCase)) &&
+                    conditions.Skip(1).All(c =>
+                        string.Equals(c.JoinWithPrevious, "OR", StringComparison.OrdinalIgnoreCase));
+
+                if (!isSingleCustomFieldEqualsGroup)
+                    return false;
+
+                var fieldName = firstField.Substring("custom_".Length);
+                var selectedValues = conditions
+                    .SelectMany(c => ViewFilterValues(c.Value))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                filtered = source.Where(c => _context.contact_custom_field_values.Any(v =>
+                    v.contact_id == c.id &&
+                    _context.crm_custom_fields.Any(f =>
+                        f.id == v.field_id && f.client_id == clientId &&
+                        (f.field_key == fieldName || f.field_name == fieldName)) &&
+                    selectedValues.Contains(v.value!)));
+                return true;
+            }
 
             var candidate = source;
             foreach (var condition in conditions)
@@ -243,7 +273,8 @@ namespace PitchGenApi.Controllers
                 {
                     var fieldName = field.Substring("custom_".Length);
                     var values = ViewFilterValues(condition.Value);
-                    if (values.Count > 1 || (op != "equals" && op != "notEquals" && op != "contains" && op != "isEmpty" && op != "isNotEmpty"))
+                    if ((values.Count > 1 && op != "equals" && op != "notEquals") ||
+                        (op != "equals" && op != "notEquals" && op != "contains" && op != "isEmpty" && op != "isNotEmpty"))
                         return false;
                     var target = values.FirstOrDefault() ?? "";
                     if (op == "isEmpty")
@@ -257,10 +288,12 @@ namespace PitchGenApi.Controllers
                             _context.crm_custom_fields.Any(f => f.id == v.field_id && f.client_id == clientId && (f.field_key == fieldName || f.field_name == fieldName)) && v.value != null && v.value.Contains(target)));
                     else if (op == "notEquals")
                         candidate = candidate.Where(c => !_context.contact_custom_field_values.Any(v => v.contact_id == c.id &&
-                            _context.crm_custom_fields.Any(f => f.id == v.field_id && f.client_id == clientId && (f.field_key == fieldName || f.field_name == fieldName)) && v.value == target));
+                            _context.crm_custom_fields.Any(f => f.id == v.field_id && f.client_id == clientId && (f.field_key == fieldName || f.field_name == fieldName)) &&
+                            (values.Count > 1 ? values.Contains(v.value!) : v.value == target)));
                     else
                         candidate = candidate.Where(c => _context.contact_custom_field_values.Any(v => v.contact_id == c.id &&
-                            _context.crm_custom_fields.Any(f => f.id == v.field_id && f.client_id == clientId && (f.field_key == fieldName || f.field_name == fieldName)) && v.value == target));
+                            _context.crm_custom_fields.Any(f => f.id == v.field_id && f.client_id == clientId && (f.field_key == fieldName || f.field_name == fieldName)) &&
+                            (values.Count > 1 ? values.Contains(v.value!) : v.value == target)));
                     continue;
                 }
 
@@ -4245,7 +4278,13 @@ namespace PitchGenApi.Controllers
                 }
                 else
                 {
-                    Console.WriteLine("[View Contacts Timing] Complex OR/tracking/validation filter: using compatibility path");
+                    var filterShape = string.Join(" | ",
+                        TrackingFilterHelper.NormalizeGroups(payload).Select((group, groupIndex) =>
+                            $"G{groupIndex + 1}({group.JoinWithPrevious ?? "AND"}): " +
+                            string.Join(", ", (group.Conditions ?? new List<FilterConditionDto>())
+                                .Where(TrackingFilterHelper.IsCompleteCondition)
+                                .Select(condition => $"{condition.JoinWithPrevious ?? "AND"} {condition.Field} {condition.Operator}"))));
+                    Console.WriteLine($"[View Contacts Timing] Complex filter compatibility path: {filterShape}");
                 }
 
                 // Lightweight projection: large generated/research payloads are
