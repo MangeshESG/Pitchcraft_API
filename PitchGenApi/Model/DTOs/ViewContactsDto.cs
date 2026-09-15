@@ -11,6 +11,7 @@
         public bool IsFollowUp { get; set; }
         public bool NotKrafted { get; set; }
         public bool KraftedNotSent { get; set; }
+        public bool IncludeEmailContent { get; set; } = true;
     }
 
     public class FiltersPayload
