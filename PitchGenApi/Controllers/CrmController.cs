@@ -2974,114 +2974,137 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("segment-contacts")]
-        public async Task<IActionResult> GetContactsBySegmentId([FromQuery] int clientId, [FromQuery] int segmentId)
+        public async Task<IActionResult> GetContactsBySegmentId(
+            [FromQuery] int clientId,
+            [FromQuery] int segmentId,
+            [FromQuery] int pageNumber = 1,
+            [FromQuery] int pageSize = 0,
+            [FromQuery] string? search = null,
+            [FromQuery] bool includeEmailContent = false)
         {
             try
             {
+                var totalTimer = System.Diagnostics.Stopwatch.StartNew();
+                var queryTimer = System.Diagnostics.Stopwatch.StartNew();
+
                 if (clientId <= 0 || segmentId <= 0)
-                    return BadRequest(new
-                    {
-                        success = false,
-                        message = "clientId and segmentId must be greater  than 0"
-                    });
+                    return BadRequest(new { success = false, message = "clientId and segmentId must be greater than 0" });
 
-                // Step 1: Check Segment exists
-                var seg = await _context.segments
-                    .FirstOrDefaultAsync(x => x.Id == segmentId && x.ClientId == clientId);
+                pageNumber = Math.Max(1, pageNumber);
+                pageSize = Math.Max(0, Math.Min(pageSize, 200));
 
-                if (seg == null)
+                var segmentExists = await _context.segments.AsNoTracking()
+                    .AnyAsync(x => x.Id == segmentId && x.ClientId == clientId);
+                Console.WriteLine($"[Segment Contacts Timing] Segment: {queryTimer.ElapsedMilliseconds} ms");
+                queryTimer.Restart();
+
+                if (!segmentExists)
                     return NotFound(new { success = false, message = "Segment not found." });
 
-                // Step 2: SegmentContacts → ContactId list nikaalo
-                var contactIds = await _context.segmentContacts
-                    .Where(sc => sc.SegmentId == segmentId)
-                    .Select(sc => sc.ContactId)
-                    .ToListAsync();
+                var query = _context.contacts.AsNoTracking()
+                    .Where(c => _context.segmentContacts.AsNoTracking()
+                        .Any(sc => sc.SegmentId == segmentId && sc.ContactId == c.id));
 
-                if (!contactIds.Any())
-                    return Ok(new { success = true, contactCount = 0, contacts = new List<object>() });
-                // Load notes (only ContactIds)
-                var notesContactIds = await _context.Notes
-                    .Where(n => n.ClientId == clientId)
-                    .Select(n => n.ContactId)
-                    .Distinct()
-                    .ToListAsync();
-
-                var notesSet = new HashSet<int>(notesContactIds);
-                // Step 3: Unsubscribed emails list
-                var unsubscribedEmails = await _context.UnsubscribedContacts
-                    .Where(u => u.ClientId == clientId)
-                    .Select(u => u.Email)
-                    .ToListAsync();
-
-                // Step 4: Contacts load karo foreach ke through (id → record fetch)
-                var contactsRaw = new List<Contact>();
-
-                foreach (var cid in contactIds)
+                if (!string.IsNullOrWhiteSpace(search))
                 {
-                    var contact = await _context.contacts
-                        .FirstOrDefaultAsync(c => c.id == cid);
-
-                    if (contact != null)
-                        contactsRaw.Add(contact);
+                    var pattern = $"%{search.Trim()}%";
+                    query = query.Where(c =>
+                        EF.Functions.Like(c.full_name ?? "", pattern) ||
+                        EF.Functions.Like(c.first_name ?? "", pattern) ||
+                        EF.Functions.Like(c.last_name ?? "", pattern) ||
+                        EF.Functions.Like(c.email ?? "", pattern) ||
+                        EF.Functions.Like(c.company_name ?? "", pattern) ||
+                        EF.Functions.Like(c.job_title ?? "", pattern) ||
+                        EF.Functions.Like(c.country_or_address ?? "", pattern));
                 }
 
+                var contactCount = await query.CountAsync();
+                Console.WriteLine($"[Segment Contacts Timing] Count ({contactCount}): {queryTimer.ElapsedMilliseconds} ms");
+                queryTimer.Restart();
 
-                // Described as a query rather than as an id list — a segment
-                // can hold tens of thousands of contacts.
-                var validations = await LoadValidationsAsync(
-                    clientId,
-                    _context.segmentContacts
-                        .Where(sc => sc.SegmentId == segmentId)
-                        .Select(sc => sc.ContactId));
+                var pageQuery = query.OrderBy(c => c.id).AsQueryable();
+                if (pageSize > 0)
+                {
+                    pageQuery = pageQuery
+                        .Skip((pageNumber - 1) * pageSize)
+                        .Take(pageSize);
+                }
 
-                // Step 5: unsubscribe flag add karo
-                var contacts = contactsRaw
-                    .Select(c => new
-                    {
-                        c.id,
-                        c.full_name,
-                        c.first_name,
-                        c.last_name,
-                        c.email,
-                        c.website,
-                        c.company_name,
-                        c.job_title,
-                        c.linkedin_url,
-                        c.country_or_address,
-                        c.email_subject,
-                        c.email_body,
-                        c.created_at,
-                        c.updated_at,
-                        c.email_sent_at,
-                        c.CompanyTelephone,
-                        c.CompanyEmployeeCount,
-                        c.CompanyIndustry,
-                        c.CompanyLinkedInURL,
-                        //c.CompanyEventLink,
-                        hasLinkedInInfo = !string.IsNullOrEmpty(c.linkedIninformation),
+                var rows = await pageQuery.Select(c => new
+                {
+                    c.id,
+                    c.DataFileId,
+                    c.full_name,
+                    c.first_name,
+                    c.last_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    email_subject = includeEmailContent ? c.email_subject : null,
+                    email_body = includeEmailContent ? c.email_body : null,
+                    c.created_at,
+                    c.updated_at,
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    hasLinkedInInfo = c.linkedIninformation != null && c.linkedIninformation != "",
+                    hasWebSearchData = c.web_search_data != null && c.web_search_data != "",
+                    hasNotes = _context.Notes.Any(n => n.ClientId == clientId && n.ContactId == c.id),
+                    isUnsubscribed = c.email != null && _context.UnsubscribedContacts.Any(u =>
+                        u.ClientId == clientId && u.Email == c.email),
+                    validationRow = _context.contact_validations.AsNoTracking()
+                        .FirstOrDefault(v => v.ClientId == clientId && v.ContactId == c.id)
+                }).ToListAsync();
+                Console.WriteLine($"[Segment Contacts Timing] Page ({rows.Count}, email content: {includeEmailContent}): {queryTimer.ElapsedMilliseconds} ms");
 
-                        hasNotes = notesSet.Contains(c.id),
-                        unsubscribe = unsubscribedEmails.Contains(c.email) ? "Yes" : "No",
-                        validation = ValidationColumnsFor(validations, c.id)
-                    })
-                    .ToList();
+                var contacts = rows.Select(c => new
+                {
+                    c.id,
+                    c.DataFileId,
+                    c.full_name,
+                    c.first_name,
+                    c.last_name,
+                    c.email,
+                    c.website,
+                    c.company_name,
+                    c.job_title,
+                    c.linkedin_url,
+                    c.country_or_address,
+                    c.email_subject,
+                    c.email_body,
+                    c.created_at,
+                    c.updated_at,
+                    c.email_sent_at,
+                    c.CompanyTelephone,
+                    c.CompanyEmployeeCount,
+                    c.CompanyIndustry,
+                    c.CompanyLinkedInURL,
+                    c.hasLinkedInInfo,
+                    c.hasWebSearchData,
+                    c.hasNotes,
+                    unsubscribe = c.isUnsubscribed ? "Yes" : "No",
+                    validation = ValidationColumnsFor(c.validationRow)
+                }).ToList();
 
+                Console.WriteLine($"[Segment Contacts Timing] TOTAL: {totalTimer.ElapsedMilliseconds} ms");
                 return Ok(new
                 {
                     success = true,
-                    contactCount = contacts.Count,
+                    contactCount,
+                    pageNumber,
+                    pageSize,
+                    totalPages = pageSize > 0 ? (int)Math.Ceiling(contactCount / (double)pageSize) : 1,
                     contacts
                 });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new
-                {
-                    success = false,
-                    message = "Server error .",
-                    error = ex.Message
-                });
+                return StatusCode(500, new { success = false, message = "Server error.", error = ex.Message });
             }
         }
 
