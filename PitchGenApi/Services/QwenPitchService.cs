@@ -35,7 +35,9 @@ namespace PitchGenApi.Services
         /// <summary>
         /// What actually makes Qwen search.
         ///
-        /// tool_choice does not. Measured 2026-09-11: "required", an explicit
+        /// tool_choice does not — on qwen3.6 it is inert and on qwen3.8 it is a
+        /// hard error, so it is not sent at all (see the request builder).
+        /// Measured 2026-09-11 on 3.6: "required", an explicit
         /// {type:"web_search"} object, and plain auto all produce the identical
         /// response on a prompt the model can answer from memory — reasoning and
         /// a message, no web_search_call, no usage.x_tools. The field is accepted
@@ -485,12 +487,22 @@ namespace PitchGenApi.Services
                     {
                         new { type = WebSearchToolType }
                     }
-                },
-// Sent for correctness and for the day Model Studio starts
-                // honouring it, but it is NOT what forces the search — see
-                // ForceSearchInstruction. Do not remove that instruction on the
-                // strength of this line being here.
-                { "tool_choice", "required" }
+                }
+
+                // No tool_choice. It cannot help and on the current models it
+                // breaks the call outright:
+                //
+                //   qwen3.6  accepts "required" and ignores it — the response is
+                //            byte-for-byte what auto returns, so it only looked
+                //            like it was forcing a search.
+                //   qwen3.8  rejects it: HTTP 400, "The tool_choice parameter
+                //            does not support being set to required or object in
+                //            thinking mode", and these models think by default.
+                //
+                // Measured 2026-09-15 on qwen3.8-flash and qwen3.8-max. Omitting
+                // it searches on both; "auto" also works but says nothing that
+                // the default does not. ForceSearchInstruction is what actually
+                // gets the search, and it is the only thing that does.
             };
 
             if (thinkingEnabled)
