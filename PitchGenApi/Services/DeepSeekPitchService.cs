@@ -14,20 +14,80 @@ namespace PitchGenApi.Services
         // /chat/completions (whose tools array only takes caller-run functions).
         private const string WebSearchToolType = "web_search";
 
-        // Whether a given DeepSeek model actually runs this tool is not
-        // something to hard-code, and not something their docs settle. The
-        // Responses compatibility table lists web_search among built-in tools
-        // that are "Ignored"; other sections of the same guide describe it as
-        // supported and server-side. Measured 2026-09-10, deepseek-v4-pro ran
-        // searches and both flash names ran none — but a model alias can change
-        // that overnight, and DeepSeek's changelog routes deepseek-v4-pro to
-        // V4.1-Flash after 2026-09-14.
+        // Anthropic's server-side search tool, as served by DeepSeek's
+        // Anthropic-compatible endpoint. The dated suffix is part of the type
+        // and is not optional; the plain "web_search" spelling above is the
+        // Responses API's name for a different thing.
+        private const string AnthropicWebSearchToolType = "web_search_20250305";
+        private const string AnthropicVersion = "2023-06-01";
+
+        // There is deliberately no max_uses on the search tool.
         //
-        // So capability is never inferred from the model name here. The request
-        // asks for search, and the caller checks WebSearchCalls on the way out
-        // to find out whether it happened. A model that ignores the tool returns
-        // HTTP 200 with zero web_search_call items and an answer written from
-        // memory, which is indistinguishable from a real answer until counted.
+        // It reads like a safety cap and behaves like a truncation. Flash fires
+        // its searches in parallel, roughly one per contact, so a ten-contact
+        // batch exceeds any small cap in its first round -- and exceeding it
+        // does not degrade gracefully: the turn ends on stop_reason "tool_use"
+        // with a max_uses_exceeded error and often no answer at all. Measured
+        // 2026-09-17, max_uses 2 died that way on a six-contact batch.
+        //
+        // Uncapped, DeepSeek sizes the search to the work: measured 2026-09-17,
+        // six contacts drew six searches, ten drew ten and fifteen drew fifteen,
+        // all finishing cleanly. So nothing here limits how much it searches,
+        // and nothing should.
+        //
+        // A max_uses_exceeded error still shows up in the transcript of runs
+        // that finished perfectly well -- the model reaching past what it
+        // needed, not a wall it hit -- so it is recorded as evidence and is not
+        // treated as a failure. Only a turn that ends without an answer is a
+        // problem, and the continuation below is for that. The work stays
+        // bounded by max_tokens and the caller's batch timeout.
+
+        // Turns per call: the search turn, plus one to write up what it found.
+        // More would just be paying for the same searches again.
+        private const int MaxSearchTurns = 2;
+
+        /// <summary>
+        /// Closes out a turn that ran out of searches mid-way. The searches it
+        /// already ran are in the transcript, so this asks for the write-up
+        /// rather than starting the batch over -- and says what to do about the
+        /// contacts it never reached, which otherwise get quietly dropped from
+        /// the JSON.
+        /// </summary>
+        private const string FinishWithoutSearchingInstruction =
+            "Stop searching. Using only what you have already found above, write the " +
+            "final answer now for every item requested, in exactly the format asked " +
+            "for and with nothing else around it. For anything you could not verify, " +
+            "say so in its comment and score it low rather than leaving it out.";
+
+        // Evidence is an audit trail, not a copy of the results: each search
+        // returns ten URLs, and all of them in the job record would bury the
+        // queries that explain the score.
+        private const int MaxEvidenceUrlsPerSearch = 3;
+
+        // Hosted search on DeepSeek is an ENDPOINT capability, not a model one.
+        // That distinction cost us a while, so it is written down here.
+        //
+        // The Responses compatibility table lists web_search among built-in
+        // tools that are "Ignored", and that is accurate for /v1/responses:
+        // measured 2026-09-16, deepseek-flash there returns zero
+        // web_search_call items and says outright it has no browsing access.
+        // Not because the tool was rejected — /v1/responses accepts it and
+        // echoes it back normalised, with search_context_size and
+        // user_location populated, exactly as it does for v4-pro — it is
+        // simply never invoked. deepseek-v4-pro does run it on that endpoint.
+        //
+        // But DeepSeek also serves an Anthropic-compatible endpoint, and there
+        // deepseek-flash runs hosted search properly: server_tool_use and
+        // web_search_tool_result blocks, real URLs, and a
+        // usage.server_tool_use.web_search_requests count. Same model, same
+        // key, different endpoint. So Flash is NOT limited to caller-run
+        // function tools for search, and needs no third-party search backend.
+        //
+        // Hence the split in GenerateWebSearchAsync below. Capability is still
+        // never *trusted* from the model name: the request asks for search and
+        // the caller checks WebSearchCalls on the way out, because a model that
+        // skips the tool returns HTTP 200 with an answer written from memory,
+        // which is indistinguishable from a real answer until counted.
 
         private readonly HttpClient _httpClient;
         private readonly AppDbContext _context;
@@ -286,6 +346,14 @@ namespace PitchGenApi.Services
         /// </summary>
         public async Task<PitchResult> GenerateWebSearchAsync(EnquiryRequest request, int clientId)
         {
+            // Flash serves hosted search only on the Anthropic-compatible
+            // endpoint (see the note at the top of this class), so route it
+            // there rather than to /v1/responses, where the tool is accepted
+            // and never invoked. Everything else stays on the Responses path,
+            // which v4-pro runs searches on today.
+            if (UsesAnthropicWebSearchPath(request?.ModelName))
+                return await GenerateWebSearchViaAnthropicAsync(request!, clientId);
+
             try
             {
                 if (string.IsNullOrWhiteSpace(request?.Prompt))
@@ -592,6 +660,386 @@ namespace PitchGenApi.Services
         /// answer in it at all. Callers that expect JSON then fail on a reply
         /// that never contained any.
         /// </summary>
+        /// <summary>
+        /// Whether this model needs the Anthropic-compatible endpoint to run a
+        /// hosted web search.
+        ///
+        /// Measured 2026-09-16 on the same key: deepseek-flash (and its alias
+        /// deepseek-v4-flash -- /models lists only deepseek-flash and
+        /// deepseek-v4-pro) runs no searches on /v1/responses but runs them
+        /// normally on /anthropic/v1/messages. deepseek-v4-pro already searches
+        /// on /v1/responses, so it is left there.
+        ///
+        /// Routing only. If DeepSeek later serves search for Flash on the
+        /// Responses API, deleting this returns it to the shared path with no
+        /// other change -- the WebSearchCalls count is what proves a search ran
+        /// either way.
+        /// </summary>
+        private static bool UsesAnthropicWebSearchPath(string? modelName) =>
+            modelName?.Contains("flash", StringComparison.OrdinalIgnoreCase) == true;
+
+        /// <summary>
+        /// Hosted web search for Flash, over DeepSeek's Anthropic-compatible
+        /// endpoint. This is the same kind of server-side tool the OpenAI path
+        /// uses -- DeepSeek runs the searches and feeds the results back to the
+        /// model itself, so there is no caller-run search loop and no
+        /// third-party search backend. Pass clientId 0 to skip the deduction.
+        /// </summary>
+        private async Task<PitchResult> GenerateWebSearchViaAnthropicAsync(
+            EnquiryRequest request,
+            int clientId)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(request.Prompt))
+                    return new PitchResult { Content = "Prompt is required.", IsSuccess = false };
+
+                var requestedModelName = (request.ModelName ?? "").Trim();
+
+                if (requestedModelName.Length == 0)
+                    return new PitchResult { Content = "Model name is required.", IsSuccess = false };
+
+                var apiModelName = requestedModelName.EndsWith(
+                    "-thinking", StringComparison.OrdinalIgnoreCase)
+                    ? requestedModelName.Replace("-thinking", "", StringComparison.OrdinalIgnoreCase)
+                    : requestedModelName;
+
+                var rate =
+                    await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == requestedModelName)
+                    ?? await _context.ModelRates.FirstOrDefaultAsync(m => m.ModelName == apiModelName);
+
+                decimal inputPricePerMillion = rate?.InputPrice ?? 0.27m;
+                decimal outputPricePerMillion = rate?.OutputPrice ?? 1.10m;
+                int maxTokens = request.MaxTokens ?? rate?.MaxTokens ?? 2000;
+
+                var searchTool = new Dictionary<string, object>
+                {
+                    { "type", AnthropicWebSearchToolType },
+                    { "name", "web_search" }
+                };
+
+                var messages = new List<object>
+                {
+                    new { role = "user", content = request.Prompt }
+                };
+
+                // Everything below accumulates across turns, because a run that
+                // has to be continued still searched and still cost tokens on
+                // the turn that ran out.
+                int promptTokens = 0, completionTokens = 0, cachedTokens = 0, searchCalls = 0;
+                var evidence = new List<string>();
+                var blockTypes = new List<string>();
+                string output = "";
+                string stopReason = "";
+                string? searchError = null;
+
+                for (var attempt = 1; attempt <= MaxSearchTurns; attempt++)
+                {
+                    var requestBody = new Dictionary<string, object>
+                    {
+                        { "model", apiModelName },
+                        { "max_tokens", maxTokens },
+                        { "messages", messages },
+                        { "tools", new object[] { searchTool } }
+                    };
+
+                    if (!string.IsNullOrWhiteSpace(request.ScrappedData))
+                        requestBody["system"] = request.ScrappedData;
+
+                    // Deliberately no tool_choice, on either turn. The closing
+                    // turn could be told not to search, but measured 2026-09-17
+                    // it runs zero searches whether or not it is forbidden to --
+                    // asked to write up what it found, it writes up what it
+                    // found. Forbidding it only removes the model's option to
+                    // check one last thing it decides it needs.
+
+                    using var httpRequest = new HttpRequestMessage(
+                        HttpMethod.Post, $"{_baseUrl}/anthropic/v1/messages");
+
+                    // The bearer token on the shared client authenticates here
+                    // too; this endpoint additionally requires the Anthropic
+                    // version header, which the Responses path does not send.
+                    httpRequest.Headers.Add("anthropic-version", AnthropicVersion);
+                    httpRequest.Content = new StringContent(
+                        JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json");
+
+                    var response = await _httpClient.SendAsync(httpRequest);
+                    var responseContent = await response.Content.ReadAsStringAsync();
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        return new PitchResult
+                        {
+                            Content = $"DeepSeek web search error ({(int)response.StatusCode}) "
+                                    + $"on model '{apiModelName}': {responseContent}",
+                            IsSuccess = false
+                        };
+                    }
+
+                    var parsed = JObject.Parse(responseContent);
+
+                    promptTokens += parsed.SelectToken("usage.input_tokens")?.Value<int>() ?? 0;
+                    completionTokens += parsed.SelectToken("usage.output_tokens")?.Value<int>() ?? 0;
+                    cachedTokens += parsed.SelectToken("usage.cache_read_input_tokens")?.Value<int>() ?? 0;
+                    searchCalls += CountAnthropicWebSearchCalls(parsed);
+                    evidence.AddRange(ExtractAnthropicSearchEvidence(parsed));
+                    searchError ??= FirstSearchErrorCode(parsed);
+
+                    foreach (var type in ExtractAnthropicBlockTypes(parsed))
+                    {
+                        if (!blockTypes.Contains(type, StringComparer.OrdinalIgnoreCase))
+                            blockTypes.Add(type);
+                    }
+
+                    output = ExtractAnthropicText(parsed);
+                    stopReason = parsed["stop_reason"]?.ToString() ?? "";
+
+                    // "tool_use" means the turn ended on a tool rather than on
+                    // an answer -- the model was still mid-search when the turn
+                    // stopped. Nothing in the request causes this and nothing in
+                    // the request prevents it; it is decided server-side.
+                    //
+                    // The searches themselves already succeeded and are in the
+                    // transcript, so the fix is to hand the transcript back and
+                    // ask for the write-up rather than to pay for the whole
+                    // batch again. Note the text at this point may be a non-empty
+                    // preamble ("I'll verify each contact...") rather than empty,
+                    // which is why this keys off stop_reason and not the text.
+                    if (!string.Equals(stopReason, "tool_use", StringComparison.OrdinalIgnoreCase))
+                        break;
+
+                    if (attempt == MaxSearchTurns) break;
+
+                    if (parsed["content"] is JArray assistantBlocks)
+                        messages.Add(new { role = "assistant", content = assistantBlocks });
+
+                    messages.Add(new { role = "user", content = FinishWithoutSearchingInstruction });
+                }
+
+                // As on the other paths, DeepSeek bills search as the extra
+                // model tokens it consumes, so there is no per-search fee here.
+                decimal currentCost =
+                    (promptTokens * inputPricePerMillion / 1_000_000m) +
+                    (completionTokens * outputPricePerMillion / 1_000_000m);
+
+                // Anthropic's spelling of "ran out of budget". Same trap as
+                // finish_reason "length" on /chat/completions: the JSON comes
+                // back cut off mid-array and reads downstream as a formatting
+                // fault rather than a budget one.
+                if (string.Equals(stopReason, "max_tokens", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new PitchResult
+                    {
+                        Content = $"Response truncated: hit max_tokens ({maxTokens}) after "
+                                + $"{searchCalls} search(es). Raise MaxTokens for this model in "
+                                + "ModelRates, or ask for less in one call.",
+                        IsSuccess = false,
+                        PromptTokens = promptTokens,
+                        CompletionTokens = completionTokens,
+                        TotalTokens = promptTokens + completionTokens,
+                        CachedTokens = cachedTokens,
+                        CurrentCost = currentCost,
+                        WebSearchCalls = searchCalls,
+                        SearchEvidence = evidence,
+                        OutputItemTypes = blockTypes
+                    };
+                }
+
+                if (string.IsNullOrWhiteSpace(output))
+                {
+                    var noContent =
+                        string.Equals(stopReason, "tool_use", StringComparison.OrdinalIgnoreCase)
+                            ? $"The model was still searching after {searchCalls} search(es) and "
+                              + $"never wrote an answer, even when asked to finish"
+                              + (string.IsNullOrWhiteSpace(searchError)
+                                  ? ". The batch may be too large for one call."
+                                  : $": the search tool reported '{searchError}'.")
+                            : string.IsNullOrWhiteSpace(stopReason)
+                                ? "The model returned no content."
+                                : $"The model returned no content (stop_reason: {stopReason}).";
+
+                    return new PitchResult
+                    {
+                        Content = noContent,
+                        IsSuccess = false,
+                        PromptTokens = promptTokens,
+                        CompletionTokens = completionTokens,
+                        TotalTokens = promptTokens + completionTokens,
+                        CachedTokens = cachedTokens,
+                        CurrentCost = currentCost,
+                        WebSearchCalls = searchCalls,
+                        SearchEvidence = evidence,
+                        OutputItemTypes = blockTypes
+                    };
+                }
+
+                if (clientId > 0)
+                    await _contactRepository.CreditDeduction(clientId, 1);
+
+                return new PitchResult
+                {
+                    Content = output,
+                    PromptTokens = promptTokens,
+                    CompletionTokens = completionTokens,
+                    TotalTokens = promptTokens + completionTokens,
+                    CachedTokens = cachedTokens,
+                    CurrentCost = currentCost,
+                    IsSuccess = true,
+                    WebSearchCalls = searchCalls,
+                    SearchEvidence = evidence,
+                    OutputItemTypes = blockTypes
+                };
+            }
+            catch (TaskCanceledException ex)
+            {
+                return new PitchResult
+                {
+                    Content = $"DeepSeek web search timed out after "
+                            + $"{_httpClient.Timeout.TotalSeconds} seconds: {ex.Message}",
+                    IsSuccess = false
+                };
+            }
+            catch (Exception ex)
+            {
+                return new PitchResult
+                {
+                    Content = "DeepSeek web search failed: " + Describe(ex),
+                    IsSuccess = false
+                };
+            }
+        }
+
+        /// <summary>Assistant text, which on this endpoint is spread across the "text" content blocks.</summary>
+        private static string ExtractAnthropicText(JObject parsed)
+        {
+            if (parsed["content"] is not JArray blocks) return "";
+
+            var text = new StringBuilder();
+
+            foreach (var block in blocks)
+            {
+                if (block["type"]?.ToString() == "text")
+                    text.Append(block["text"]?.ToString());
+            }
+
+            return text.ToString().Trim();
+        }
+
+        /// <summary>
+        /// Searches actually performed. DeepSeek reports the count directly in
+        /// usage, which is authoritative; counting server_tool_use blocks is the
+        /// fallback for a response that omits it.
+        /// </summary>
+        private static int CountAnthropicWebSearchCalls(JObject parsed)
+        {
+            var reported = parsed.SelectToken("usage.server_tool_use.web_search_requests")?.Value<int>();
+            if (reported.HasValue) return reported.Value;
+
+            if (parsed["content"] is not JArray blocks) return 0;
+
+            return blocks.Count(b => b["type"]?.ToString() == "server_tool_use");
+        }
+
+        /// <summary>
+        /// What was searched for and which pages came back, mirroring the
+        /// Responses-path extractor so a stored score stays auditable whichever
+        /// endpoint produced it.
+        /// </summary>
+        private static List<string> ExtractAnthropicSearchEvidence(JObject parsed)
+        {
+            var evidence = new List<string>();
+
+            if (parsed["content"] is not JArray blocks) return evidence;
+
+            foreach (var block in blocks)
+            {
+                switch (block["type"]?.ToString())
+                {
+                    case "server_tool_use":
+                        var query = block.SelectToken("input.query")?.ToString();
+                        if (!string.IsNullOrWhiteSpace(query))
+                            evidence.Add("search: " + query);
+                        break;
+
+                    case "web_search_tool_result":
+                        // An errored search reports the failure in place of its
+                        // results -- sometimes as a bare object, but normally as
+                        // a single error entry inside the content array, which
+                        // is why this checks both shapes. Worth recording: it is
+                        // the difference between "found nothing" and "never
+                        // looked".
+                        if (block["content"] is not JArray results)
+                        {
+                            var error = block.SelectToken("content.error_code")?.ToString();
+                            if (!string.IsNullOrWhiteSpace(error))
+                                evidence.Add("search failed: " + error);
+                            break;
+                        }
+
+                        var inlineError = results
+                            .Select(r => r["error_code"]?.ToString())
+                            .FirstOrDefault(e => !string.IsNullOrWhiteSpace(e));
+
+                        if (!string.IsNullOrWhiteSpace(inlineError))
+                        {
+                            evidence.Add("search failed: " + inlineError);
+                            break;
+                        }
+
+                        foreach (var url in results
+                                     .Select(r => r["url"]?.ToString())
+                                     .Where(u => !string.IsNullOrWhiteSpace(u))
+                                     .Take(MaxEvidenceUrlsPerSearch))
+                        {
+                            evidence.Add("opened: " + url);
+                        }
+                        break;
+                }
+            }
+
+            return evidence;
+        }
+
+        /// <summary>
+        /// The first error code any search reported, or null if none did. Used
+        /// to explain a turn that ended mid-search.
+        /// </summary>
+        private static string? FirstSearchErrorCode(JObject parsed)
+        {
+            if (parsed["content"] is not JArray blocks) return null;
+
+            foreach (var block in blocks)
+            {
+                if (block["type"]?.ToString() != "web_search_tool_result") continue;
+
+                var direct = block.SelectToken("content.error_code")?.ToString();
+                if (!string.IsNullOrWhiteSpace(direct)) return direct;
+
+                if (block["content"] is not JArray results) continue;
+
+                var inline = results
+                    .Select(r => r["error_code"]?.ToString())
+                    .FirstOrDefault(e => !string.IsNullOrWhiteSpace(e));
+
+                if (!string.IsNullOrWhiteSpace(inline)) return inline;
+            }
+
+            return null;
+        }
+
+        /// <summary>Distinct content block types, for telling a skipped search apart from an unrecognised one.</summary>
+        private static List<string> ExtractAnthropicBlockTypes(JObject parsed)
+        {
+            if (parsed["content"] is not JArray blocks) return new List<string>();
+
+            return blocks
+                .Select(b => b["type"]?.ToString())
+                .Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => t!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
         private static string ExtractResponsesText(JObject parsed)
         {
             if (parsed["output"] is not JArray outputs) return "";

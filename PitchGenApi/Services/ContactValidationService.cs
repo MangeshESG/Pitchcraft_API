@@ -37,6 +37,22 @@
         /// search, and it stays well inside <see cref="DefaultStaleAfter"/> so
         /// a slow batch is never mistaken for a dead one.
         /// </summary>
+        /// <summary>
+        /// Appended to a research prompt on the retry after a batch came back
+        /// with no searches. Deliberately blunt, and deliberately says what to
+        /// do when nothing is found: the failure mode it answers is a model
+        /// that decided the contacts were not worth looking up, and telling it
+        /// to score low without evidence is what stops it skipping the search
+        /// to "help".
+        /// </summary>
+        private const string SearchRequiredReminder =
+            "\n\nIMPORTANT: You did not search the web on the previous attempt. " +
+            "You MUST use the web_search tool for every contact above before you " +
+            "answer, even when you believe you already know the answer, and even " +
+            "when the company or title looks unfamiliar or the record looks " +
+            "incomplete. If a search returns nothing useful for a contact, say so " +
+            "in that contact's comment and score it low — do not skip the search.";
+
         private static readonly TimeSpan DefaultModelCallTimeout = TimeSpan.FromMinutes(3);
 
         /// <summary>
@@ -651,6 +667,54 @@
                 {
                     MarkBatchFailed(batch, itemsByContact, call.Error ?? "The model returned nothing.");
                     continue;
+                }
+
+                // A model that skipped the search gets one more chance, with the
+                // requirement spelled out, before the batch is written off.
+                //
+                // Not a workaround for a model that cannot search: those fail
+                // both times and still land in the guard below. This is for the
+                // batch that simply decided it already knew — measured on
+                // deepseek-v4-flash, an identical request searches on most runs
+                // and occasionally does not, and a run that scored ten contacts
+                // from live evidence should not lose the other two to that coin
+                // flip. The retry is charged like any other call; it only
+                // happens on the rare skip.
+                if (needsSearch && call.IsSuccess && call.WebSearchCalls == 0)
+                {
+                    using var retryTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    retryTimeout.CancelAfter(ModelCallTimeout);
+
+                    try
+                    {
+                        var retry = await CallModelAsync(
+                            job, prompt + SearchRequiredReminder, batch.Length, retryTimeout.Token);
+
+                        // Billed whether or not it helped, so it is counted
+                        // whether or not it helped.
+                        job.InputTokens += retry.InputTokens;
+                        job.CachedTokens += retry.CachedTokens;
+                        job.OutputTokens += retry.OutputTokens;
+                        job.TotalTokens += retry.InputTokens + retry.OutputTokens;
+                        job.WebSearchCalls += retry.WebSearchCalls;
+                        job.CalculatedCost += retry.TokenCost;
+
+                        _logger.LogInformation(
+                            "Validation job {JobId} batch returned no searches; retried and got {Searches}.",
+                            job.Id, retry.WebSearchCalls);
+
+                        // Only take the retry if it actually searched. A second
+                        // unsearched answer is no better than the first, and a
+                        // failed retry must not mask a first attempt that at
+                        // least parsed.
+                        if (retry.IsSuccess && retry.WebSearchCalls > 0)
+                            call = retry;
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        // Out of time on the retry: fall through to the guard
+                        // with the original answer and let it fail there.
+                    }
                 }
 
                 // A research check that did not search answered from training
