@@ -21,6 +21,37 @@ namespace PitchGenApi.Services
         private const string AnthropicWebSearchToolType = "web_search_20250305";
         private const string AnthropicVersion = "2023-06-01";
 
+        /// <summary>
+        /// DeepSeek's hard ceiling on output tokens, and what every DeepSeek
+        /// call asks for.
+        ///
+        /// The number is the API's own, quoted from the 400 it returns above
+        /// it: "Invalid max_tokens value, the valid range of max_tokens is
+        /// [1, 393216]". Measured 2026-09-17, identical for deepseek-flash and
+        /// deepseek-v4-pro. /chat/completions enforces it; the Responses and
+        /// Anthropic endpoints accept anything and clamp silently, so this is
+        /// the one value that is correct on all three.
+        /// </summary>
+        private const int DeepSeekMaxOutputTokens = 393_216;
+
+        /// <summary>
+        /// The output ceiling for a call: the model's maximum, unless a caller
+        /// or ModelRates asked for more.
+        ///
+        /// A ceiling is not a target -- output is billed as generated, not as
+        /// reserved -- so there is nothing to save by setting it low, and
+        /// setting it low is what truncated batches mid-JSON and lost them.
+        /// Measured 2026-09-17 on a ten-contact research batch, raising it from
+        /// 16,000 to the full 393,216 moved output from 1,494 tokens to 1,646
+        /// and left the cost per batch unchanged.
+        ///
+        /// A configured value below the ceiling is therefore deliberately NOT
+        /// honoured: ModelRates.MaxTokens is sized for writing one email, and
+        /// on a research batch it only ever cut the answer short.
+        /// </summary>
+        private static int ResolveMaxTokens(int? requested, int? configured) =>
+            Math.Max(DeepSeekMaxOutputTokens, Math.Max(requested ?? 0, configured ?? 0));
+
         // There is deliberately no max_uses on the search tool.
         //
         // It reads like a safety cap and behaves like a truncation. Flash fires
@@ -42,9 +73,16 @@ namespace PitchGenApi.Services
         // problem, and the continuation below is for that. The work stays
         // bounded by max_tokens and the caller's batch timeout.
 
-        // Turns per call: the search turn, plus one to write up what it found.
-        // More would just be paying for the same searches again.
-        private const int MaxSearchTurns = 2;
+        // Turns per call. Not a limit on searching -- the model searches as much
+        // as it likes on every one of them -- just a stop on a conversation that
+        // never converges.
+        //
+        // Two was too few: measured 2026-09-18 on a ten-contact batch, a turn
+        // that runs out mid-search can be followed by another that also runs out,
+        // and the batch then failed with nothing to show for eighteen searches.
+        // Across trials nothing needed more than two turns, so four is headroom
+        // rather than an expectation, and unused turns cost nothing.
+        private const int MaxSearchTurns = 4;
 
         /// <summary>
         /// Closes out a turn that ran out of searches mid-way. The searches it
@@ -178,7 +216,7 @@ namespace PitchGenApi.Services
 
                 // The caller's budget wins: the rate row is sized for one email,
                 // which is far too small for a batched JSON reply.
-                int maxTokens = request.MaxTokens ?? rate?.MaxTokens ?? 2000;
+                int maxTokens = ResolveMaxTokens(request.MaxTokens, rate?.MaxTokens);
 
                 var messages = new List<object>();
 
@@ -388,7 +426,7 @@ namespace PitchGenApi.Services
 
                 decimal inputPricePerMillion = rate?.InputPrice ?? 0.27m;
                 decimal outputPricePerMillion = rate?.OutputPrice ?? 1.10m;
-                int maxTokens = request.MaxTokens ?? rate?.MaxTokens ?? 2000;
+                int maxTokens = ResolveMaxTokens(request.MaxTokens, rate?.MaxTokens);
 
                 // DeepSeek documents `instructions` for system context and `input` for
                 // the request itself. Sending the search instructions as a plain
@@ -710,7 +748,7 @@ namespace PitchGenApi.Services
 
                 decimal inputPricePerMillion = rate?.InputPrice ?? 0.27m;
                 decimal outputPricePerMillion = rate?.OutputPrice ?? 1.10m;
-                int maxTokens = request.MaxTokens ?? rate?.MaxTokens ?? 2000;
+                int maxTokens = ResolveMaxTokens(request.MaxTokens, rate?.MaxTokens);
 
                 var searchTool = new Dictionary<string, object>
                 {
@@ -845,12 +883,22 @@ namespace PitchGenApi.Services
                     };
                 }
 
-                if (string.IsNullOrWhiteSpace(output))
+                // A turn that ends on "tool_use" never wrote an answer, whatever
+                // text it left behind -- and it usually leaves some: the running
+                // commentary, "I'll research each contact... Let me continue
+                // searching...". That text is not a result, so returning it as a
+                // success just moves the failure downstream, where it surfaces as
+                // "the model's reply could not be read as JSON results" and sends
+                // the reader to a parser that is working correctly.
+                var ranOutMidSearch =
+                    string.Equals(stopReason, "tool_use", StringComparison.OrdinalIgnoreCase);
+
+                if (ranOutMidSearch || string.IsNullOrWhiteSpace(output))
                 {
                     var noContent =
-                        string.Equals(stopReason, "tool_use", StringComparison.OrdinalIgnoreCase)
-                            ? $"The model was still searching after {searchCalls} search(es) and "
-                              + $"never wrote an answer, even when asked to finish"
+                        ranOutMidSearch
+                            ? $"The model was still searching after {searchCalls} search(es) across "
+                              + $"{MaxSearchTurns} turns and never wrote an answer"
                               + (string.IsNullOrWhiteSpace(searchError)
                                   ? ". The batch may be too large for one call."
                                   : $": the search tool reported '{searchError}'.")
