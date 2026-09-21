@@ -61,6 +61,22 @@ namespace PitchGenApi.Model
         [Column("data_integrity_checked_at")]
         public DateTime? DataIntegrityCheckedAt { get; set; }
 
+        /// <summary>
+        /// The corrections this check offered, as
+        /// [{"id","field","current","suggested","reason","status","resolvedAt","resolvedBy"}].
+        ///
+        /// The comments say what is wrong in prose; this says what the value
+        /// should be, in a shape a button can act on. They are kept apart
+        /// deliberately — parsing a fix back out of an English sentence is how
+        /// a typo in the prompt becomes a wrong write to the contact record.
+        ///
+        /// A re-run replaces the whole list. Accepting one is not a reason to
+        /// keep it: the next run judges the corrected record and has nothing
+        /// left to say about it.
+        /// </summary>
+        [Column("data_integrity_suggestions")]
+        public string? DataIntegritySuggestionsJson { get; set; }
+
         // ---------------- Live contact ----------------
 
         [Column("live_contact_confidence")]

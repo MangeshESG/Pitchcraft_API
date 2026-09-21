@@ -144,7 +144,31 @@ namespace PitchGenApi.Services
                 ? "turbo"
                 : options.Value.SearchStrategy.Trim();
 
-            _httpClient.Timeout = TimeSpan.FromMinutes(3);
+            // Ten minutes, matching the OpenAI client in Program.cs and the
+            // validation runner's own client rather than being generous for its
+            // own sake.
+            //
+            // Three minutes was not a budget anyone measured a call against, and
+            // a researched batch outgrew it: at the configured batch size of 50
+            // contacts, one web-search call runs a search per contact and the
+            // whole turn regularly passes 180s, which surfaced as "Qwen web
+            // search timed out after 180 seconds" on work that was progressing
+            // perfectly well. The request is abandoned at that point but the
+            // provider still ran and still billed it, so the short ceiling cost
+            // the batch and the money both.
+            //
+            // Not removed altogether: with no ceiling a wedged call holds its
+            // runner slot forever, and Timeout.InfiniteTimeSpan is how a queue
+            // stops draining. Ten minutes is long enough that only a genuinely
+            // stuck call reaches it.
+            //
+            // Note this is the ONLY thing that stops a long Qwen call. The
+            // per-batch CancellationToken in ContactValidationService is passed
+            // to CallModelAsync but not onward into this service, so
+            // Validation:ModelCallTimeoutSeconds does not apply to the Qwen or
+            // DeepSeek paths - see Validation:StaleJobMinutes in appsettings,
+            // which has to stay above this value.
+            _httpClient.Timeout = TimeSpan.FromMinutes(10);
 
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");

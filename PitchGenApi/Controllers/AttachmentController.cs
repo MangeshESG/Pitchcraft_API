@@ -16,10 +16,20 @@ namespace PitchGenApi.Controllers
         private readonly IAttachmentRepository _repository;
         private readonly AppDbContext _context;
 
-        public AttachmentController(IAttachmentRepository repository, AppDbContext context)
+        // ContentRootPath, not the process working directory: under IIS that
+        // directory is the worker process folder, not the app folder, so the
+        // old path resolved somewhere unwritable and every upload died as a
+        // 500. Program.cs settled on the same rule for the static-file folders.
+        private readonly string _attachmentsRoot;
+
+        public AttachmentController(
+            IAttachmentRepository repository,
+            AppDbContext context,
+            IWebHostEnvironment environment)
         {
             _repository = repository;
             _context = context;
+            _attachmentsRoot = environment.ContentRootPath;
         }
 
         [HttpPost("upload")]
@@ -33,7 +43,7 @@ namespace PitchGenApi.Controllers
                 return BadRequest("File exceeds 50MB");
 
             // Root folder
-            var rootFolder = Path.Combine(Directory.GetCurrentDirectory(), "ContactAttachments");
+            var rootFolder = Path.Combine(_attachmentsRoot, "ContactAttachments");
 
             if (!Directory.Exists(rootFolder))
                 Directory.CreateDirectory(rootFolder);
@@ -89,7 +99,7 @@ namespace PitchGenApi.Controllers
             if (image == null)
                 return NotFound();
 
-            var path = Path.Combine(Directory.GetCurrentDirectory(), image.FileUrl.TrimStart('/'));
+            var path = Path.Combine(_attachmentsRoot, image.FileUrl.TrimStart('/'));
             if (!System.IO.File.Exists(path))
                 return NotFound("File not found");
 
@@ -125,7 +135,7 @@ namespace PitchGenApi.Controllers
                 return BadRequest("Only image files are allowed");
 
             var contactFolder = Path.Combine(
-                Directory.GetCurrentDirectory(),
+                _attachmentsRoot,
                 "ContactAttachments",
                 $"Contact_{request.ContactId}");
             Directory.CreateDirectory(contactFolder);
@@ -168,7 +178,7 @@ namespace PitchGenApi.Controllers
 
             foreach (var image in images)
             {
-                var path = Path.Combine(Directory.GetCurrentDirectory(), image.FileUrl.TrimStart('/'));
+                var path = Path.Combine(_attachmentsRoot, image.FileUrl.TrimStart('/'));
                 if (System.IO.File.Exists(path))
                     System.IO.File.Delete(path);
             }
@@ -186,7 +196,7 @@ namespace PitchGenApi.Controllers
             if (file == null)
                 return NotFound();
 
-            var path = Path.Combine(Directory.GetCurrentDirectory(), file.FileUrl.TrimStart('/'));
+            var path = Path.Combine(_attachmentsRoot, file.FileUrl.TrimStart('/'));
 
             if (!System.IO.File.Exists(path))
                 return NotFound("File not found");

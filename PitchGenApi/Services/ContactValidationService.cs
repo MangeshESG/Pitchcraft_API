@@ -758,6 +758,24 @@
 
                 var parsed = ParseResults(call.Content);
 
+                // Data integrity is the only check that returns corrections, and
+                // a batch that carries none is indistinguishable downstream from
+                // a batch with nothing to correct: both store null. That makes
+                // the two failures that matter look identical — a model that
+                // never emitted the key, and a parser that rejected every item
+                // it did. Logging the reply on that path is what tells them
+                // apart, and it costs one line on a batch that had nothing to
+                // say anyway.
+                if (job.CheckType == ValidationCheckTypes.DataIntegrity &&
+                    parsed.Count > 0 &&
+                    parsed.Values.All(r => (r.DataIntegritySuggestions?.Count ?? 0) == 0))
+                {
+                    _logger.LogWarning(
+                        "Validation job {JobId}: a data integrity batch of {Count} contact(s) " +
+                        "returned no usable corrections. Reply begins: {Sample}",
+                        job.Id, batch.Length, Truncate(call.Content, 1500));
+                }
+
                 if (parsed.Count == 0)
                 {
                     MarkBatchFailed(batch, itemsByContact,
@@ -1168,9 +1186,16 @@
         /// ModelRates.MaxTokens is sized for writing a single email, so it is
         /// nowhere near enough for a reply carrying one object per contact —
         /// and going over does not error, it truncates the JSON mid-array and
-        /// loses the whole batch. Roughly 120 tokens per contact covers an ID,
-        /// a score and a sentence or two of comments, with a fixed allowance on
-        /// top for the wrapper and any preamble.
+        /// loses the whole batch. Roughly 220 tokens per contact covers an ID,
+        /// a score, a sentence or two of comments and a couple of suggested
+        /// corrections, with a fixed allowance on top for the wrapper and any
+        /// preamble.
+        ///
+        /// It was 120 before data integrity began returning corrections. A
+        /// correction carries the old value, the new one and the evidence for
+        /// it, which is comparable in size to the comments themselves — so a
+        /// budget sized for a score and a comment leaves a full batch one
+        /// wordy record away from being truncated and thrown out.
         ///
         /// A web search check needs far more than the answer costs. On the
         /// Responses endpoint the model's own reasoning and its running search
@@ -1184,7 +1209,7 @@
         private static int OutputBudgetFor(int batchCount, bool usesWebSearch) =>
             usesWebSearch
                 ? Math.Clamp(batchCount * 800 + 4000, 16000, 64000)
-                : Math.Clamp(batchCount * 120 + 1000, 4000, 32000);
+                : Math.Clamp(batchCount * 220 + 1000, 4000, 32000);
 
         private async Task<ModelCallResult> CallOpenAiAsync(
             string model,
@@ -1419,6 +1444,7 @@
                         "LiveContactValidityComments", "Live Contact comments"),
                     CompanyClassification = ReadString(element,
                         "Company classification", "company_classification", "CompanyClassification"),
+                    DataIntegritySuggestions = ReadSuggestions(element),
                     Sources = ReadSources(element)
                 };
             }
@@ -1495,6 +1521,73 @@
             // The scale is defined as 0-100; anything outside it is a model
             // slip, and clamping keeps the badge and its colour band sane.
             static int Clamp(int value) => Math.Clamp(value, 0, 100);
+        }
+
+        /// <summary>
+        /// Reads the field corrections out of one result object.
+        ///
+        /// Three things are thrown away rather than shown: a field the Accept
+        /// endpoint is not allowed to write, a suggestion with no replacement
+        /// value, and one whose replacement equals what the record already
+        /// says. The last is the common case — a model listing a field it
+        /// checked and left alone — and an Accept button that writes back the
+        /// value already there is worse than no button, because the user
+        /// cannot tell it did nothing.
+        ///
+        /// The reason is required. A one-click write to a customer's data has
+        /// to be reviewable, and "trust me" is not reviewable; the prompt asks
+        /// for the evidence, and a suggestion that arrives without it is a
+        /// suggestion we cannot show a user enough about to let them accept.
+        /// </summary>
+        private static List<ValidationSuggestionDto> ReadSuggestions(JObject element)
+        {
+            var suggestions = new List<ValidationSuggestionDto>();
+
+            var array = element.GetValue("Data Integrity suggestions", StringComparison.OrdinalIgnoreCase)
+                        ?? element.GetValue("data_integrity_suggestions", StringComparison.OrdinalIgnoreCase)
+                        ?? element.GetValue("Suggestions", StringComparison.OrdinalIgnoreCase);
+
+            if (array is not JArray items) return suggestions;
+
+            var index = 0;
+
+            foreach (var item in items.OfType<JObject>())
+            {
+                var field = ValidationSuggestionFields.Normalize(
+                    ReadString(item, "field", "field_name", "fieldName"));
+
+                if (field == null) continue;
+
+                var suggested = ReadString(item, "suggested", "suggested_value",
+                                                 "suggestedValue", "corrected", "correction")?.Trim();
+
+                if (string.IsNullOrWhiteSpace(suggested)) continue;
+
+                var current = ReadString(item, "current", "current_value",
+                                               "currentValue", "original")?.Trim();
+
+                if (string.Equals(current, suggested, StringComparison.Ordinal)) continue;
+
+                var reason = ReadString(item, "reason", "evidence", "explanation")?.Trim();
+
+                if (string.IsNullOrWhiteSpace(reason)) continue;
+
+                suggestions.Add(new ValidationSuggestionDto
+                {
+                    // Position within this result, which is what makes it
+                    // stable: the list is replaced wholesale by the next run,
+                    // never appended to, so index 2 means the same suggestion
+                    // for as long as this result exists.
+                    Id = $"s{index++}",
+                    Field = field,
+                    Current = current,
+                    Suggested = suggested,
+                    Reason = reason,
+                    Status = ValidationSuggestionStatuses.Pending
+                });
+            }
+
+            return suggestions;
         }
 
         private static List<ValidationSourceDto> ReadSources(JObject element)
@@ -1588,6 +1681,8 @@
                         // The empty string is meaningful here: it is how a clean
                         // record is reported, and it must not become null.
                         row.DataIntegrityComments = result.DataIntegrityComments ?? "";
+                        row.DataIntegritySuggestionsJson =
+                            SerialiseSuggestions(result.DataIntegritySuggestions, contact);
                         row.DataIntegrityCheckedAt = now;
                         break;
 
@@ -1663,6 +1758,41 @@
         /// Adds new evidence to what a contact already has, keyed on URL so
         /// re-running a check does not stack the same citation up again.
         /// </summary>
+        /// <summary>
+        /// Stores this run's suggestions, dropping any whose replacement the
+        /// contact already holds.
+        /// </summary>
+        /// <remarks>
+        /// The model is told what the record said when the batch was built, but
+        /// it is the contact row as it stands now that Accept would write to,
+        /// and the two can differ: another user can edit a contact while a
+        /// hundred-contact run is still working through its batches. Comparing
+        /// against the live row is what keeps a stale suggestion from offering
+        /// to undo an edit made two minutes ago.
+        ///
+        /// Null rather than "[]" when there is nothing to offer, so a clean
+        /// record costs no row width and the UI has one emptiness to test for.
+        /// </remarks>
+        private static string? SerialiseSuggestions(
+            List<ValidationSuggestionDto>? suggestions,
+            Contact contact)
+        {
+            var usable = (suggestions ?? new List<ValidationSuggestionDto>())
+                .Where(suggestion => !string.Equals(
+                    ValidationSuggestionFields.Read(contact, suggestion.Field)?.Trim(),
+                    suggestion.Suggested.Trim(),
+                    // Case-sensitive, because a change of case IS the
+                    // correction. "Aamir sheikh" to "Aamir Sheikh" is one of
+                    // the fixes this check exists to offer, and an
+                    // OrdinalIgnoreCase comparison here reads it as a
+                    // suggestion the contact already holds and silently drops
+                    // it.
+                    StringComparison.Ordinal))
+                .ToList();
+
+            return usable.Count == 0 ? null : ValidationSuggestionJson.Serialize(usable);
+        }
+
         private static string? MergeSources(string? existingJson, List<ValidationSourceDto>? incoming)
         {
             if (incoming == null || incoming.Count == 0)

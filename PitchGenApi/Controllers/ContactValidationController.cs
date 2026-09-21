@@ -536,6 +536,161 @@ namespace PitchGenApi.Controllers
             });
         }
 
+        // =============================================================
+        // Data Integrity suggestions
+        // =============================================================
+
+        /// <summary>
+        /// Applies one suggested correction to the contact and marks the
+        /// suggestion accepted.
+        /// </summary>
+        /// <remarks>
+        /// Both halves happen here, in one save, rather than the browser
+        /// calling <c>Crm/update-contact</c> and then a second endpoint to
+        /// record the outcome. Two reasons.
+        ///
+        /// First, <c>update-contact</c> writes the whole record from the DTO it
+        /// is given, so every field the caller omits is written as null. The
+        /// grid row behind an Accept button does not carry every field, and
+        /// accepting a job-title fix from it would blank the telephone number
+        /// and the industry on the way past. This writes one column.
+        ///
+        /// Second, the field being written has to be one of the small set the
+        /// check is allowed to correct, and that has to be decided on this side
+        /// of the wire - the suggestion arrives from a language model, and its
+        /// field name is only a claim until something checks it against
+        /// <see cref="ValidationSuggestionFields"/>.
+        ///
+        /// The response returns the applied field and value so the caller can
+        /// patch the one row it has on screen instead of refetching the list.
+        /// </remarks>
+        [HttpPost("suggestions/accept")]
+        public Task<IActionResult> AcceptSuggestion(
+            [FromBody] ResolveSuggestionRequestDto request) =>
+            ResolveSuggestionAsync(request, accept: true);
+
+        /// <summary>
+        /// Marks a suggestion dismissed without touching the contact.
+        ///
+        /// It stays on the row rather than being deleted: a user who dismissed
+        /// a correction and wants to see what it was still can, and the record
+        /// of having decided is what stops the same suggestion reading as
+        /// unreviewed to the next person looking at the contact.
+        /// </summary>
+        [HttpPost("suggestions/dismiss")]
+        public Task<IActionResult> DismissSuggestion(
+            [FromBody] ResolveSuggestionRequestDto request) =>
+            ResolveSuggestionAsync(request, accept: false);
+
+        private async Task<IActionResult> ResolveSuggestionAsync(
+            ResolveSuggestionRequestDto request,
+            bool accept)
+        {
+            if (request == null || request.ClientId <= 0 || request.ContactId <= 0)
+                return BadRequest(new { success = false, message = "A valid client and contact are required." });
+
+            if (string.IsNullOrWhiteSpace(request.SuggestionId))
+                return BadRequest(new { success = false, message = "No suggestion was identified." });
+
+            var row = await _context.contact_validations
+                .FirstOrDefaultAsync(v =>
+                    v.ClientId == request.ClientId && v.ContactId == request.ContactId);
+
+            if (row == null)
+                return NotFound(new { success = false, message = "This contact has not been validated." });
+
+            var suggestions = ValidationSuggestionJson.Deserialize(row.DataIntegritySuggestionsJson);
+
+            var suggestion = suggestions.FirstOrDefault(
+                item => string.Equals(item.Id, request.SuggestionId, StringComparison.OrdinalIgnoreCase));
+
+            if (suggestion == null)
+            {
+                // Most often the check was re-run since the grid loaded, which
+                // replaced the list. Saying so is more use than "not found",
+                // because the fix is to reload rather than to try again.
+                return NotFound(new
+                {
+                    success = false,
+                    message = "That suggestion is no longer on this contact. Reload the list to see the current ones."
+                });
+            }
+
+            if (suggestion.Status != ValidationSuggestionStatuses.Pending)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = $"This suggestion has already been {suggestion.Status}."
+                });
+            }
+
+            var now = DateTime.UtcNow;
+            object? applied = null;
+
+            if (accept)
+            {
+                // Scoped to the client's own data files: a suggestion id from
+                // one client's validation row must not be able to name another
+                // client's contact.
+                var contact = await _context.contacts
+                    .FirstOrDefaultAsync(c =>
+                        c.id == request.ContactId &&
+                        _context.data_files.Any(f =>
+                            f.id == c.DataFileId && f.client_id == request.ClientId));
+
+                if (contact == null)
+                    return NotFound(new { success = false, message = "Contact not found." });
+
+                if (!ValidationSuggestionFields.Apply(contact, suggestion.Field, suggestion.Suggested))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = $"{suggestion.Field} is not a field this check can correct."
+                    });
+                }
+
+                contact.updated_at = now;
+
+                applied = new
+                {
+                    field = suggestion.Field,
+                    value = suggestion.Suggested,
+                    // The name write also rebuilds the two split columns, and
+                    // the grid shows those rather than full_name, so it needs
+                    // all three back or the row it patches goes stale.
+                    fullName = contact.full_name,
+                    firstName = contact.first_name,
+                    lastName = contact.last_name
+                };
+            }
+
+            suggestion.Status = accept
+                ? ValidationSuggestionStatuses.Accepted
+                : ValidationSuggestionStatuses.Dismissed;
+            suggestion.ResolvedAt = now;
+            suggestion.ResolvedBy = request.ResolvedBy;
+
+            row.DataIntegritySuggestionsJson = ValidationSuggestionJson.Serialize(suggestions);
+            row.UpdatedAt = now;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                success = true,
+                message = accept
+                    ? $"{ValidationSuggestionFields.Label(suggestion.Field)} updated."
+                    : "Suggestion dismissed.",
+                applied,
+                // The whole list back, serialised the way the grid stores it,
+                // so one row can be patched from this response alone.
+                suggestions,
+                suggestionsJson = row.DataIntegritySuggestionsJson
+            });
+        }
+
         private static ContactValidationDto ToDto(ContactValidation row)
         {
             var sources = new List<ValidationSourceDto>();
@@ -574,6 +729,7 @@ namespace PitchGenApi.Controllers
                 EmailValidityComments = row.EmailValidityComments,
                 EmailCheckedAt = row.EmailCheckedAt,
                 Sources = sources,
+                DataIntegritySuggestions = ValidationSuggestionJson.Deserialize(row.DataIntegritySuggestionsJson),
                 IsVerified = row.IsVerified,
                 VerifiedAt = row.VerifiedAt,
                 VerifiedBy = row.VerifiedBy

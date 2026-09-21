@@ -1,4 +1,4 @@
-namespace PitchGenApi.Model.DTOs
+﻿namespace PitchGenApi.Model.DTOs
 {
     // ------------------------------------------------------------ briefs
 
@@ -111,6 +111,14 @@ namespace PitchGenApi.Model.DTOs
 
         public List<ValidationSourceDto> Sources { get; set; } = new();
 
+        /// <summary>
+        /// The corrections the Data Integrity check offered for this contact,
+        /// each with where it has got to. Only this check produces them: it is
+        /// the one whose findings are about the supplied value itself, so it is
+        /// the only one that can say what the value should have been.
+        /// </summary>
+        public List<ValidationSuggestionDto> DataIntegritySuggestions { get; set; } = new();
+
         public bool IsVerified { get; set; }
         public DateTime? VerifiedAt { get; set; }
         public string? VerifiedBy { get; set; }
@@ -120,6 +128,50 @@ namespace PitchGenApi.Model.DTOs
     {
         public string Label { get; set; } = "";
         public string Url { get; set; } = "";
+    }
+
+    /// <summary>
+    /// One correction the Data Integrity check offered: what the record says
+    /// now, what it should say, and why.
+    ///
+    /// Stored as JSON on the validation row rather than as its own table
+    /// because a suggestion has no life of its own — it belongs to one check
+    /// result, it is replaced wholesale the next time that check runs, and the
+    /// grid always reads it beside the score it came from.
+    /// </summary>
+    public sealed class ValidationSuggestionDto
+    {
+        /// <summary>
+        /// Stable within one check result. Accept posts this back, so the
+        /// server applies the suggestion the user actually clicked rather than
+        /// the one that happens to sit at that index now.
+        /// </summary>
+        public string Id { get; set; } = "";
+
+        /// <summary>A key from <see cref="ValidationSuggestionFields"/>.</summary>
+        public string Field { get; set; } = "";
+
+        /// <summary>The value as the check saw it — shown as the "from" side of the diff.</summary>
+        public string? Current { get; set; }
+
+        public string Suggested { get; set; } = "";
+
+        /// <summary>The evidence line. The prompt requires one; a suggestion without it is dropped.</summary>
+        public string? Reason { get; set; }
+
+        /// <summary>pending | accepted | dismissed</summary>
+        public string Status { get; set; } = ValidationSuggestionStatuses.Pending;
+
+        public DateTime? ResolvedAt { get; set; }
+        public string? ResolvedBy { get; set; }
+    }
+
+    public sealed class ResolveSuggestionRequestDto
+    {
+        public int ClientId { get; set; }
+        public int ContactId { get; set; }
+        public string SuggestionId { get; set; } = "";
+        public string? ResolvedBy { get; set; }
     }
 
     public sealed class MarkVerifiedRequestDto
@@ -155,6 +207,13 @@ namespace PitchGenApi.Model.DTOs
         public string? LiveContactValidityComments { get; set; }
 
         public List<ValidationSourceDto>? Sources { get; set; }
+
+        /// <summary>
+        /// Field corrections the Data Integrity check offered. Already filtered
+        /// to the writable fields by the parser, so anything still here names a
+        /// column the Accept endpoint is allowed to write.
+        /// </summary>
+        public List<ValidationSuggestionDto>? DataIntegritySuggestions { get; set; }
 
         /// <summary>
         /// The company classification the model established while judging this
