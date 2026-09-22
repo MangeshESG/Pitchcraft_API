@@ -18,10 +18,37 @@ using PitchGenApi.Helpers;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Http.Features;
+using PitchGenApi.Middleware;
+using Serilog;
+using Serilog.Events;
 
 using static PitchGenApi.Services.CampaignPromptService;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ===============================
+// Logging
+// ===============================
+// The Serilog packages were referenced and appsettings carried a Serilog
+// section, but nothing ever called UseSerilog -- so unhandled exceptions were
+// written nowhere and a 500 on the server told us only that it was a 500. The
+// sink is configured here rather than from appsettings because the server
+// keeps its own copy of that file, and because the path has to be absolute:
+// under IIS the working directory is not the app folder, so a relative path
+// lands somewhere nobody looks.
+var logDirectory = Path.Combine(builder.Environment.ContentRootPath, "logs");
+Directory.CreateDirectory(logDirectory);
+
+builder.Host.UseSerilog((context, configuration) => configuration
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("System", LogEventLevel.Warning)
+    .WriteTo.File(
+        Path.Combine(logDirectory, "error-.txt"),
+        rollingInterval: RollingInterval.Day,
+        restrictedToMinimumLevel: LogEventLevel.Error,
+        retainedFileCountLimit: 31,
+        shared: true));
 
 // ===============================
 // ✅ OpenAI settings
@@ -328,6 +355,14 @@ builder.Services.AddControllers();
 // 🚀 Build App
 // ===============================
 var app = builder.Build();
+
+// ===============================
+// Unhandled exceptions
+// ===============================
+// First in the pipeline so it wraps everything below it. Without this the
+// class was dead code: exceptions escaped to IIS, which answered with a bare
+// 500 carrying no clue what went wrong.
+app.UseMiddleware<GlobalExceptionMiddleware>();
 
 // ===============================
 // ✅ REQUIRED for production (reverse proxy)
