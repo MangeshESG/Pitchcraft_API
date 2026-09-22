@@ -1,14 +1,15 @@
 namespace PitchGenApi.Model
 {
     /// <summary>
-    /// One row per (client, list column). Holds the client-level list-view layout:
-    /// which columns are shown and in what order. The layout is shared by every
-    /// list view / segment / saved view of that client.
+    /// One row per client, scope type, scope ID and column.
+    /// Legacy client/0 rows are retained but are not used by scoped layouts.
     /// </summary>
     public class CrmColumnPreference
     {
         public int id { get; set; }
         public int client_id { get; set; }
+        public string scope_type { get; set; } = "client";
+        public int scope_id { get; set; }
 
         /// <summary>
         /// Column identifier used by the table (contact field name such as

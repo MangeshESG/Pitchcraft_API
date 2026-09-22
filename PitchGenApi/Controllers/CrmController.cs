@@ -528,31 +528,22 @@ namespace PitchGenApi.Controllers
                                          p.column_key == dto.FieldName))
                             .ToListAsync();
 
-                        var rowUnderNewName = layoutRows
-                            .FirstOrDefault(p => p.column_key == dto.FieldName);
-
-                        foreach (var row in layoutRows)
+                        foreach (var scopeRows in layoutRows.GroupBy(p => new { p.scope_type, p.scope_id }))
                         {
-                            if (row == rowUnderNewName)
+                            var rowUnderNewName = scopeRows.FirstOrDefault(p => p.column_key == dto.FieldName);
+                            foreach (var row in scopeRows)
                             {
+                                // Resolve rename collisions within this layout only.
+                                if (rowUnderNewName != null && row != rowUnderNewName)
+                                {
+                                    _context.crm_column_preferences.Remove(row);
+                                    continue;
+                                }
+                                row.column_key = dto.FieldName;
                                 row.label = dto.FieldName;
                                 row.custom_field_id = field.id;
                                 row.updated_at = DateTime.UtcNow;
-                                continue;
                             }
-
-                            // A column already sits under the new name — keep that one
-                            // rather than breaking the (client_id, column_key) unique index.
-                            if (rowUnderNewName != null)
-                            {
-                                _context.crm_column_preferences.Remove(row);
-                                continue;
-                            }
-
-                            row.column_key = dto.FieldName;
-                            row.label = dto.FieldName;
-                            row.custom_field_id = field.id;
-                            row.updated_at = DateTime.UtcNow;
                         }
                     }
 
@@ -603,26 +594,46 @@ namespace PitchGenApi.Controllers
         }
 
         // ===========================================================
-        // LIST-VIEW COLUMN LAYOUT (client level)
+        // COLUMN LAYOUT (per client and individual list / segment / view)
         //
-        // One layout per client, shared by every list view / segment /
-        // saved view: which columns are visible and in what order.
+        // All operations require a scope. Legacy client-wide rows are retained.
         // The table is a pure store — it does not own the column
         // catalogue. Columns the client has never arranged are simply
         // absent, and the UI appends them after the stored ones.
         // ===========================================================
 
+        private static bool IsValidColumnScope(string? scopeType, int scopeId) =>
+            (scopeType == "list" && (scopeId > 0 || scopeId == -1)) ||
+            ((scopeType == "segment" || scopeType == "view") && scopeId > 0);
+
+        private async Task<bool> OwnsColumnScope(int clientId, string scopeType, int scopeId) =>
+            scopeType switch
+            {
+                "list" when scopeId == -1 => true, // All contacts is a virtual list.
+                "list" => await _context.data_files.AnyAsync(x => x.id == scopeId && x.client_id == clientId),
+                "segment" => await _context.segments.AnyAsync(x => x.Id == scopeId && x.ClientId == clientId),
+                "view" => await _context.crm_views.AnyAsync(x => x.id == scopeId && x.client_id == clientId),
+                _ => false
+            };
+
         [HttpGet("column-preferences")]
-        public async Task<IActionResult> GetColumnPreferences([FromQuery] int clientId)
+        public async Task<IActionResult> GetColumnPreferences([FromQuery] int clientId, [FromQuery] string? scopeType, [FromQuery] int scopeId)
         {
             if (clientId <= 0)
                 return BadRequest(new { success = false, message = "clientId must be greater than 0." });
+            scopeType = scopeType?.Trim().ToLowerInvariant();
+            if (!IsValidColumnScope(scopeType, scopeId))
+                return BadRequest(new { success = false, message = "A valid scopeType (list, segment or view) and scopeId are required." });
+
 
             try
             {
+                if (!await OwnsColumnScope(clientId, scopeType!, scopeId))
+                    return NotFound(new { success = false, message = "The column layout scope does not belong to this client." });
+
                 var saved = await _context.crm_column_preferences
                     .AsNoTracking()
-                    .Where(p => p.client_id == clientId)
+                    .Where(p => p.client_id == clientId && p.scope_type == scopeType && p.scope_id == scopeId)
                     .OrderBy(p => p.sort_order)
                     .ThenBy(p => p.id)
                     .ToListAsync();
@@ -668,7 +679,7 @@ namespace PitchGenApi.Controllers
         }
 
         /// <summary>
-        /// Replaces the client's whole layout. The position of each entry in
+        /// Replaces only the selected list, segment or view's layout. The position of each entry in
         /// <c>Columns</c> is the column sequence, so a drag-and-drop reorder and a
         /// show/hide toggle both post the same payload.
         /// </summary>
@@ -677,6 +688,10 @@ namespace PitchGenApi.Controllers
         {
             if (dto == null || dto.ClientId <= 0)
                 return BadRequest(new { success = false, message = "clientId must be greater than 0." });
+            dto.ScopeType = dto.ScopeType?.Trim().ToLowerInvariant();
+            if (!IsValidColumnScope(dto.ScopeType, dto.ScopeId))
+                return BadRequest(new { success = false, message = "A valid scopeType (list, segment or view) and scopeId are required." });
+
 
             if (dto.Columns == null)
                 return BadRequest(new { success = false, message = "columns is required." });
@@ -716,6 +731,9 @@ namespace PitchGenApi.Controllers
 
                 try
                 {
+                    if (!await OwnsColumnScope(dto.ClientId, dto.ScopeType!, dto.ScopeId))
+                        return NotFound(new { success = false, message = "The column layout scope does not belong to this client." });
+
                     // Only accept custom-field ids that belong to this client.
                     var ownedCustomFieldIds = await _context.crm_custom_fields
                         .Where(f => f.client_id == dto.ClientId)
@@ -725,7 +743,7 @@ namespace PitchGenApi.Controllers
                     var ownedCustomFieldIdSet = new HashSet<int>(ownedCustomFieldIds);
 
                     var existing = await _context.crm_column_preferences
-                        .Where(p => p.client_id == dto.ClientId)
+                        .Where(p => p.client_id == dto.ClientId && p.scope_type == dto.ScopeType && p.scope_id == dto.ScopeId)
                         .ToListAsync();
 
                     var existingByKey = existing.ToDictionary(
@@ -755,6 +773,8 @@ namespace PitchGenApi.Controllers
                             _context.crm_column_preferences.Add(new CrmColumnPreference
                             {
                                 client_id = dto.ClientId,
+                                scope_type = dto.ScopeType!,
+                                scope_id = dto.ScopeId,
                                 column_key = column.ColumnKey,
                                 label = column.Label,
                                 is_visible = column.IsVisible,
@@ -806,15 +826,22 @@ namespace PitchGenApi.Controllers
 
         /// <summary>Clears the stored layout so the client falls back to UI defaults.</summary>
         [HttpPost("column-preferences/reset")]
-        public async Task<IActionResult> ResetColumnPreferences([FromQuery] int clientId)
+        public async Task<IActionResult> ResetColumnPreferences([FromQuery] int clientId, [FromQuery] string? scopeType, [FromQuery] int scopeId)
         {
             if (clientId <= 0)
                 return BadRequest(new { success = false, message = "clientId must be greater than 0." });
+            scopeType = scopeType?.Trim().ToLowerInvariant();
+            if (!IsValidColumnScope(scopeType, scopeId))
+                return BadRequest(new { success = false, message = "A valid scopeType (list, segment or view) and scopeId are required." });
+
 
             try
             {
+                if (!await OwnsColumnScope(clientId, scopeType!, scopeId))
+                    return NotFound(new { success = false, message = "The column layout scope does not belong to this client." });
+
                 var rows = await _context.crm_column_preferences
-                    .Where(p => p.client_id == clientId)
+                    .Where(p => p.client_id == clientId && p.scope_type == scopeType && p.scope_id == scopeId)
                     .ToListAsync();
 
                 if (rows.Any())

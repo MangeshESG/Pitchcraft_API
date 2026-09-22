@@ -16,12 +16,14 @@ namespace PitchGenApi.Model.DTOs
     }
 
     /// <summary>
-    /// Full replace of a client's column layout. The order of <see cref="Columns"/>
+    /// Full replace of one list, segment or saved view's column layout. The order of <see cref="Columns"/>
     /// is the column order — the server stores the array index as sort_order.
     /// </summary>
     public class SaveColumnPreferencesDto
     {
         public int ClientId { get; set; }
+        public string? ScopeType { get; set; }
+        public int ScopeId { get; set; }
         public List<ColumnPreferenceDto> Columns { get; set; } = new();
     }
 }
