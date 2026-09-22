@@ -75,6 +75,75 @@ namespace PitchGenApi.Model
                 ["linkedin_profile"] = LinkedInUrl
             };
 
+        /// <summary>
+        /// Which fields each check may correct.
+        /// </summary>
+        /// <remarks>
+        /// Narrower than <see cref="All"/> on purpose. A check should only be
+        /// able to rewrite what it actually looked at: the live contact check
+        /// researches where someone works now, so it may move a job title or an
+        /// employer, but it has no business rewriting an email address — that
+        /// is the email check's evidence, gathered from a provider, and letting
+        /// a research prompt overwrite it would let the weaker evidence win.
+        ///
+        /// Email verification is the tightest of the four because its
+        /// correction is not a model's opinion at all: it is the address
+        /// Prospeo or Hunter returned.
+        /// </remarks>
+        private static readonly Dictionary<string, string[]> WritableByCheck =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                // Structural quality of the record as supplied — every field it
+                // is asked to inspect, it may also correct.
+                [ValidationCheckTypes.DataIntegrity] = new[]
+                {
+                    FullName, JobTitle, CompanyName, Email, Website, Location, LinkedInUrl
+                },
+
+                // Is this person still there, in that role? Corrections are
+                // about employment, never identity or contact details.
+                [ValidationCheckTypes.LiveContact] = new[]
+                {
+                    JobTitle, CompanyName, Website, LinkedInUrl, Location
+                },
+
+                // Judges the employer and the role against a brief. It
+                // researches the company, so it can correct which company the
+                // record names — but it never looks at location, and it is
+                // explicitly forbidden from judging whether a role is current,
+                // so it has no basis for touching either.
+                [ValidationCheckTypes.ContactFit] = new[]
+                {
+                    JobTitle, CompanyName, Website
+                },
+
+                // The provider's address, and nothing else.
+                [ValidationCheckTypes.EmailVerification] = new[] { Email }
+            };
+
+        /// <summary>
+        /// Whether this check is allowed to correct this field. A suggestion
+        /// that fails here is dropped at parse time and refused again at the
+        /// point of writing.
+        /// </summary>
+        public static bool IsWritableBy(string checkType, string? field)
+        {
+            var key = Normalize(field);
+
+            if (key == null) return false;
+
+            return WritableByCheck.TryGetValue(
+                       ValidationCheckTypes.Normalize(checkType), out var allowed) &&
+                   allowed.Contains(key, StringComparer.Ordinal);
+        }
+
+        /// <summary>The fields one check may correct, for the prompt and the docs.</summary>
+        public static IReadOnlyList<string> WritableBy(string checkType) =>
+            WritableByCheck.TryGetValue(
+                ValidationCheckTypes.Normalize(checkType), out var allowed)
+                ? allowed
+                : Array.Empty<string>();
+
         /// <summary>The canonical key, or null when the field is not writable.</summary>
         public static string? Normalize(string? field)
         {

@@ -149,11 +149,6 @@ namespace PitchGenApi.Controllers
                 dataIntegrityConfidence = v.DataIntegrityConfidence,
                 dataIntegrityComments = v.DataIntegrityComments,
                 dataIntegrityCheckedAt = v.DataIntegrityCheckedAt,
-                // The raw JSON, parsed in the browser like validationSources
-                // is. Sending it as an array would make it a column candidate
-                // in the auto-generated grid, which is the one thing it must
-                // not become - it is read by the score cell, never displayed.
-                dataIntegritySuggestions = v.DataIntegritySuggestionsJson,
                 liveContactConfidence = v.LiveContactConfidence,
                 liveContactComments = v.LiveContactComments,
                 liveContactCheckedAt = v.LiveContactCheckedAt,
@@ -161,6 +156,14 @@ namespace PitchGenApi.Controllers
                 emailValidityComments = v.EmailValidityComments,
                 emailCheckedAt = v.EmailCheckedAt,
                 validationSources = v.SourcesJson,
+                // The raw JSON, parsed in the browser like validationSources is.
+                // Sending these as arrays would make them column candidates in
+                // the auto-generated grid, which is the one thing they must not
+                // become - they are read by the score cells, never displayed.
+                contactFitSuggestions = v.ContactFitSuggestionsJson,
+                dataIntegritySuggestions = v.DataIntegritySuggestionsJson,
+                liveContactSuggestions = v.LiveContactSuggestionsJson,
+                emailValiditySuggestions = v.EmailValiditySuggestionsJson,
                 isVerified = v.IsVerified,
                 verifiedAt = v.VerifiedAt
             };

@@ -112,12 +112,17 @@
         public List<ValidationSourceDto> Sources { get; set; } = new();
 
         /// <summary>
-        /// The corrections the Data Integrity check offered for this contact,
-        /// each with where it has got to. Only this check produces them: it is
-        /// the one whose findings are about the supplied value itself, so it is
-        /// the only one that can say what the value should have been.
+        /// The corrections each check offered for this contact, with where each
+        /// one has got to.
+        ///
+        /// Kept per check rather than merged, because accepting one has to name
+        /// the check it came from — the ids are only unique within a list — and
+        /// because the grid shows each check's corrections beside its own score.
         /// </summary>
+        public List<ValidationSuggestionDto> ContactFitSuggestions { get; set; } = new();
         public List<ValidationSuggestionDto> DataIntegritySuggestions { get; set; } = new();
+        public List<ValidationSuggestionDto> LiveContactSuggestions { get; set; } = new();
+        public List<ValidationSuggestionDto> EmailValiditySuggestions { get; set; } = new();
 
         public bool IsVerified { get; set; }
         public DateTime? VerifiedAt { get; set; }
@@ -166,10 +171,33 @@
         public string? ResolvedBy { get; set; }
     }
 
+    /// <summary>
+    /// Sets one check's score to 100 by hand.
+    ///
+    /// Separate from <see cref="MarkVerifiedRequestDto"/>, which is a statement
+    /// about the whole contact and raises every check that has run. This is the
+    /// narrower one: the user disagrees with a single verdict and is overruling
+    /// just that, leaving the other three checks saying what they found.
+    /// </summary>
+    public sealed class VerifyScoreRequestDto
+    {
+        public int ClientId { get; set; }
+        public int ContactId { get; set; }
+        /// <summary>A key from <see cref="ValidationCheckTypes"/>.</summary>
+        public string CheckType { get; set; } = "";
+        public string? VerifiedBy { get; set; }
+    }
+
     public sealed class ResolveSuggestionRequestDto
     {
         public int ClientId { get; set; }
         public int ContactId { get; set; }
+        /// <summary>
+        /// Which check's corrections this belongs to. Suggestion ids are only
+        /// unique within one check's list, so without it "s0" is ambiguous
+        /// across the four.
+        /// </summary>
+        public string CheckType { get; set; } = ValidationCheckTypes.DataIntegrity;
         public string SuggestionId { get; set; } = "";
         public string? ResolvedBy { get; set; }
     }
@@ -209,11 +237,11 @@
         public List<ValidationSourceDto>? Sources { get; set; }
 
         /// <summary>
-        /// Field corrections the Data Integrity check offered. Already filtered
-        /// to the writable fields by the parser, so anything still here names a
-        /// column the Accept endpoint is allowed to write.
+        /// Field corrections the running check offered. Already filtered to the
+        /// fields that check may write, so anything still here names a column
+        /// the Accept endpoint is allowed to change.
         /// </summary>
-        public List<ValidationSuggestionDto>? DataIntegritySuggestions { get; set; }
+        public List<ValidationSuggestionDto>? Suggestions { get; set; }
 
         /// <summary>
         /// The company classification the model established while judging this

@@ -756,24 +756,22 @@
                         string.Join(" | ", call.SearchEvidence));
                 }
 
-                var parsed = ParseResults(call.Content);
+                var parsed = ParseResults(call.Content, job.CheckType);
 
-                // Data integrity is the only check that returns corrections, and
-                // a batch that carries none is indistinguishable downstream from
-                // a batch with nothing to correct: both store null. That makes
-                // the two failures that matter look identical — a model that
-                // never emitted the key, and a parser that rejected every item
-                // it did. Logging the reply on that path is what tells them
-                // apart, and it costs one line on a batch that had nothing to
-                // say anyway.
-                if (job.CheckType == ValidationCheckTypes.DataIntegrity &&
-                    parsed.Count > 0 &&
-                    parsed.Values.All(r => (r.DataIntegritySuggestions?.Count ?? 0) == 0))
+                // A batch that carries no corrections is indistinguishable
+                // downstream from a batch with nothing to correct: both store
+                // null. That makes the two failures that matter look identical
+                // — a model that never emitted the key, and a parser that
+                // rejected every item it did. Logging the reply on that path is
+                // what tells them apart, and it costs one line on a batch that
+                // had nothing to say anyway.
+                if (parsed.Count > 0 &&
+                    parsed.Values.All(r => (r.Suggestions?.Count ?? 0) == 0))
                 {
                     _logger.LogWarning(
-                        "Validation job {JobId}: a data integrity batch of {Count} contact(s) " +
+                        "Validation job {JobId} ({CheckType}): a batch of {Count} contact(s) " +
                         "returned no usable corrections. Reply begins: {Sample}",
-                        job.Id, batch.Length, Truncate(call.Content, 1500));
+                        job.Id, job.CheckType, batch.Length, Truncate(call.Content, 1500));
                 }
 
                 if (parsed.Count == 0)
@@ -1413,7 +1411,9 @@
         /// a slightly different spelling has done the work, and throwing that
         /// away would mean paying to run it again.
         /// </summary>
-        private static Dictionary<string, ValidationResultItemDto> ParseResults(string content)
+        private static Dictionary<string, ValidationResultItemDto> ParseResults(
+            string content,
+            string checkType)
         {
             var results = new Dictionary<string, ValidationResultItemDto>(StringComparer.OrdinalIgnoreCase);
 
@@ -1444,7 +1444,7 @@
                         "LiveContactValidityComments", "Live Contact comments"),
                     CompanyClassification = ReadString(element,
                         "Company classification", "company_classification", "CompanyClassification"),
-                    DataIntegritySuggestions = ReadSuggestions(element),
+                    Suggestions = ReadSuggestions(element, checkType),
                     Sources = ReadSources(element)
                 };
             }
@@ -1539,13 +1539,38 @@
         /// for the evidence, and a suggestion that arrives without it is a
         /// suggestion we cannot show a user enough about to let them accept.
         /// </summary>
-        private static List<ValidationSuggestionDto> ReadSuggestions(JObject element)
+        /// <summary>
+        /// The keys a check's corrections can arrive under. The plain
+        /// "suggestions" fallback is last so a model that drops the prefix
+        /// still gets read.
+        /// </summary>
+        private static string[] SuggestionKeysFor(string checkType) =>
+            ValidationCheckTypes.Normalize(checkType) switch
+            {
+                ValidationCheckTypes.ContactFit => new[]
+                {
+                    "Contact Fit suggestions", "contact_fit_suggestions", "suggestions"
+                },
+                ValidationCheckTypes.LiveContact => new[]
+                {
+                    "Live Contact suggestions", "live_contact_suggestions",
+                    "Live Contact Validity suggestions", "suggestions"
+                },
+                _ => new[]
+                {
+                    "Data Integrity suggestions", "data_integrity_suggestions", "suggestions"
+                }
+            };
+
+        private static List<ValidationSuggestionDto> ReadSuggestions(
+            JObject element,
+            string checkType)
         {
             var suggestions = new List<ValidationSuggestionDto>();
 
-            var array = element.GetValue("Data Integrity suggestions", StringComparison.OrdinalIgnoreCase)
-                        ?? element.GetValue("data_integrity_suggestions", StringComparison.OrdinalIgnoreCase)
-                        ?? element.GetValue("Suggestions", StringComparison.OrdinalIgnoreCase);
+            var array = SuggestionKeysFor(checkType)
+                .Select(key => element.GetValue(key, StringComparison.OrdinalIgnoreCase))
+                .FirstOrDefault(token => token != null);
 
             if (array is not JArray items) return suggestions;
 
@@ -1553,10 +1578,15 @@
 
             foreach (var item in items.OfType<JObject>())
             {
-                var field = ValidationSuggestionFields.Normalize(
-                    ReadString(item, "field", "field_name", "fieldName"));
+                var raw = ReadString(item, "field", "field_name", "fieldName");
 
-                if (field == null) continue;
+                // Two gates, not one: the field has to be writable at all, and
+                // it has to be writable *by this check*. A live contact prompt
+                // naming the email address is the case that matters — the field
+                // is real, and it still must not be rewritten from here.
+                if (!ValidationSuggestionFields.IsWritableBy(checkType, raw)) continue;
+
+                var field = ValidationSuggestionFields.Normalize(raw)!;
 
                 var suggested = ReadString(item, "suggested", "suggested_value",
                                                  "suggestedValue", "corrected", "correction")?.Trim();
@@ -1681,8 +1711,6 @@
                         // The empty string is meaningful here: it is how a clean
                         // record is reported, and it must not become null.
                         row.DataIntegrityComments = result.DataIntegrityComments ?? "";
-                        row.DataIntegritySuggestionsJson =
-                            SerialiseSuggestions(result.DataIntegritySuggestions, contact);
                         row.DataIntegrityCheckedAt = now;
                         break;
 
@@ -1692,6 +1720,13 @@
                         row.LiveContactCheckedAt = now;
                         break;
                 }
+
+                // Written for whichever check ran, and only that one. A re-run
+                // replaces its own corrections wholesale, including any already
+                // accepted: it has just judged the corrected record and has
+                // nothing left to say about it.
+                row.SetSuggestionsJson(
+                    job.CheckType, SerialiseSuggestions(result.Suggestions, contact));
 
                 row.SourcesJson = MergeSources(row.SourcesJson, result.Sources);
                 row.UpdatedAt = now;
@@ -1903,6 +1938,9 @@
                 row.EmailValidityStatus = outcome.Status;
                 row.EmailValiditySource = outcome.Source;
                 row.EmailValidityComments = comments;
+                row.SetSuggestionsJson(
+                    ValidationCheckTypes.EmailVerification,
+                    BuildEmailSuggestion(contact, outcome));
                 row.EmailCheckedAt = now;
                 row.UpdatedAt = now;
 
@@ -1913,6 +1951,58 @@
                 job.HeartbeatAt = DateTime.UtcNow;
                 await _context.SaveChangesAsync(cancellationToken);
             }
+        }
+
+        /// <summary>
+        /// Offers the provider's address when it differs from the one on file.
+        /// </summary>
+        /// <remarks>
+        /// No model is involved: this is Prospeo's or Hunter's answer, and the
+        /// evidence is the provider's own verification. That is also why it is
+        /// offered rather than written. A contact with no address gets the
+        /// discovered one saved automatically, because there is nothing to lose
+        /// — but replacing an address someone may have been mailing for a year
+        /// is a decision, and the provider being confident is not the same as
+        /// the provider being right.
+        ///
+        /// Nothing is offered when the addresses match, when the lookup found
+        /// nothing, or when the field was empty and has just been filled in.
+        /// </remarks>
+        private static string? BuildEmailSuggestion(Contact contact, EmailCheckOutcome outcome)
+        {
+            var stored = contact.email?.Trim();
+            var found = outcome.FoundEmail?.Trim();
+
+            if (string.IsNullOrWhiteSpace(stored) || string.IsNullOrWhiteSpace(found))
+                return null;
+
+            if (string.Equals(stored, found, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var provider = outcome.Source switch
+            {
+                "prospeo" => "Prospeo",
+                "hunter" => "Hunter",
+                _ => outcome.Source
+            };
+
+            var status = string.IsNullOrWhiteSpace(outcome.Status)
+                ? ""
+                : $" It reports the address as {outcome.Status}.";
+
+            return ValidationSuggestionJson.Serialize(new[]
+            {
+                new ValidationSuggestionDto
+                {
+                    Id = "s0",
+                    Field = ValidationSuggestionFields.Email,
+                    Current = stored,
+                    Suggested = found,
+                    Reason = $"{provider} returned this address for this person " +
+                             $"instead of the one on file.{status}",
+                    Status = ValidationSuggestionStatuses.Pending
+                }
+            });
         }
 
         /// <summary>
