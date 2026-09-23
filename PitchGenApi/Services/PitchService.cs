@@ -80,9 +80,11 @@ namespace PitchGenApi.Services
             }
         }
     },
-    { "temperature", rate.Temperature },
     { "max_output_tokens", rate.MaxTokens }
 };
+
+            AiModelDefaults.ApplySampling(
+                requestData, request.ModelName, (double)rate.Temperature);
 
             if (!isSearchPreviewModel)
             {

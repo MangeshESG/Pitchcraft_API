@@ -372,10 +372,11 @@ namespace PitchGenApi.Services
                         {
                             { "model", model },
                             { "input", inputPayload },
-                            { "temperature", 1.0 },
                             { "max_output_tokens", maxOutputTokens },
                             { "tools", new object[] { new { type = "web_search_preview" } } }
                         };
+
+            AiModelDefaults.ApplySampling(requestBody, model, 1.0);
 
      
 
@@ -784,9 +785,10 @@ namespace PitchGenApi.Services
         {
             { "model", model },
             { "input", sbInput.ToString() },
-            { "temperature", 0.1 },
             { "max_output_tokens", 15000 }
         };
+
+                AiModelDefaults.ApplySampling(requestData, model, 0.1);
 
                 if (useTools)
                 {
