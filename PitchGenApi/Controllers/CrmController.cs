@@ -27,6 +27,89 @@ namespace PitchGenApi.Controllers
     [Route("api/[controller]")]
     public class CrmController : ControllerBase
     {
+
+        // Order the matching query before Skip/Take. Property names are resolved
+        // against mapped model properties, never interpolated into SQL.
+        private async Task<IOrderedQueryable<PitchGenApi.Models.Contact>> SortContactsAsync(
+            IQueryable<PitchGenApi.Models.Contact> query, int clientId, string? sortBy, string? direction)
+        {
+            var descending = string.Equals(direction, "desc", StringComparison.OrdinalIgnoreCase);
+            var key = (sortBy ?? "id").Trim();
+            string Normalize(string value) => new string(value.Where(char.IsLetterOrDigit).Select(char.ToLowerInvariant).ToArray());
+            if (key.StartsWith("custom_", StringComparison.OrdinalIgnoreCase)) key = key.Substring(7);
+            if (Normalize(key) == "fullname")
+                return OrderContactText(query, c => (c.full_name ?? "").Trim() != "" ? c.full_name :
+                    ((c.first_name ?? "") + " " + (c.last_name ?? "")).Trim() != ""
+                        ? (c.first_name ?? "") + " " + (c.last_name ?? "") : c.email, descending);
+            var property = typeof(PitchGenApi.Models.Contact).GetProperties()
+                .FirstOrDefault(p => Normalize(p.Name) == Normalize(key) &&
+                    (p.PropertyType == typeof(string) || p.PropertyType.IsValueType));
+            if (property != null)
+            {
+                var parameter = Expression.Parameter(typeof(PitchGenApi.Models.Contact), "c");
+                if (property.PropertyType == typeof(string))
+                    return OrderContactText(query, Expression.Lambda<Func<PitchGenApi.Models.Contact, string?>>(
+                        Expression.Property(parameter, property), parameter), descending);
+                var selector = Expression.Lambda(Expression.Property(parameter, property), parameter);
+                var call = Expression.Call(typeof(Queryable), descending ? "OrderByDescending" : "OrderBy",
+                    new[] { typeof(PitchGenApi.Models.Contact), property.PropertyType }, query.Expression, Expression.Quote(selector));
+                return ((IOrderedQueryable<PitchGenApi.Models.Contact>)query.Provider.CreateQuery<PitchGenApi.Models.Contact>(call)).ThenBy(c => c.id);
+            }
+            switch (Normalize(key))
+            {
+                case "dataintegrityconfidence":
+                    return OrderContacts(query, c => _context.contact_validations.Where(v => v.ClientId == clientId && v.ContactId == c.id).Select(v => v.DataIntegrityConfidence).FirstOrDefault(), descending);
+                case "livecontactconfidence":
+                    return OrderContacts(query, c => _context.contact_validations.Where(v => v.ClientId == clientId && v.ContactId == c.id).Select(v => v.LiveContactConfidence).FirstOrDefault(), descending);
+                case "emailvalidityconfidence":
+                    return OrderContacts(query, c => _context.contact_validations.Where(v => v.ClientId == clientId && v.ContactId == c.id).Select(v => v.EmailValidityConfidence).FirstOrDefault(), descending);
+                case "contactfitconfidence":
+                    return OrderContacts(query, c => _context.contact_validations.Where(v => v.ClientId == clientId && v.ContactId == c.id).Select(v => v.ContactFitConfidence).FirstOrDefault(), descending);
+                case "haswebsearchdata":
+                    return OrderContacts(query, c => c.web_search_data != null && c.web_search_data != "", descending);
+                case "hasnotes":
+                    return OrderContacts(query, c => _context.Notes.Any(n => n.ClientId == clientId && n.ContactId == c.id), descending);
+                case "unsubscribe":
+                    return OrderContacts(query, c => _context.UnsubscribedContacts.Any(u => u.ClientId == clientId && u.Email == c.email), descending);
+                case "haslinkedininfo":
+                    return OrderContacts(query, c => c.linkedIninformation != null && c.linkedIninformation != "", descending);
+            }
+            var fields = await _context.crm_custom_fields.AsNoTracking().Where(f => f.client_id == clientId).ToListAsync();
+            var field = fields.FirstOrDefault(f => Normalize(f.field_name) == Normalize(key) || Normalize(f.field_key ?? "") == Normalize(key));
+            if (field != null)
+                return OrderContactText(query, c => _context.contact_custom_field_values.Where(v => v.field_id == field.id && v.contact_id == c.id).Select(v => v.value).FirstOrDefault(), descending);
+            return query.OrderBy(c => c.id);
+        }
+
+        private static IOrderedQueryable<PitchGenApi.Models.Contact> OrderContactText(
+            IQueryable<PitchGenApi.Models.Contact> query,
+            Expression<Func<PitchGenApi.Models.Contact, string?>> selector, bool descending)
+        {
+            // Keep blanks last, ignore case/outer spaces and put digit-led text
+            // after alphabetical text in ascending order (before it descending).
+            var value = Expression.Call(Expression.Call(
+                Expression.Coalesce(selector.Body, Expression.Constant("")),
+                typeof(string).GetMethod(nameof(string.Trim), Type.EmptyTypes)!),
+                typeof(string).GetMethod(nameof(string.ToLower), Type.EmptyTypes)!);
+            var text = Expression.Lambda<Func<PitchGenApi.Models.Contact, string>>(value, selector.Parameters);
+            var blank = Expression.Lambda<Func<PitchGenApi.Models.Contact, bool>>(
+                Expression.Equal(value, Expression.Constant("")), selector.Parameters);
+            Expression digit = Expression.Constant(false);
+            foreach (var character in "0123456789")
+                digit = Expression.OrElse(digit, Expression.Call(value,
+                    typeof(string).GetMethod(nameof(string.StartsWith), new[] { typeof(string) })!,
+                    Expression.Constant(character.ToString())));
+            var numericPrefix = Expression.Lambda<Func<PitchGenApi.Models.Contact, bool>>(digit, selector.Parameters);
+            var ordered = query.OrderBy(blank);
+            return (descending
+                ? ordered.ThenByDescending(numericPrefix).ThenByDescending(text)
+                : ordered.ThenBy(numericPrefix).ThenBy(text)).ThenBy(c => c.id);
+        }
+
+        private static IOrderedQueryable<PitchGenApi.Models.Contact> OrderContacts<T>(
+            IQueryable<PitchGenApi.Models.Contact> query, Expression<Func<PitchGenApi.Models.Contact, T>> selector, bool descending) =>
+            (descending ? query.OrderByDescending(selector) : query.OrderBy(selector)).ThenBy(c => c.id);
+
         private readonly AppDbContext _context;
         private readonly ContactRepository _contactRepository;
 
@@ -1571,7 +1654,9 @@ namespace PitchGenApi.Controllers
             [FromQuery] int dataFileId,
             [FromQuery] int pageNumber = 1,
             [FromQuery] int pageSize = 0,
-            [FromQuery] string? search = null)
+            [FromQuery] string? search = null,
+            [FromQuery] string? sortBy = null,
+            [FromQuery] string? sortDirection = null)
         {
             try
             {
@@ -1620,7 +1705,7 @@ namespace PitchGenApi.Controllers
                         });
                 }
 
-                var pagedContactsQuery = contactsQuery.OrderBy(c => c.id).AsQueryable();
+                var pagedContactsQuery = (await SortContactsAsync(contactsQuery, clientId, sortBy, sortDirection)).AsQueryable();
                 if (pageSize > 0)
                 {
                     pagedContactsQuery = pagedContactsQuery
@@ -1629,7 +1714,6 @@ namespace PitchGenApi.Controllers
                 }
 
                 var contactsRaw = await pagedContactsQuery
-                    .OrderBy(c => c.id)
                     .Select(c => new
                     {
                         c.id,
@@ -3007,7 +3091,9 @@ namespace PitchGenApi.Controllers
             [FromQuery] int pageNumber = 1,
             [FromQuery] int pageSize = 0,
             [FromQuery] string? search = null,
-            [FromQuery] bool includeEmailContent = false)
+            [FromQuery] bool includeEmailContent = false,
+            [FromQuery] string? sortBy = null,
+            [FromQuery] string? sortDirection = null)
         {
             try
             {
@@ -3049,7 +3135,7 @@ namespace PitchGenApi.Controllers
                 Console.WriteLine($"[Segment Contacts Timing] Count ({contactCount}): {queryTimer.ElapsedMilliseconds} ms");
                 queryTimer.Restart();
 
-                var pageQuery = query.OrderBy(c => c.id).AsQueryable();
+                var pageQuery = (await SortContactsAsync(query, clientId, sortBy, sortDirection)).AsQueryable();
                 if (pageSize > 0)
                 {
                     pageQuery = pageQuery
@@ -3442,7 +3528,9 @@ namespace PitchGenApi.Controllers
             [FromQuery] int clientId,
             [FromQuery] int pageNumber = 1,
             [FromQuery] int pageSize = 0,
-            [FromQuery] string? search = null)
+            [FromQuery] string? search = null,
+            [FromQuery] string? sortBy = null,
+            [FromQuery] string? sortDirection = null)
         {
             try
             {
@@ -3477,7 +3565,7 @@ namespace PitchGenApi.Controllers
 
                 var contactCount = await contactsQuery.CountAsync();
 
-                var orderedContactsQuery = contactsQuery.OrderBy(c => c.id).AsQueryable();
+                var orderedContactsQuery = (await SortContactsAsync(contactsQuery, clientId, sortBy, sortDirection)).AsQueryable();
                 if (pageSize > 0)
                 {
                     orderedContactsQuery = orderedContactsQuery
@@ -4315,12 +4403,11 @@ namespace PitchGenApi.Controllers
                 int? databaseFilteredTotal = null;
                 if (filtersAppliedInDatabase)
                 {
-                    query = databaseFilteredQuery;
+                    query = await SortContactsAsync(databaseFilteredQuery, dto.ClientId, dto.SortBy, dto.SortDirection);
                     databaseFilteredTotal = await query.CountAsync();
                     if (requestedPageSize > 0)
                     {
-                        query = query.OrderBy(c => c.id)
-                            .Skip((safePage - 1) * requestedPageSize)
+                        query = query.Skip((safePage - 1) * requestedPageSize)
                             .Take(requestedPageSize);
                     }
                     Console.WriteLine($"[View Contacts Timing] SQL filters and count ({databaseFilteredTotal} matched): {queryTimer.ElapsedMilliseconds} ms");
@@ -4339,7 +4426,8 @@ namespace PitchGenApi.Controllers
 
                 // Lightweight projection: large generated/research payloads are
                 // represented by existence flags only.
-                var contacts = await query.OrderBy(c => c.id).Select(c => new
+                if (!filtersAppliedInDatabase) query = await SortContactsAsync(query, dto.ClientId, dto.SortBy, dto.SortDirection);
+                var contacts = await query.Select(c => new
                 {
                     c.id,
                     c.DataFileId,
