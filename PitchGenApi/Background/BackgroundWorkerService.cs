@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Background;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
@@ -150,7 +150,19 @@ public class BackgroundWorkerService : BackgroundService
     {
         Console.WriteLine("✅ ValidationJobRunner started...");
 
-        const int maxParallel = 3;
+        // No fixed ceiling any more. Runs no longer compete for a slot here:
+        // the provider calls inside them are limited process-wide by the
+        // validation service's own gate, so three clients pressing the button
+        // at once now overlap instead of queueing behind each other, without
+        // tripling what the providers see. Set Validation:MaxParallelJobs to a
+        // positive number to put a ceiling back.
+        var maxParallel = _configuration.GetValue<int?>("Validation:MaxParallelJobs") ?? 0;
+
+        // How many runs one poll may take on when there is no ceiling. A queue
+        // that has built up overnight should drain steadily rather than arrive
+        // as ten thousand claimed rows in a single cycle.
+        const int claimPageSize = 20;
+
         var owner = $"{Environment.MachineName}:{Environment.ProcessId}";
         var inFlight = new Dictionary<int, Task>();
 
@@ -168,7 +180,11 @@ public class BackgroundWorkerService : BackgroundService
 
                 _diagnostics.MarkPoll(inFlight.Count);
 
-                var freeSlots = maxParallel - inFlight.Count;
+                var freeSlots = maxParallel > 0
+                    ? maxParallel - inFlight.Count
+                    : claimPageSize;
+
+                freeSlots = Math.Min(freeSlots, claimPageSize);
 
                 if (freeSlots > 0)
                 {
