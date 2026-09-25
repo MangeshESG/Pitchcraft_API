@@ -2,7 +2,9 @@
 {
     using System.Diagnostics;
     using System.Text;
+    using System.Threading.Channels;
     using Microsoft.EntityFrameworkCore;
+    using Microsoft.Extensions.DependencyInjection;
     using Microsoft.Extensions.Options;
     using Newtonsoft.Json;
     using Newtonsoft.Json.Linq;
@@ -37,6 +39,22 @@
         /// search, and it stays well inside <see cref="DefaultStaleAfter"/> so
         /// a slow batch is never mistaken for a dead one.
         /// </summary>
+        /// <summary>
+        /// Appended to a research prompt on the retry after a batch came back
+        /// with no searches. Deliberately blunt, and deliberately says what to
+        /// do when nothing is found: the failure mode it answers is a model
+        /// that decided the contacts were not worth looking up, and telling it
+        /// to score low without evidence is what stops it skipping the search
+        /// to "help".
+        /// </summary>
+        private const string SearchRequiredReminder =
+            "\n\nIMPORTANT: You did not search the web on the previous attempt. " +
+            "You MUST use the web_search tool for every contact above before you " +
+            "answer, even when you believe you already know the answer, and even " +
+            "when the company or title looks unfamiliar or the record looks " +
+            "incomplete. If a search returns nothing useful for a contact, say so " +
+            "in that contact's comment and score it low — do not skip the search.";
+
         private static readonly TimeSpan DefaultModelCallTimeout = TimeSpan.FromMinutes(3);
 
         /// <summary>
@@ -55,6 +73,31 @@
         private const int DefaultMaxAttempts = 3;
 
         /// <summary>
+        /// Provider calls allowed in flight at once, across every run in this
+        /// process — not per job. Process-wide on purpose: the job runner no
+        /// longer caps how many runs execute together, so a per-job limit would
+        /// multiply by however many clients happened to press the button at the
+        /// same moment and put the providers into rate limiting, which costs
+        /// tokens without producing results.
+        /// </summary>
+        private const int DefaultMaxParallelBatches = 10;
+
+        /// <summary>Hard ceiling on the configured value; see the note above.</summary>
+        private const int MaxParallelBatchesCeiling = 64;
+
+        /// <summary>
+        /// How often a run touches its heartbeat while nothing has come back
+        /// yet. A batch can now take its own timeout plus a retry before it
+        /// reports, which is long enough for the reaper to decide the run was
+        /// abandoned and requeue it underneath itself.
+        /// </summary>
+        private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(30);
+
+        /// <summary>Pause before the single retry, and the longer one used when the provider said it was being throttled.</summary>
+        private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan ThrottledRetryDelay = TimeSpan.FromSeconds(10);
+
+        /// <summary>
         /// How long a cached company classification is trusted. Companies get
         /// acquired and rebranded, so a stale row is re-researched rather than
         /// believed forever.
@@ -68,8 +111,14 @@
         private readonly IValidationSettingsService _validationSettings;
         private readonly IProspeoEmailService _prospeoService;
         private readonly IHunterEmailService _hunterService;
-        private readonly DeepSeekPitchService _deepSeekService;
-        private readonly QwenPitchService _qwenService;
+
+        /// <summary>
+        /// Batches run their provider calls off this thread, and both pitch
+        /// services hold the same scoped <see cref="AppDbContext"/> as this one
+        /// — they read ModelRates on every call — so they cannot be shared
+        /// across them. Each batch takes a scope of its own instead.
+        /// </summary>
+        private readonly IServiceScopeFactory _scopeFactory;
         private readonly HttpClient _httpClient;
         private readonly IConfiguration _configuration;
         private readonly ILogger<ContactValidationService> _logger;
@@ -83,8 +132,7 @@
             IValidationSettingsService validationSettings,
             IProspeoEmailService prospeoService,
             IHunterEmailService hunterService,
-            DeepSeekPitchService deepSeekService,
-            QwenPitchService qwenService,
+            IServiceScopeFactory scopeFactory,
             HttpClient httpClient,
             IConfiguration configuration,
             IOptions<OpenAISettings> openAiOptions,
@@ -97,8 +145,7 @@
             _validationSettings = validationSettings;
             _prospeoService = prospeoService;
             _hunterService = hunterService;
-            _deepSeekService = deepSeekService;
-            _qwenService = qwenService;
+            _scopeFactory = scopeFactory;
             _httpClient = httpClient;
             _configuration = configuration;
             _logger = logger;
@@ -145,6 +192,45 @@
                 return configured is > 0 ? configured.Value : DefaultMaxAttempts;
             }
         }
+
+        private int MaxParallelBatches
+        {
+            get
+            {
+                var configured = _configuration.GetValue<int?>("Validation:MaxParallelBatches");
+
+                return configured is > 0
+                    ? Math.Min(configured.Value, MaxParallelBatchesCeiling)
+                    : DefaultMaxParallelBatches;
+            }
+        }
+
+        /// <summary>
+        /// The process-wide limit on provider calls in flight.
+        ///
+        /// Created once and never resized. Handing out a second semaphore while
+        /// the first still has permits out would let both run at full width at
+        /// the same time, which is the one failure this is here to prevent — so
+        /// a change to the setting takes effect on the next restart, exactly as
+        /// the hard-coded limit it replaces did.
+        /// </summary>
+        private SemaphoreSlim ProviderGate
+        {
+            get
+            {
+                if (_providerGate != null)
+                    return _providerGate;
+
+                lock (ProviderGateLock)
+                {
+                    var width = MaxParallelBatches;
+                    return _providerGate ??= new SemaphoreSlim(width, width);
+                }
+            }
+        }
+
+        private static readonly object ProviderGateLock = new();
+        private static SemaphoreSlim? _providerGate;
 
         // =================================================================
         // Queueing
@@ -585,129 +671,419 @@
             var batchSize = await GetBatchSizeAsync(cancellationToken);
 
             // Whether this check is only meaningful with live evidence. Used
-            // below to reject a batch that came back without having searched.
+            // below to reject an answer that came back without having searched.
             var needsSearch = ValidationCheckTypes.UsesWebSearch(job.CheckType);
 
-            foreach (var batch in contacts.Chunk(batchSize))
+            // Loaded once for the whole run rather than once per batch. It has
+            // to be: it is an EF read returning tracked entities, and the
+            // batches no longer run on this thread. Loading it here is also
+            // fewer queries and one shared row per employer, so two batches at
+            // the same company can no longer each add one.
+            var intelligence = job.CheckType == ValidationCheckTypes.ContactFit
+                ? await LoadCompanyIntelligenceAsync(job.ClientId, contacts, cancellationToken)
+                : new Dictionary<string, CompanyIntelligence>();
+
+            // Every prompt is built here, before anything is dispatched, so the
+            // parallel region below touches no tracked entity at all - only the
+            // strings it is handed. The company notes are still narrowed to each
+            // batch's own employers; describing all of them in every prompt
+            // would grow the input with the size of the run.
+            var work = contacts
+                .Chunk(batchSize)
+                .Select(batch => (
+                    Batch: batch,
+                    Prompt: BuildPrompt(
+                        promptTemplate,
+                        briefText,
+                        duplicateFlags,
+                        DescribeCompanyIntelligence(NarrowToBatch(intelligence, batch)),
+                        BuildContactsJson(batch))))
+                .ToList();
+
+            if (work.Count == 0)
+                return;
+
+            // Producer/consumer rather than a plain parallel loop over the
+            // batches. Every database write in a run has to stay on this
+            // thread: the job's DbContext is not thread-safe, and neither are
+            // the job row and the item rows it is tracking. So the batches do
+            // the provider work in parallel and hand back plain objects, and
+            // the loop below is the only thing in the run that touches EF.
+            var channel = Channel.CreateUnbounded<BatchOutcome>(
+                new UnboundedChannelOptions { SingleReader = true });
+
+            var producer = Task.Run(async () =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                // Only contact fit reuses company research — it is the check
-                // whose expensive question is about the employer rather than
-                // the person.
-                var intelligence = job.CheckType == ValidationCheckTypes.ContactFit
-                    ? await LoadCompanyIntelligenceAsync(job.ClientId, batch, cancellationToken)
-                    : new Dictionary<string, CompanyIntelligence>();
-
-                var prompt = BuildPrompt(
-                    promptTemplate,
-                    briefText,
-                    duplicateFlags,
-                    DescribeCompanyIntelligence(intelligence),
-                    BuildContactsJson(batch));
-
-                ModelCallResult call;
-
-                // Bounded independently of HttpClient's own (much longer)
-                // timeout: a batch that hangs this long is what used to hold a
-                // runner slot for up to ten minutes and freeze every other
-                // client's queue behind it.
-                using var batchTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                batchTimeout.CancelAfter(ModelCallTimeout);
-
                 try
                 {
-                    call = await CallModelAsync(job, prompt, batch.Length, batchTimeout.Token);
+                    await Parallel.ForEachAsync(
+                        work,
+                        new ParallelOptions
+                        {
+                            // Bounded here as well as by the process-wide gate:
+                            // without it a ten-thousand-contact run would queue
+                            // a task per batch up front, all of them waiting on
+                            // the same gate.
+                            MaxDegreeOfParallelism = MaxParallelBatches,
+                            CancellationToken = cancellationToken
+                        },
+                        async (unit, token) =>
+                        {
+                            await ProviderGate.WaitAsync(token);
+
+                            try
+                            {
+                                var outcome = await RunOneBatchAsync(
+                                    job, unit.Batch, unit.Prompt, needsSearch, token);
+
+                                // Never the batch's own token: a result that has
+                                // already been paid for must reach the consumer
+                                // even as the run is being cancelled.
+                                await channel.Writer.WriteAsync(outcome, CancellationToken.None);
+                            }
+                            finally
+                            {
+                                ProviderGate.Release();
+                            }
+                        });
                 }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                finally
                 {
-                    MarkBatchFailed(batch, itemsByContact,
-                        $"The model call timed out after {ModelCallTimeout.TotalSeconds:0}s.");
-                    continue;
+                    channel.Writer.Complete();
                 }
-                catch (Exception ex)
+            }, cancellationToken);
+
+            var reader = channel.Reader;
+
+            try
+            {
+                while (true)
                 {
-                    MarkBatchFailed(batch, itemsByContact, "The model call failed: " + ex.Message);
-                    continue;
+                    bool hasMore;
+
+                    // The wait is bounded so a run whose batches are all still
+                    // in flight keeps its heartbeat current. A batch can now
+                    // take its own timeout and then a retry before it reports
+                    // anything, and without this tick the reaper would call the
+                    // run abandoned and requeue it underneath itself.
+                    using (var idle = new CancellationTokenSource(HeartbeatInterval))
+                    using (var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                        cancellationToken, idle.Token))
+                    {
+                        try
+                        {
+                            hasMore = await reader.WaitToReadAsync(linked.Token);
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            job.HeartbeatAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync(cancellationToken);
+                            continue;
+                        }
+                    }
+
+                    if (!hasMore)
+                        break;
+
+                    // Drained rather than taken one at a time: several batches
+                    // finishing together become one save instead of several.
+                    while (reader.TryRead(out var outcome))
+                    {
+                        await ApplyBatchOutcomeAsync(
+                            job, outcome, itemsByContact, intelligence, cancellationToken);
+                    }
+
+                    // Saved as results arrive, so a long run shows progress as
+                    // it goes and a crash costs only what was still in flight.
+                    job.ProcessedCount = items.Count(i => i.Status == ValidationItemStatuses.Completed);
+                    job.HeartbeatAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync(cancellationToken);
                 }
-
-                job.HeartbeatAt = DateTime.UtcNow;
-
-                job.InputTokens += call.InputTokens;
-                job.CachedTokens += call.CachedTokens;
-                job.OutputTokens += call.OutputTokens;
-                job.TotalTokens += call.InputTokens + call.OutputTokens;
-                job.WebSearchCalls += call.WebSearchCalls;
-
-                // Tokens only. Both providers bill server-side search as the
-                // extra model tokens it consumes, and those tokens are already
-                // in the usage figures above, so a per-call fee on top invents
-                // cost nobody charged — a 53-search run reported $0.53 of fee
-                // against roughly $0.34 of actual tokens, more than doubling
-                // the number every pricing decision was being read from.
-                job.CalculatedCost += call.TokenCost;
-
-                if (!call.IsSuccess)
-                {
-                    MarkBatchFailed(batch, itemsByContact, call.Error ?? "The model returned nothing.");
-                    continue;
-                }
-
-                // A research check that did not search answered from training
-                // data, and it does so over HTTP 200 with well-formed JSON —
-                // there is nothing further downstream that can tell the
-                // difference. Fail it here instead of writing a verdict that
-                // looks identical to a verified one.
-                //
-                // This is the guard that matters when a model alias changes
-                // under us: DeepSeek's compatibility table lists web_search
-                // among built-in tools it ignores, and deepseek-v4-pro is
-                // routed to V4.1-Flash after 2026-09-14. Whichever way that
-                // lands, it surfaces here as a failed batch rather than as
-                // silently invented verification.
-                if (needsSearch && call.WebSearchCalls == 0)
-                {
-                    var returned = call.OutputItemTypes.Count > 0
-                        ? string.Join(", ", call.OutputItemTypes)
-                        : "nothing";
-
-                    // "asked to use it", not "with tool_choice forcing it": that
-                    // was only ever true of the OpenAI path. Qwen accepts
-                    // tool_choice and ignores it for built-in tools, so on that
-                    // provider the old wording sent the reader looking for a
-                    // broken parameter when the model had simply declined.
-                    MarkBatchFailed(batch, itemsByContact,
-                        $"The model answered without searching the web, so the result is not " +
-                        $"verified evidence. Model '{job.ModelName}' was sent the web_search tool " +
-                        $"and asked to use it, and returned no search items. " +
-                        $"The response contained: {returned}.");
-                    continue;
-                }
-
-                if (call.SearchEvidence.Count > 0)
-                {
-                    _logger.LogInformation(
-                        "Validation job {JobId} batch searched: {Evidence}",
-                        job.Id,
-                        string.Join(" | ", call.SearchEvidence));
-                }
-
-                var parsed = ParseResults(call.Content);
-
-                if (parsed.Count == 0)
-                {
-                    MarkBatchFailed(batch, itemsByContact,
-                        "The model's reply could not be read as JSON results.");
-                    continue;
-                }
-
-                await ApplyResultsAsync(job, batch, itemsByContact, parsed, intelligence, cancellationToken);
-
-                // Saved per batch so a long run shows progress as it goes, and a
-                // crash costs only the batch in flight.
-                job.ProcessedCount = items.Count(i => i.Status == ValidationItemStatuses.Completed);
-                await _context.SaveChangesAsync(cancellationToken);
             }
+            catch
+            {
+                // The consumer left early, so the batches still in flight have
+                // nobody reading for them. They are waited on before the
+                // failure travels any further: ProcessJobAsync is about to
+                // rewrite the job row those batches are still reading, and a
+                // dropped producer task would take its own exception with it.
+                await DrainAsync(producer);
+                throw;
+            }
+
+            // Surfaces a cancellation, and anything RunOneBatchAsync could not
+            // turn into an outcome, instead of leaving it on a dropped task.
+            await producer;
+        }
+
+        /// <summary>
+        /// Waits for a producer whose consumer has already failed. Its
+        /// exception is deliberately dropped: the consumer's is the one that
+        /// describes what went wrong, and this is only here so nothing is still
+        /// running when the run is finalised.
+        /// </summary>
+        private static async Task DrainAsync(Task producer)
+        {
+            try
+            {
+                await producer;
+            }
+            catch
+            {
+                // Nothing to add; the caller is already rethrowing.
+            }
+        }
+
+        /// <summary>
+        /// The company notes belonging to one batch's employers.
+        ///
+        /// The cache is loaded for the whole run, but a prompt may only carry
+        /// the companies its own contacts work for - otherwise every batch
+        /// would restate every employer in the run and the input would grow
+        /// with the square of the selection.
+        /// </summary>
+        private static Dictionary<string, CompanyIntelligence> NarrowToBatch(
+            Dictionary<string, CompanyIntelligence> intelligence,
+            IEnumerable<Contact> batch)
+        {
+            if (intelligence.Count == 0)
+                return intelligence;
+
+            var narrowed = new Dictionary<string, CompanyIntelligence>();
+
+            foreach (var contact in batch)
+            {
+                var key = CompanyKeyFor(contact);
+
+                if (key != null && intelligence.TryGetValue(key, out var row))
+                    narrowed[key] = row;
+            }
+
+            return narrowed;
+        }
+
+        /// <summary>
+        /// Folds one finished batch into the run. Called only from the run's
+        /// own thread - everything it touches is tracked by the job's context.
+        /// </summary>
+        private async Task ApplyBatchOutcomeAsync(
+            ContactValidationJob job,
+            BatchOutcome outcome,
+            IReadOnlyDictionary<int, ContactValidationJobItem> itemsByContact,
+            Dictionary<string, CompanyIntelligence> intelligence,
+            CancellationToken cancellationToken)
+        {
+            // Counted before the branch: a batch that failed still spent what
+            // it spent, and a retry is billed whether or not it helped.
+            job.InputTokens += outcome.InputTokens;
+            job.CachedTokens += outcome.CachedTokens;
+            job.OutputTokens += outcome.OutputTokens;
+            job.TotalTokens += outcome.InputTokens + outcome.OutputTokens;
+            job.WebSearchCalls += outcome.WebSearchCalls;
+
+            // Tokens only. Both providers bill server-side search as the extra
+            // model tokens it consumes, and those tokens are already in the
+            // usage figures above, so a per-call fee on top invents cost nobody
+            // charged - a 53-search run reported $0.53 of fee against roughly
+            // $0.34 of actual tokens, more than doubling the number every
+            // pricing decision was being read from.
+            job.CalculatedCost += outcome.TokenCost;
+
+            if (outcome.SearchEvidence.Count > 0)
+            {
+                _logger.LogInformation(
+                    "Validation job {JobId} batch searched: {Evidence}",
+                    job.Id,
+                    string.Join(" | ", outcome.SearchEvidence));
+            }
+
+            if (outcome.Error != null || outcome.Parsed == null)
+            {
+                MarkBatchFailed(
+                    outcome.Contacts,
+                    itemsByContact,
+                    outcome.Error ?? "The model returned nothing.");
+
+                return;
+            }
+
+            await ApplyResultsAsync(
+                job, outcome.Contacts, itemsByContact, outcome.Parsed, intelligence, cancellationToken);
+        }
+
+        /// <summary>
+        /// One batch, end to end, with a single retry - and no access to the
+        /// job's database context, because this does not run on the job's
+        /// thread.
+        ///
+        /// Two provider calls is the ceiling, whatever went wrong. The old code
+        /// could reach three on a search check by stacking its search retry on
+        /// top of the call itself, and a run that keeps paying for the same
+        /// unusable answer is worse than one that reports the failure. What is
+        /// new is that an unreadable reply is retried at all: it used to kill
+        /// its batch outright on the first attempt, which is how a run of
+        /// thirty came back having done twenty-five.
+        ///
+        /// Nothing here throws except cancellation. A batch that cannot be
+        /// rescued comes back as a failed outcome and the rest of the run
+        /// carries on without it.
+        /// </summary>
+        private async Task<BatchOutcome> RunOneBatchAsync(
+            ContactValidationJob job,
+            Contact[] batch,
+            string prompt,
+            bool needsSearch,
+            CancellationToken cancellationToken)
+        {
+            // Its own scope, and so its own DbContext: both pitch services read
+            // ModelRates through the context they were constructed with, and
+            // that is the run's own context for every batch unless this is here.
+            using var scope = new ProviderScope(_scopeFactory);
+
+            var usage = new UsageTotals();
+            var attemptPrompt = prompt;
+            AttemptResult result;
+
+            for (var attempt = 1; ; attempt++)
+            {
+                result = await AttemptBatchAsync(
+                    job, scope, batch, attemptPrompt, needsSearch, usage, cancellationToken);
+
+                if (result.Failure == null || attempt == 2)
+                    break;
+
+                _logger.LogWarning(
+                    "Validation job {JobId}: a batch of {Count} contact(s) failed ({Reason}). Retrying once.",
+                    job.Id, batch.Length, Truncate(result.Failure, 200));
+
+                // A model that simply decided it already knew gets the
+                // requirement spelled out on the way back in. Measured on
+                // deepseek-v4-flash, an identical request searches on most runs
+                // and occasionally does not, and a batch should not be lost to
+                // that coin flip.
+                attemptPrompt = result.RetryWithSearchReminder
+                    ? prompt + SearchRequiredReminder
+                    : prompt;
+
+                await Task.Delay(result.RetryDelay, cancellationToken);
+            }
+
+            return new BatchOutcome
+            {
+                Contacts = batch,
+                Parsed = result.Parsed,
+                Error = result.Failure,
+                SearchEvidence = result.Evidence,
+                InputTokens = usage.InputTokens,
+                CachedTokens = usage.CachedTokens,
+                OutputTokens = usage.OutputTokens,
+                WebSearchCalls = usage.WebSearchCalls,
+                TokenCost = usage.TokenCost
+            };
+        }
+
+        /// <summary>
+        /// One provider call and everything that decides whether its answer is
+        /// usable. Usage is added to <paramref name="usage"/> whether or not it
+        /// was, because it was billed either way.
+        /// </summary>
+        private async Task<AttemptResult> AttemptBatchAsync(
+            ContactValidationJob job,
+            ProviderScope scope,
+            Contact[] batch,
+            string prompt,
+            bool needsSearch,
+            UsageTotals usage,
+            CancellationToken cancellationToken)
+        {
+            ModelCallResult call;
+
+            // Bounded independently of HttpClient's own (much longer) timeout: a
+            // batch that hangs this long would otherwise hold a permit on the
+            // provider gate and keep every other run's batches waiting behind it.
+            using var batchTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            batchTimeout.CancelAfter(ModelCallTimeout);
+
+            try
+            {
+                call = await CallModelAsync(job, scope, prompt, batch.Length, batchTimeout.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return AttemptResult.Failed(
+                    $"The model call timed out after {ModelCallTimeout.TotalSeconds:0}s.");
+            }
+            catch (Exception ex)
+            {
+                return AttemptResult.Failed("The model call failed: " + ex.Message);
+            }
+
+            usage.Add(call);
+
+            if (!call.IsSuccess)
+                return AttemptResult.Failed(call.Error ?? "The model returned nothing.");
+
+            // A research check that did not search answered from training data,
+            // and it does so over HTTP 200 with well-formed JSON - there is
+            // nothing further downstream that can tell the difference. Fail it
+            // here instead of writing a verdict that looks identical to a
+            // verified one.
+            //
+            // This is the guard that matters when a model alias changes under
+            // us: DeepSeek's compatibility table lists web_search among built-in
+            // tools it ignores, and deepseek-v4-pro is routed to V4.1-Flash
+            // after 2026-09-14. Whichever way that lands, it surfaces here as a
+            // failed batch rather than as silently invented verification.
+            if (needsSearch && call.WebSearchCalls == 0)
+            {
+                var returned = call.OutputItemTypes.Count > 0
+                    ? string.Join(", ", call.OutputItemTypes)
+                    : "nothing";
+
+                // "asked to use it", not "with tool_choice forcing it": that was
+                // only ever true of the OpenAI path. Qwen accepts tool_choice
+                // and ignores it for built-in tools, so on that provider the old
+                // wording sent the reader looking for a broken parameter when
+                // the model had simply declined.
+                return AttemptResult.Failed(
+                    $"The model answered without searching the web, so the result is not " +
+                    $"verified evidence. Model '{job.ModelName}' was sent the web_search tool " +
+                    $"and asked to use it, and returned no search items. " +
+                    $"The response contained: {returned}.",
+                    retryWithSearchReminder: true);
+            }
+
+            var parsed = ParseResults(call.Content, job.CheckType);
+
+            if (parsed.Count == 0)
+            {
+                // Logged with the reply itself: an unreadable answer is the one
+                // failure whose cause is never in the message, and a truncated
+                // array and a model that answered in prose look identical from
+                // the outside.
+                _logger.LogWarning(
+                    "Validation job {JobId} ({CheckType}): a batch of {Count} contact(s) " +
+                    "returned no readable JSON. Reply begins: {Sample}",
+                    job.Id, job.CheckType, batch.Length, Truncate(call.Content, 1500));
+
+                return AttemptResult.Failed("The model's reply could not be read as JSON results.");
+            }
+
+            // A batch that carries no corrections is indistinguishable
+            // downstream from a batch with nothing to correct: both store null.
+            // That makes the two failures that matter look identical - a model
+            // that never emitted the key, and a parser that rejected every item
+            // it did. Logging the reply on that path is what tells them apart,
+            // and it costs one line on a batch that had nothing to say anyway.
+            if (parsed.Values.All(r => (r.Suggestions?.Count ?? 0) == 0))
+            {
+                _logger.LogWarning(
+                    "Validation job {JobId} ({CheckType}): a batch of {Count} contact(s) " +
+                    "returned no usable corrections. Reply begins: {Sample}",
+                    job.Id, job.CheckType, batch.Length, Truncate(call.Content, 1500));
+            }
+
+            return new AttemptResult { Parsed = parsed, Evidence = call.SearchEvidence };
         }
 
         /// <summary>
@@ -1017,6 +1393,110 @@
         // Model dispatch
         // -----------------------------------------------------------------
 
+        /// <summary>
+        /// A scope of its own for one batch's provider calls.
+        ///
+        /// Both pitch services take the scoped <see cref="AppDbContext"/> and
+        /// query ModelRates on every call, and <see cref="CallOpenAiAsync"/>
+        /// does the same. Sharing the run's context across batches running at
+        /// once is what EF means by "a second operation was started on this
+        /// context instance", so each batch resolves its own.
+        /// </summary>
+        private sealed class ProviderScope : IDisposable
+        {
+            private readonly IServiceScope _scope;
+
+            public ProviderScope(IServiceScopeFactory factory)
+            {
+                _scope = factory.CreateScope();
+
+                Context = _scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                DeepSeek = _scope.ServiceProvider.GetRequiredService<DeepSeekPitchService>();
+                Qwen = _scope.ServiceProvider.GetRequiredService<QwenPitchService>();
+            }
+
+            public AppDbContext Context { get; }
+            public DeepSeekPitchService DeepSeek { get; }
+            public QwenPitchService Qwen { get; }
+
+            public void Dispose() => _scope.Dispose();
+        }
+
+        /// <summary>
+        /// What one batch spent. Mutable and unsynchronised on purpose: it
+        /// belongs to a single batch task and is read only once that task has
+        /// finished, so the job's own totals are never touched off-thread.
+        /// </summary>
+        private sealed class UsageTotals
+        {
+            public int InputTokens;
+            public int CachedTokens;
+            public int OutputTokens;
+            public int WebSearchCalls;
+            public decimal TokenCost;
+
+            public void Add(ModelCallResult call)
+            {
+                InputTokens += call.InputTokens;
+                CachedTokens += call.CachedTokens;
+                OutputTokens += call.OutputTokens;
+                WebSearchCalls += call.WebSearchCalls;
+                TokenCost += call.TokenCost;
+            }
+        }
+
+        /// <summary>One provider call, judged. <see cref="Failure"/> null means usable.</summary>
+        private sealed class AttemptResult
+        {
+            public string? Failure { get; init; }
+            public Dictionary<string, ValidationResultItemDto>? Parsed { get; init; }
+            public IReadOnlyList<string> Evidence { get; init; } = Array.Empty<string>();
+
+            /// <summary>Whether the retry should spell out that searching is required.</summary>
+            public bool RetryWithSearchReminder { get; init; }
+
+            public TimeSpan RetryDelay { get; init; } = ContactValidationService.RetryDelay;
+
+            public static AttemptResult Failed(string failure, bool retryWithSearchReminder = false) =>
+                new()
+                {
+                    Failure = failure,
+                    RetryWithSearchReminder = retryWithSearchReminder,
+
+                    // A provider that said it was throttling gets longer than
+                    // one that simply answered badly. Retrying a rate limit two
+                    // seconds later just spends the batch's second chance on
+                    // the same refusal.
+                    RetryDelay = LooksThrottled(failure) ? ThrottledRetryDelay : ContactValidationService.RetryDelay
+                };
+
+            private static bool LooksThrottled(string failure) =>
+                failure.Contains("429", StringComparison.Ordinal) ||
+                failure.Contains("rate limit", StringComparison.OrdinalIgnoreCase) ||
+                failure.Contains("too many requests", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// One finished batch on its way back to the run's thread. Everything
+        /// here is a plain value or a contact the run loaded read-only, so
+        /// nothing tracked by the job's context crosses a thread boundary.
+        /// </summary>
+        private sealed class BatchOutcome
+        {
+            public Contact[] Contacts { get; init; } = Array.Empty<Contact>();
+            public Dictionary<string, ValidationResultItemDto>? Parsed { get; init; }
+
+            /// <summary>Null when the batch succeeded; otherwise why it failed after its retry.</summary>
+            public string? Error { get; init; }
+
+            public IReadOnlyList<string> SearchEvidence { get; init; } = Array.Empty<string>();
+            public int InputTokens { get; init; }
+            public int CachedTokens { get; init; }
+            public int OutputTokens { get; init; }
+            public int WebSearchCalls { get; init; }
+            public decimal TokenCost { get; init; }
+        }
+
         private sealed class ModelCallResult
         {
             public bool IsSuccess { get; init; }
@@ -1040,6 +1520,7 @@
         /// </summary>
         private async Task<ModelCallResult> CallModelAsync(
             ContactValidationJob job,
+            ProviderScope scope,
             string prompt,
             int batchCount,
             CancellationToken cancellationToken)
@@ -1053,7 +1534,7 @@
             // its check is assembled request-by-request in CallOpenAiAsync.
             if (LooksLikeDeepSeek(model) || LooksLikeQwen(model))
             {
-                var providerRate = await _context.ModelRates.FirstOrDefaultAsync(
+                var providerRate = await scope.Context.ModelRates.FirstOrDefaultAsync(
                     m => m.ModelName == model, cancellationToken);
 
                 // Math.Max, not a plain assignment: EnquiryRequest.MaxTokens wins
@@ -1074,11 +1555,11 @@
                 // the pitch service would otherwise deduct one more per batch.
                 var result = LooksLikeQwen(model)
                     ? (needsSearch
-                        ? await _qwenService.GenerateWebSearchAsync(request, 0)
-                        : await _qwenService.GeneratePitchAsync(request))
+                        ? await scope.Qwen.GenerateWebSearchAsync(request, 0)
+                        : await scope.Qwen.GeneratePitchAsync(request))
                     : (needsSearch
-                        ? await _deepSeekService.GenerateWebSearchAsync(request, 0)
-                        : await _deepSeekService.GeneratePitchAsync(request));
+                        ? await scope.DeepSeek.GenerateWebSearchAsync(request, 0)
+                        : await scope.DeepSeek.GeneratePitchAsync(request));
 
                 return new ModelCallResult
                 {
@@ -1095,7 +1576,7 @@
                 };
             }
 
-            return await CallOpenAiAsync(model, prompt, needsSearch, batchCount, cancellationToken);
+            return await CallOpenAiAsync(scope, model, prompt, needsSearch, batchCount, cancellationToken);
         }
 
         /// <summary>
@@ -1104,9 +1585,16 @@
         /// ModelRates.MaxTokens is sized for writing a single email, so it is
         /// nowhere near enough for a reply carrying one object per contact —
         /// and going over does not error, it truncates the JSON mid-array and
-        /// loses the whole batch. Roughly 120 tokens per contact covers an ID,
-        /// a score and a sentence or two of comments, with a fixed allowance on
-        /// top for the wrapper and any preamble.
+        /// loses the whole batch. Roughly 220 tokens per contact covers an ID,
+        /// a score, a sentence or two of comments and a couple of suggested
+        /// corrections, with a fixed allowance on top for the wrapper and any
+        /// preamble.
+        ///
+        /// It was 120 before data integrity began returning corrections. A
+        /// correction carries the old value, the new one and the evidence for
+        /// it, which is comparable in size to the comments themselves — so a
+        /// budget sized for a score and a comment leaves a full batch one
+        /// wordy record away from being truncated and thrown out.
         ///
         /// A web search check needs far more than the answer costs. On the
         /// Responses endpoint the model's own reasoning and its running search
@@ -1120,16 +1608,17 @@
         private static int OutputBudgetFor(int batchCount, bool usesWebSearch) =>
             usesWebSearch
                 ? Math.Clamp(batchCount * 800 + 4000, 16000, 64000)
-                : Math.Clamp(batchCount * 120 + 1000, 4000, 32000);
+                : Math.Clamp(batchCount * 220 + 1000, 4000, 32000);
 
         private async Task<ModelCallResult> CallOpenAiAsync(
+            ProviderScope scope,
             string model,
             string prompt,
             bool needsSearch,
             int batchCount,
             CancellationToken cancellationToken)
         {
-            var rate = await _context.ModelRates.FirstOrDefaultAsync(
+            var rate = await scope.Context.ModelRates.FirstOrDefaultAsync(
                 m => m.ModelName == model, cancellationToken);
 
             var maxTokens = Math.Max(rate?.MaxTokens ?? 0, OutputBudgetFor(batchCount, needsSearch));
@@ -1324,7 +1813,9 @@
         /// a slightly different spelling has done the work, and throwing that
         /// away would mean paying to run it again.
         /// </summary>
-        private static Dictionary<string, ValidationResultItemDto> ParseResults(string content)
+        private static Dictionary<string, ValidationResultItemDto> ParseResults(
+            string content,
+            string checkType)
         {
             var results = new Dictionary<string, ValidationResultItemDto>(StringComparer.OrdinalIgnoreCase);
 
@@ -1355,6 +1846,7 @@
                         "LiveContactValidityComments", "Live Contact comments"),
                     CompanyClassification = ReadString(element,
                         "Company classification", "company_classification", "CompanyClassification"),
+                    Suggestions = ReadSuggestions(element, checkType),
                     Sources = ReadSources(element)
                 };
             }
@@ -1431,6 +1923,103 @@
             // The scale is defined as 0-100; anything outside it is a model
             // slip, and clamping keeps the badge and its colour band sane.
             static int Clamp(int value) => Math.Clamp(value, 0, 100);
+        }
+
+        /// <summary>
+        /// Reads the field corrections out of one result object.
+        ///
+        /// Three things are thrown away rather than shown: a field the Accept
+        /// endpoint is not allowed to write, a suggestion with no replacement
+        /// value, and one whose replacement equals what the record already
+        /// says. The last is the common case — a model listing a field it
+        /// checked and left alone — and an Accept button that writes back the
+        /// value already there is worse than no button, because the user
+        /// cannot tell it did nothing.
+        ///
+        /// The reason is required. A one-click write to a customer's data has
+        /// to be reviewable, and "trust me" is not reviewable; the prompt asks
+        /// for the evidence, and a suggestion that arrives without it is a
+        /// suggestion we cannot show a user enough about to let them accept.
+        /// </summary>
+        /// <summary>
+        /// The keys a check's corrections can arrive under. The plain
+        /// "suggestions" fallback is last so a model that drops the prefix
+        /// still gets read.
+        /// </summary>
+        private static string[] SuggestionKeysFor(string checkType) =>
+            ValidationCheckTypes.Normalize(checkType) switch
+            {
+                ValidationCheckTypes.ContactFit => new[]
+                {
+                    "Contact Fit suggestions", "contact_fit_suggestions", "suggestions"
+                },
+                ValidationCheckTypes.LiveContact => new[]
+                {
+                    "Live Contact suggestions", "live_contact_suggestions",
+                    "Live Contact Validity suggestions", "suggestions"
+                },
+                _ => new[]
+                {
+                    "Data Integrity suggestions", "data_integrity_suggestions", "suggestions"
+                }
+            };
+
+        private static List<ValidationSuggestionDto> ReadSuggestions(
+            JObject element,
+            string checkType)
+        {
+            var suggestions = new List<ValidationSuggestionDto>();
+
+            var array = SuggestionKeysFor(checkType)
+                .Select(key => element.GetValue(key, StringComparison.OrdinalIgnoreCase))
+                .FirstOrDefault(token => token != null);
+
+            if (array is not JArray items) return suggestions;
+
+            var index = 0;
+
+            foreach (var item in items.OfType<JObject>())
+            {
+                var raw = ReadString(item, "field", "field_name", "fieldName");
+
+                // Two gates, not one: the field has to be writable at all, and
+                // it has to be writable *by this check*. A live contact prompt
+                // naming the email address is the case that matters — the field
+                // is real, and it still must not be rewritten from here.
+                if (!ValidationSuggestionFields.IsWritableBy(checkType, raw)) continue;
+
+                var field = ValidationSuggestionFields.Normalize(raw)!;
+
+                var suggested = ReadString(item, "suggested", "suggested_value",
+                                                 "suggestedValue", "corrected", "correction")?.Trim();
+
+                if (string.IsNullOrWhiteSpace(suggested)) continue;
+
+                var current = ReadString(item, "current", "current_value",
+                                               "currentValue", "original")?.Trim();
+
+                if (string.Equals(current, suggested, StringComparison.Ordinal)) continue;
+
+                var reason = ReadString(item, "reason", "evidence", "explanation")?.Trim();
+
+                if (string.IsNullOrWhiteSpace(reason)) continue;
+
+                suggestions.Add(new ValidationSuggestionDto
+                {
+                    // Position within this result, which is what makes it
+                    // stable: the list is replaced wholesale by the next run,
+                    // never appended to, so index 2 means the same suggestion
+                    // for as long as this result exists.
+                    Id = $"s{index++}",
+                    Field = field,
+                    Current = current,
+                    Suggested = suggested,
+                    Reason = reason,
+                    Status = ValidationSuggestionStatuses.Pending
+                });
+            }
+
+            return suggestions;
         }
 
         private static List<ValidationSourceDto> ReadSources(JObject element)
@@ -1534,6 +2123,13 @@
                         break;
                 }
 
+                // Written for whichever check ran, and only that one. A re-run
+                // replaces its own corrections wholesale, including any already
+                // accepted: it has just judged the corrected record and has
+                // nothing left to say about it.
+                row.SetSuggestionsJson(
+                    job.CheckType, SerialiseSuggestions(result.Suggestions, contact));
+
                 row.SourcesJson = MergeSources(row.SourcesJson, result.Sources);
                 row.UpdatedAt = now;
 
@@ -1599,6 +2195,41 @@
         /// Adds new evidence to what a contact already has, keyed on URL so
         /// re-running a check does not stack the same citation up again.
         /// </summary>
+        /// <summary>
+        /// Stores this run's suggestions, dropping any whose replacement the
+        /// contact already holds.
+        /// </summary>
+        /// <remarks>
+        /// The model is told what the record said when the batch was built, but
+        /// it is the contact row as it stands now that Accept would write to,
+        /// and the two can differ: another user can edit a contact while a
+        /// hundred-contact run is still working through its batches. Comparing
+        /// against the live row is what keeps a stale suggestion from offering
+        /// to undo an edit made two minutes ago.
+        ///
+        /// Null rather than "[]" when there is nothing to offer, so a clean
+        /// record costs no row width and the UI has one emptiness to test for.
+        /// </remarks>
+        private static string? SerialiseSuggestions(
+            List<ValidationSuggestionDto>? suggestions,
+            Contact contact)
+        {
+            var usable = (suggestions ?? new List<ValidationSuggestionDto>())
+                .Where(suggestion => !string.Equals(
+                    ValidationSuggestionFields.Read(contact, suggestion.Field)?.Trim(),
+                    suggestion.Suggested.Trim(),
+                    // Case-sensitive, because a change of case IS the
+                    // correction. "Aamir sheikh" to "Aamir Sheikh" is one of
+                    // the fixes this check exists to offer, and an
+                    // OrdinalIgnoreCase comparison here reads it as a
+                    // suggestion the contact already holds and silently drops
+                    // it.
+                    StringComparison.Ordinal))
+                .ToList();
+
+            return usable.Count == 0 ? null : ValidationSuggestionJson.Serialize(usable);
+        }
+
         private static string? MergeSources(string? existingJson, List<ValidationSourceDto>? incoming)
         {
             if (incoming == null || incoming.Count == 0)
@@ -1666,59 +2297,282 @@
 
             var byContact = existing.ToDictionary(v => v.ContactId);
 
-            foreach (var contact in contacts)
+            if (contacts.Count == 0)
+                return;
+
+            // The same shape as the model checks: the lookups run in parallel
+            // under the process-wide gate and every database write stays on this
+            // thread. Unlike the model path no scope is needed - Prospeo and
+            // Hunter hold no database context of their own, only an HttpClient.
+            var channel = Channel.CreateUnbounded<EmailOutcome>(
+                new UnboundedChannelOptions { SingleReader = true });
+
+            var producer = Task.Run(async () =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (!itemsByContact.TryGetValue(contact.id, out var item)) continue;
-
-                var now = DateTime.UtcNow;
-
-                if (!byContact.TryGetValue(contact.id, out var row))
+                try
                 {
-                    row = new ContactValidation
+                    await Parallel.ForEachAsync(
+                        contacts,
+                        new ParallelOptions
+                        {
+                            MaxDegreeOfParallelism = MaxParallelBatches,
+                            CancellationToken = cancellationToken
+                        },
+                        async (contact, token) =>
+                        {
+                            await ProviderGate.WaitAsync(token);
+
+                            try
+                            {
+                                var outcome = await LookUpOneAddressAsync(job, contact, token);
+                                await channel.Writer.WriteAsync(outcome, CancellationToken.None);
+                            }
+                            finally
+                            {
+                                ProviderGate.Release();
+                            }
+                        });
+                }
+                finally
+                {
+                    channel.Writer.Complete();
+                }
+            }, cancellationToken);
+
+            var reader = channel.Reader;
+
+            try
+            {
+                while (true)
+                {
+                    bool hasMore;
+
+                    using (var idle = new CancellationTokenSource(HeartbeatInterval))
+                    using (var linked = CancellationTokenSource.CreateLinkedTokenSource(
+                        cancellationToken, idle.Token))
                     {
-                        ClientId = job.ClientId,
-                        ContactId = contact.id,
-                        CreatedAt = now
-                    };
+                        try
+                        {
+                            hasMore = await reader.WaitToReadAsync(linked.Token);
+                        }
+                        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                        {
+                            job.HeartbeatAt = DateTime.UtcNow;
+                            await _context.SaveChangesAsync(cancellationToken);
+                            continue;
+                        }
+                    }
 
-                    _context.contact_validations.Add(row);
-                    byContact[contact.id] = row;
+                    if (!hasMore)
+                        break;
+
+                    // Drained and saved together. This used to save once per
+                    // contact, which on a list of four hundred was four hundred
+                    // round trips to store results the run had already paid for.
+                    while (reader.TryRead(out var outcome))
+                    {
+                        await ApplyEmailOutcomeAsync(
+                            job, outcome, itemsByContact, byContact, clientFileIds, cancellationToken);
+                    }
+
+                    job.ProcessedCount = items.Count(i => i.Status == ValidationItemStatuses.Completed);
+                    job.HeartbeatAt = DateTime.UtcNow;
+                    await _context.SaveChangesAsync(cancellationToken);
                 }
-
-                var outcome = await VerifyOneAddressAsync(contact, cancellationToken);
-                var comments = outcome.Comments;
-
-                // A contact with no address on file gets the discovered one
-                // written back. Finding an address and leaving it in a comment
-                // where nothing can send to it would waste the lookup, which is
-                // the expensive part of this check.
-                if (string.IsNullOrWhiteSpace(contact.email) &&
-                    !string.IsNullOrWhiteSpace(outcome.FoundEmail))
-                {
-                    var (filled, reason) = await FillMissingEmailAsync(
-                        contact.id, clientFileIds, outcome.FoundEmail!, cancellationToken);
-
-                    comments = filled
-                        ? comments + " It has been saved to this contact."
-                        : comments + " " + reason;
-                }
-
-                row.EmailValidityConfidence = outcome.Confidence;
-                row.EmailValidityStatus = outcome.Status;
-                row.EmailValiditySource = outcome.Source;
-                row.EmailValidityComments = comments;
-                row.EmailCheckedAt = now;
-                row.UpdatedAt = now;
-
-                item.Status = ValidationItemStatuses.Completed;
-                item.Error = null;
-
-                job.ProcessedCount = items.Count(i => i.Status == ValidationItemStatuses.Completed);
-                job.HeartbeatAt = DateTime.UtcNow;
-                await _context.SaveChangesAsync(cancellationToken);
             }
+            catch
+            {
+                await DrainAsync(producer);
+                throw;
+            }
+
+            await producer;
+        }
+
+        /// <summary>
+        /// One address lookup with a single retry, and nothing that touches the
+        /// job's database context.
+        ///
+        /// "Not found" is an answer, not a failure: it is recorded as a low
+        /// confidence result and never retried, because asking the same two
+        /// providers the same question again produces the same nothing. Only a
+        /// lookup that threw or ran out of time gets a second attempt.
+        /// </summary>
+        private async Task<EmailOutcome> LookUpOneAddressAsync(
+            ContactValidationJob job,
+            Contact contact,
+            CancellationToken cancellationToken)
+        {
+            string? failure = null;
+
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                using var lookupTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                lookupTimeout.CancelAfter(ModelCallTimeout);
+
+                try
+                {
+                    var outcome = await VerifyOneAddressAsync(contact, lookupTimeout.Token);
+
+                    return new EmailOutcome { Contact = contact, Outcome = outcome };
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    failure = $"The address lookup timed out after {ModelCallTimeout.TotalSeconds:0}s.";
+                }
+                catch (Exception ex)
+                {
+                    failure = "The address lookup failed: " + ex.Message;
+                }
+
+                if (attempt == 2)
+                    break;
+
+                _logger.LogWarning(
+                    "Validation job {JobId}: the lookup for contact {ContactId} failed ({Reason}). Retrying once.",
+                    job.Id, contact.id, Truncate(failure, 200));
+
+                await Task.Delay(RetryDelay, cancellationToken);
+            }
+
+            return new EmailOutcome { Contact = contact, Error = failure };
+        }
+
+        /// <summary>
+        /// Folds one finished lookup into the run. Called only from the run's
+        /// own thread - everything it touches is tracked by the job's context.
+        /// </summary>
+        private async Task ApplyEmailOutcomeAsync(
+            ContactValidationJob job,
+            EmailOutcome result,
+            IReadOnlyDictionary<int, ContactValidationJobItem> itemsByContact,
+            Dictionary<int, ContactValidation> byContact,
+            List<int> clientFileIds,
+            CancellationToken cancellationToken)
+        {
+            var contact = result.Contact;
+
+            if (!itemsByContact.TryGetValue(contact.id, out var item))
+                return;
+
+            // A lookup that never produced an answer is a failure and is now
+            // recorded as one. This check could not fail an item at all before,
+            // so a provider outage was billed in full and reported as complete.
+            if (result.Outcome == null)
+            {
+                item.Status = ValidationItemStatuses.Failed;
+                item.Error = result.Error ?? "The address lookup returned nothing.";
+                return;
+            }
+
+            var outcome = result.Outcome;
+            var now = DateTime.UtcNow;
+
+            if (!byContact.TryGetValue(contact.id, out var row))
+            {
+                row = new ContactValidation
+                {
+                    ClientId = job.ClientId,
+                    ContactId = contact.id,
+                    CreatedAt = now
+                };
+
+                _context.contact_validations.Add(row);
+                byContact[contact.id] = row;
+            }
+
+            var comments = outcome.Comments;
+
+            // A contact with no address on file gets the discovered one written
+            // back. Finding an address and leaving it in a comment where nothing
+            // can send to it would waste the lookup, which is the expensive part
+            // of this check.
+            if (string.IsNullOrWhiteSpace(contact.email) &&
+                !string.IsNullOrWhiteSpace(outcome.FoundEmail))
+            {
+                var (filled, reason) = await FillMissingEmailAsync(
+                    contact.id, clientFileIds, outcome.FoundEmail!, cancellationToken);
+
+                comments = filled
+                    ? comments + " It has been saved to this contact."
+                    : comments + " " + reason;
+            }
+
+            row.EmailValidityConfidence = outcome.Confidence;
+            row.EmailValidityStatus = outcome.Status;
+            row.EmailValiditySource = outcome.Source;
+            row.EmailValidityComments = comments;
+            row.SetSuggestionsJson(
+                ValidationCheckTypes.EmailVerification,
+                BuildEmailSuggestion(contact, outcome));
+            row.EmailCheckedAt = now;
+            row.UpdatedAt = now;
+
+            item.Status = ValidationItemStatuses.Completed;
+            item.Error = null;
+        }
+
+        /// <summary>One finished address lookup on its way back to the run's thread.</summary>
+        private sealed class EmailOutcome
+        {
+            public Contact Contact { get; init; } = null!;
+
+            /// <summary>Null when the lookup failed outright, even after its retry.</summary>
+            public EmailCheckOutcome? Outcome { get; init; }
+
+            public string? Error { get; init; }
+        }
+
+        /// <summary>
+        /// Offers the provider's address when it differs from the one on file.
+        /// </summary>
+        /// <remarks>
+        /// No model is involved: this is Prospeo's or Hunter's answer, and the
+        /// evidence is the provider's own verification. That is also why it is
+        /// offered rather than written. A contact with no address gets the
+        /// discovered one saved automatically, because there is nothing to lose
+        /// — but replacing an address someone may have been mailing for a year
+        /// is a decision, and the provider being confident is not the same as
+        /// the provider being right.
+        ///
+        /// Nothing is offered when the addresses match, when the lookup found
+        /// nothing, or when the field was empty and has just been filled in.
+        /// </remarks>
+        private static string? BuildEmailSuggestion(Contact contact, EmailCheckOutcome outcome)
+        {
+            var stored = contact.email?.Trim();
+            var found = outcome.FoundEmail?.Trim();
+
+            if (string.IsNullOrWhiteSpace(stored) || string.IsNullOrWhiteSpace(found))
+                return null;
+
+            if (string.Equals(stored, found, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var provider = outcome.Source switch
+            {
+                "prospeo" => "Prospeo",
+                "hunter" => "Hunter",
+                _ => outcome.Source
+            };
+
+            var status = string.IsNullOrWhiteSpace(outcome.Status)
+                ? ""
+                : $" It reports the address as {outcome.Status}.";
+
+            return ValidationSuggestionJson.Serialize(new[]
+            {
+                new ValidationSuggestionDto
+                {
+                    Id = "s0",
+                    Field = ValidationSuggestionFields.Email,
+                    Current = stored,
+                    Suggested = found,
+                    Reason = $"{provider} returned this address for this person " +
+                             $"instead of the one on file.{status}",
+                    Status = ValidationSuggestionStatuses.Pending
+                }
+            });
         }
 
         /// <summary>

@@ -1,4 +1,4 @@
-namespace PitchGenApi.Model
+﻿namespace PitchGenApi.Model
 {
     /// <summary>
     /// Fallback models for each AI purpose. The live values come from
@@ -86,5 +86,55 @@ namespace PitchGenApi.Model
         /// </summary>
         public static bool IsSearchPreviewModel(string? modelName) =>
             modelName?.Contains("search-preview") == true;
+
+        /// <summary>
+        /// The GPT-6 family reasons by default (effort "medium") and rejects
+        /// "temperature", "top_p" and "top_logprobs" unless the effort is
+        /// explicitly "none". A bare temperature on one of these is a 400 from
+        /// the API, not a warning, so the sampling settings have to be written
+        /// differently for it than for everything before it.
+        /// </summary>
+        public static bool IsGpt6Model(string? modelName) =>
+            modelName?.StartsWith("gpt-6", StringComparison.OrdinalIgnoreCase) == true;
+
+        /// <summary>
+        /// Astra is the one GPT-6 model with no "none" effort — it always
+        /// reasons, so there is no setting under which it accepts a
+        /// temperature. "low" is its floor, and the cheapest thing to ask for.
+        /// </summary>
+        private static bool AlwaysReasons(string? modelName) =>
+            modelName?.StartsWith("gpt-6-astra", StringComparison.OrdinalIgnoreCase) == true;
+
+        /// <summary>
+        /// Writes the sampling settings onto a Responses API body in the form
+        /// the chosen model accepts. Everything up to GPT-5.6 takes a bare
+        /// temperature; GPT-6 needs reasoning switched off in the same request,
+        /// and Astra, which cannot switch it off, takes no temperature at all.
+        ///
+        /// Reasoning tokens are drawn from max_output_tokens and are emitted
+        /// before any visible text, so a model routed through the Astra branch
+        /// needs its ModelRates.MaxTokens sized well above what the answer
+        /// alone costs (see OpenAiResponseGuard).
+        /// </summary>
+        public static void ApplySampling(
+            IDictionary<string, object> requestData,
+            string? modelName,
+            double temperature)
+        {
+            if (!IsGpt6Model(modelName))
+            {
+                requestData["temperature"] = temperature;
+                return;
+            }
+
+            if (AlwaysReasons(modelName))
+            {
+                requestData["reasoning"] = new { effort = "low" };
+                return;
+            }
+
+            requestData["reasoning"] = new { effort = "none" };
+            requestData["temperature"] = temperature;
+        }
     }
 }

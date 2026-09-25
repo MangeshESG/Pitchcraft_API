@@ -10,16 +10,45 @@ using Microsoft.OpenApi.Models;
 using PitchGenApi.Model;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using System.Security.Authentication;
+using System.Net.Security;
+using System.Net.Sockets;
 using PitchGenApi;
 using PitchGenApi.Repositories;
 using PitchGenApi.Helpers;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Http.Features;
+using PitchGenApi.Middleware;
+using Serilog;
+using Serilog.Events;
 
 using static PitchGenApi.Services.CampaignPromptService;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ===============================
+// Logging
+// ===============================
+// The Serilog packages were referenced and appsettings carried a Serilog
+// section, but nothing ever called UseSerilog -- so unhandled exceptions were
+// written nowhere and a 500 on the server told us only that it was a 500. The
+// sink is configured here rather than from appsettings because the server
+// keeps its own copy of that file, and because the path has to be absolute:
+// under IIS the working directory is not the app folder, so a relative path
+// lands somewhere nobody looks.
+var logDirectory = Path.Combine(builder.Environment.ContentRootPath, "logs");
+Directory.CreateDirectory(logDirectory);
+
+builder.Host.UseSerilog((context, configuration) => configuration
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("System", LogEventLevel.Warning)
+    .WriteTo.File(
+        Path.Combine(logDirectory, "error-.txt"),
+        rollingInterval: RollingInterval.Day,
+        restrictedToMinimumLevel: LogEventLevel.Error,
+        retainedFileCountLimit: 31,
+        shared: true));
 
 // ===============================
 // ✅ OpenAI settings
@@ -259,10 +288,53 @@ builder.Services.Configure<QwenSettings>(
 // leaves the protocol to schannel - which is how one build can reach OpenAI
 // fine and fail everything else with "The SSL connection could not be
 // established".
+// IPv4 only, and that is not a preference - it is the difference between a
+// request taking one second and taking forty-three.
+//
+// The Model Studio regional hosts advertise AAAA records. Measured 2026-09-16
+// against the Frankfurt workspace host: DNS returns two IPv6 addresses and two
+// IPv4 addresses, the IPv4 connect completes in 0.20s, and each IPv6 connect
+// blackholes and times out after 21s. .NET works through the list in order, so
+// every single call paid 2 x 21s before it ever reached the IPv4 address -
+// which is the whole of the "timed out after 180 seconds" failure, with the
+// retry loop on top. Nothing to do with the model, the search, or thinking
+// mode: a bare TCP connect to the host measured 42.73s while the API call that
+// followed it took about a second.
+//
+// This machine and the UK server both have IPv6 addresses that are link-local
+// only, so neither has a route. Pinning the family here fixes both without
+// depending on host network configuration.
 builder.Services.AddHttpClient<QwenPitchService>()
-    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
     {
-        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+        // Same TLS pin as DeepSeek below; SocketsHttpHandler spells it
+        // differently from HttpClientHandler but means the same thing.
+        SslOptions = new SslClientAuthenticationOptions
+        {
+            EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+        },
+
+        ConnectCallback = async (context, cancellationToken) =>
+        {
+            // AddressFamily.InterNetwork makes ConnectAsync consider only the
+            // IPv4 records the hostname resolves to; the AAAA answers are never
+            // attempted.
+            var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+            {
+                NoDelay = true
+            };
+
+            try
+            {
+                await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+        }
     });
 
 
@@ -283,6 +355,14 @@ builder.Services.AddControllers();
 // 🚀 Build App
 // ===============================
 var app = builder.Build();
+
+// ===============================
+// Unhandled exceptions
+// ===============================
+// First in the pipeline so it wraps everything below it. Without this the
+// class was dead code: exceptions escaped to IIS, which answered with a bare
+// 500 carrying no clue what went wrong.
+app.UseMiddleware<GlobalExceptionMiddleware>();
 
 // ===============================
 // ✅ REQUIRED for production (reverse proxy)

@@ -45,6 +45,9 @@ namespace PitchGenApi.Model
         [Column("contact_fit_checked_at")]
         public DateTime? ContactFitCheckedAt { get; set; }
 
+        [Column("contact_fit_suggestions")]
+        public string? ContactFitSuggestionsJson { get; set; }
+
         // ---------------- Data integrity ----------------
 
         [Column("data_integrity_confidence")]
@@ -61,6 +64,22 @@ namespace PitchGenApi.Model
         [Column("data_integrity_checked_at")]
         public DateTime? DataIntegrityCheckedAt { get; set; }
 
+        /// <summary>
+        /// The corrections this check offered, as
+        /// [{"id","field","current","suggested","reason","status","resolvedAt","resolvedBy"}].
+        ///
+        /// The comments say what is wrong in prose; this says what the value
+        /// should be, in a shape a button can act on. They are kept apart
+        /// deliberately — parsing a fix back out of an English sentence is how
+        /// a typo in the prompt becomes a wrong write to the contact record.
+        ///
+        /// A re-run replaces the whole list. Accepting one is not a reason to
+        /// keep it: the next run judges the corrected record and has nothing
+        /// left to say about it.
+        /// </summary>
+        [Column("data_integrity_suggestions")]
+        public string? DataIntegritySuggestionsJson { get; set; }
+
         // ---------------- Live contact ----------------
 
         [Column("live_contact_confidence")]
@@ -71,6 +90,9 @@ namespace PitchGenApi.Model
 
         [Column("live_contact_checked_at")]
         public DateTime? LiveContactCheckedAt { get; set; }
+
+        [Column("live_contact_suggestions")]
+        public string? LiveContactSuggestionsJson { get; set; }
 
         // ---------------- Email discovery and verification ----------------
 
@@ -92,6 +114,14 @@ namespace PitchGenApi.Model
 
         [Column("email_checked_at")]
         public DateTime? EmailCheckedAt { get; set; }
+
+        /// <summary>
+        /// Not written by a model. This check runs on Prospeo and Hunter, so a
+        /// correction here is the address a provider actually returned, offered
+        /// when it differs from the one on file.
+        /// </summary>
+        [Column("email_validity_suggestions")]
+        public string? EmailValiditySuggestionsJson { get; set; }
 
         // ---------------- Shared ----------------
 
@@ -126,6 +156,45 @@ namespace PitchGenApi.Model
         [Column("verified_by")]
         [MaxLength(200)]
         public string? VerifiedBy { get; set; }
+
+        /// <summary>
+        /// The corrections column belonging to one check.
+        ///
+        /// Four columns rather than one shared blob because each check replaces
+        /// its own corrections wholesale when it re-runs, and a shared blob
+        /// would make every run a read-modify-write that has to be careful not
+        /// to wipe the other three. Reading them through here is what keeps
+        /// that choice from spreading a four-way switch across the service, the
+        /// controller and the grid projection.
+        /// </summary>
+        public string? SuggestionsJsonFor(string checkType) =>
+            ValidationCheckTypes.Normalize(checkType) switch
+            {
+                ValidationCheckTypes.ContactFit => ContactFitSuggestionsJson,
+                ValidationCheckTypes.DataIntegrity => DataIntegritySuggestionsJson,
+                ValidationCheckTypes.LiveContact => LiveContactSuggestionsJson,
+                ValidationCheckTypes.EmailVerification => EmailValiditySuggestionsJson,
+                _ => null
+            };
+
+        public void SetSuggestionsJson(string checkType, string? json)
+        {
+            switch (ValidationCheckTypes.Normalize(checkType))
+            {
+                case ValidationCheckTypes.ContactFit:
+                    ContactFitSuggestionsJson = json;
+                    break;
+                case ValidationCheckTypes.DataIntegrity:
+                    DataIntegritySuggestionsJson = json;
+                    break;
+                case ValidationCheckTypes.LiveContact:
+                    LiveContactSuggestionsJson = json;
+                    break;
+                case ValidationCheckTypes.EmailVerification:
+                    EmailValiditySuggestionsJson = json;
+                    break;
+            }
+        }
 
         [Column("created_at")]
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

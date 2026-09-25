@@ -35,7 +35,9 @@ namespace PitchGenApi.Services
         /// <summary>
         /// What actually makes Qwen search.
         ///
-        /// tool_choice does not. Measured 2026-09-11: "required", an explicit
+        /// tool_choice does not — on qwen3.6 it is inert and on qwen3.8 it is a
+        /// hard error, so it is not sent at all (see the request builder).
+        /// Measured 2026-09-11 on 3.6: "required", an explicit
         /// {type:"web_search"} object, and plain auto all produce the identical
         /// response on a prompt the model can answer from memory — reasoning and
         /// a message, no web_search_call, no usage.x_tools. The field is accepted
@@ -142,7 +144,31 @@ namespace PitchGenApi.Services
                 ? "turbo"
                 : options.Value.SearchStrategy.Trim();
 
-            _httpClient.Timeout = TimeSpan.FromMinutes(3);
+            // Ten minutes, matching the OpenAI client in Program.cs and the
+            // validation runner's own client rather than being generous for its
+            // own sake.
+            //
+            // Three minutes was not a budget anyone measured a call against, and
+            // a researched batch outgrew it: at the configured batch size of 50
+            // contacts, one web-search call runs a search per contact and the
+            // whole turn regularly passes 180s, which surfaced as "Qwen web
+            // search timed out after 180 seconds" on work that was progressing
+            // perfectly well. The request is abandoned at that point but the
+            // provider still ran and still billed it, so the short ceiling cost
+            // the batch and the money both.
+            //
+            // Not removed altogether: with no ceiling a wedged call holds its
+            // runner slot forever, and Timeout.InfiniteTimeSpan is how a queue
+            // stops draining. Ten minutes is long enough that only a genuinely
+            // stuck call reaches it.
+            //
+            // Note this is the ONLY thing that stops a long Qwen call. The
+            // per-batch CancellationToken in ContactValidationService is passed
+            // to CallModelAsync but not onward into this service, so
+            // Validation:ModelCallTimeoutSeconds does not apply to the Qwen or
+            // DeepSeek paths - see Validation:StaleJobMinutes in appsettings,
+            // which has to stay above this value.
+            _httpClient.Timeout = TimeSpan.FromMinutes(10);
 
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {_apiKey}");
@@ -485,12 +511,22 @@ namespace PitchGenApi.Services
                     {
                         new { type = WebSearchToolType }
                     }
-                },
-// Sent for correctness and for the day Model Studio starts
-                // honouring it, but it is NOT what forces the search — see
-                // ForceSearchInstruction. Do not remove that instruction on the
-                // strength of this line being here.
-                { "tool_choice", "required" }
+                }
+
+                // No tool_choice. It cannot help and on the current models it
+                // breaks the call outright:
+                //
+                //   qwen3.6  accepts "required" and ignores it — the response is
+                //            byte-for-byte what auto returns, so it only looked
+                //            like it was forcing a search.
+                //   qwen3.8  rejects it: HTTP 400, "The tool_choice parameter
+                //            does not support being set to required or object in
+                //            thinking mode", and these models think by default.
+                //
+                // Measured 2026-09-15 on qwen3.8-flash and qwen3.8-max. Omitting
+                // it searches on both; "auto" also works but says nothing that
+                // the default does not. ForceSearchInstruction is what actually
+                // gets the search, and it is the only thing that does.
             };
 
             if (thinkingEnabled)

@@ -239,6 +239,14 @@ namespace PitchGenApi.Controllers
                 emailValidityComments = v.EmailValidityComments,
                 emailCheckedAt = v.EmailCheckedAt,
                 validationSources = v.SourcesJson,
+                // The raw JSON, parsed in the browser like validationSources is.
+                // Sending these as arrays would make them column candidates in
+                // the auto-generated grid, which is the one thing they must not
+                // become - they are read by the score cells, never displayed.
+                contactFitSuggestions = v.ContactFitSuggestionsJson,
+                dataIntegritySuggestions = v.DataIntegritySuggestionsJson,
+                liveContactSuggestions = v.LiveContactSuggestionsJson,
+                emailValiditySuggestions = v.EmailValiditySuggestionsJson,
                 isVerified = v.IsVerified,
                 verifiedAt = v.VerifiedAt
             };

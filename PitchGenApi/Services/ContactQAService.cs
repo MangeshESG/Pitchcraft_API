@@ -206,7 +206,6 @@
             {
                 { "model", request.ModelName },
                 { "input", inputParts },
-                { "temperature", rate.Temperature },
                 { "max_output_tokens", rate.MaxTokens },
                 {
                     "tools",
@@ -222,6 +221,9 @@
                 { "tool_choice", "auto" },
                 { "include", new[] { "web_search_call.action.sources" } }
             };
+
+            AiModelDefaults.ApplySampling(
+                requestData, request.ModelName, (double)rate.Temperature);
 
             var requestBody = JsonConvert.SerializeObject(requestData);
             var content = new StringContent(requestBody, Encoding.UTF8, "application/json");

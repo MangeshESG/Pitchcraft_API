@@ -1,4 +1,4 @@
-namespace PitchGenApi.Model.DTOs
+﻿namespace PitchGenApi.Model.DTOs
 {
     // ------------------------------------------------------------ briefs
 
@@ -111,6 +111,19 @@ namespace PitchGenApi.Model.DTOs
 
         public List<ValidationSourceDto> Sources { get; set; } = new();
 
+        /// <summary>
+        /// The corrections each check offered for this contact, with where each
+        /// one has got to.
+        ///
+        /// Kept per check rather than merged, because accepting one has to name
+        /// the check it came from — the ids are only unique within a list — and
+        /// because the grid shows each check's corrections beside its own score.
+        /// </summary>
+        public List<ValidationSuggestionDto> ContactFitSuggestions { get; set; } = new();
+        public List<ValidationSuggestionDto> DataIntegritySuggestions { get; set; } = new();
+        public List<ValidationSuggestionDto> LiveContactSuggestions { get; set; } = new();
+        public List<ValidationSuggestionDto> EmailValiditySuggestions { get; set; } = new();
+
         public bool IsVerified { get; set; }
         public DateTime? VerifiedAt { get; set; }
         public string? VerifiedBy { get; set; }
@@ -120,6 +133,73 @@ namespace PitchGenApi.Model.DTOs
     {
         public string Label { get; set; } = "";
         public string Url { get; set; } = "";
+    }
+
+    /// <summary>
+    /// One correction the Data Integrity check offered: what the record says
+    /// now, what it should say, and why.
+    ///
+    /// Stored as JSON on the validation row rather than as its own table
+    /// because a suggestion has no life of its own — it belongs to one check
+    /// result, it is replaced wholesale the next time that check runs, and the
+    /// grid always reads it beside the score it came from.
+    /// </summary>
+    public sealed class ValidationSuggestionDto
+    {
+        /// <summary>
+        /// Stable within one check result. Accept posts this back, so the
+        /// server applies the suggestion the user actually clicked rather than
+        /// the one that happens to sit at that index now.
+        /// </summary>
+        public string Id { get; set; } = "";
+
+        /// <summary>A key from <see cref="ValidationSuggestionFields"/>.</summary>
+        public string Field { get; set; } = "";
+
+        /// <summary>The value as the check saw it — shown as the "from" side of the diff.</summary>
+        public string? Current { get; set; }
+
+        public string Suggested { get; set; } = "";
+
+        /// <summary>The evidence line. The prompt requires one; a suggestion without it is dropped.</summary>
+        public string? Reason { get; set; }
+
+        /// <summary>pending | accepted | dismissed</summary>
+        public string Status { get; set; } = ValidationSuggestionStatuses.Pending;
+
+        public DateTime? ResolvedAt { get; set; }
+        public string? ResolvedBy { get; set; }
+    }
+
+    /// <summary>
+    /// Sets one check's score to 100 by hand.
+    ///
+    /// Separate from <see cref="MarkVerifiedRequestDto"/>, which is a statement
+    /// about the whole contact and raises every check that has run. This is the
+    /// narrower one: the user disagrees with a single verdict and is overruling
+    /// just that, leaving the other three checks saying what they found.
+    /// </summary>
+    public sealed class VerifyScoreRequestDto
+    {
+        public int ClientId { get; set; }
+        public int ContactId { get; set; }
+        /// <summary>A key from <see cref="ValidationCheckTypes"/>.</summary>
+        public string CheckType { get; set; } = "";
+        public string? VerifiedBy { get; set; }
+    }
+
+    public sealed class ResolveSuggestionRequestDto
+    {
+        public int ClientId { get; set; }
+        public int ContactId { get; set; }
+        /// <summary>
+        /// Which check's corrections this belongs to. Suggestion ids are only
+        /// unique within one check's list, so without it "s0" is ambiguous
+        /// across the four.
+        /// </summary>
+        public string CheckType { get; set; } = ValidationCheckTypes.DataIntegrity;
+        public string SuggestionId { get; set; } = "";
+        public string? ResolvedBy { get; set; }
     }
 
     public sealed class MarkVerifiedRequestDto
@@ -155,6 +235,13 @@ namespace PitchGenApi.Model.DTOs
         public string? LiveContactValidityComments { get; set; }
 
         public List<ValidationSourceDto>? Sources { get; set; }
+
+        /// <summary>
+        /// Field corrections the running check offered. Already filtered to the
+        /// fields that check may write, so anything still here names a column
+        /// the Accept endpoint is allowed to change.
+        /// </summary>
+        public List<ValidationSuggestionDto>? Suggestions { get; set; }
 
         /// <summary>
         /// The company classification the model established while judging this
