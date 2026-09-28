@@ -1,4 +1,4 @@
-namespace PitchGenApi.Model
+﻿namespace PitchGenApi.Model
 {
     /// <summary>
     /// The four Audience Assurance checks a user can run over selected contacts.
@@ -86,7 +86,7 @@ namespace PitchGenApi.Model
                 "Checks against current public evidence whether the person is still at that company in that role."),
             EmailVerification => (
                 "Email discovery and verification",
-                "Confirms the address through Prospeo, falling back to Hunter. Runs no language model."),
+                "Finds and confirms the address through the same four stages as the extension: a recent unlock, then Prospeo, then an AI web search, then Hunter. Costs one credit per contact."),
             _ => (checkType, "")
         };
     }

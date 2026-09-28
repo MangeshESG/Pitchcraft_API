@@ -1,4 +1,4 @@
-namespace PitchGenApi.Model.DTOs
+﻿namespace PitchGenApi.Model.DTOs
 {
     public class UnlockEmailResult
     {
@@ -68,8 +68,23 @@ namespace PitchGenApi.Model.DTOs
                 Source = source
             };
 
+        /// <summary>
+        /// True when this unlock failed for want of credit rather than for want
+        /// of an address.
+        ///
+        /// The two are the same shape otherwise, and a bulk run has to tell them
+        /// apart: "we searched and found nothing" is a finished contact, while
+        /// "you ran out of credit" is a contact that never got looked at and
+        /// must not be recorded as checked.
+        /// </summary>
+        public bool CreditUnavailable { get; set; }
+
         public static UnlockEmailResult Failed(string? contactId, string status) =>
             new() { ContactID = contactId, Success = false, Status = status };
+
+        /// <summary>A failure caused by the credit balance, not by the search.</summary>
+        public static UnlockEmailResult NoCredit(string? contactId, string status) =>
+            new() { ContactID = contactId, Success = false, Status = status, CreditUnavailable = true };
     }
 
     /// <summary>

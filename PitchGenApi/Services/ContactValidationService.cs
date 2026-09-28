@@ -86,6 +86,20 @@
         private const int MaxParallelBatchesCeiling = 64;
 
         /// <summary>
+        /// Address lookups in flight at once, across every run in this process.
+        ///
+        /// Deliberately far below the model gate. A batch of contacts scored by
+        /// a model is one slow call; an address lookup is one contact, and the
+        /// stages in front of the AI search answer in a second or two. At ten
+        /// in flight the cache and Prospeo stages alone would put roughly four
+        /// hundred requests a minute through Prospeo, which rate limits at
+        /// around a hundred and fifty. Four keeps it near a hundred and twenty.
+        /// </summary>
+        private const int DefaultMaxParallelLookups = 4;
+
+        private const int MaxParallelLookupsCeiling = 32;
+
+        /// <summary>
         /// How often a run touches its heartbeat while nothing has come back
         /// yet. A batch can now take its own timeout plus a retry before it
         /// reports, which is long enough for the reaper to decide the run was
@@ -109,8 +123,6 @@
         private readonly IAiModelSettingsService _aiModelSettings;
         private readonly IPromptSettingsService _promptSettings;
         private readonly IValidationSettingsService _validationSettings;
-        private readonly IProspeoEmailService _prospeoService;
-        private readonly IHunterEmailService _hunterService;
 
         /// <summary>
         /// Batches run their provider calls off this thread, and both pitch
@@ -130,8 +142,6 @@
             IAiModelSettingsService aiModelSettings,
             IPromptSettingsService promptSettings,
             IValidationSettingsService validationSettings,
-            IProspeoEmailService prospeoService,
-            IHunterEmailService hunterService,
             IServiceScopeFactory scopeFactory,
             HttpClient httpClient,
             IConfiguration configuration,
@@ -143,8 +153,6 @@
             _aiModelSettings = aiModelSettings;
             _promptSettings = promptSettings;
             _validationSettings = validationSettings;
-            _prospeoService = prospeoService;
-            _hunterService = hunterService;
             _scopeFactory = scopeFactory;
             _httpClient = httpClient;
             _configuration = configuration;
@@ -229,8 +237,43 @@
             }
         }
 
+        private int MaxParallelLookups
+        {
+            get
+            {
+                var configured = _configuration.GetValue<int?>("Validation:MaxParallelLookups");
+
+                return configured is > 0
+                    ? Math.Min(configured.Value, MaxParallelLookupsCeiling)
+                    : DefaultMaxParallelLookups;
+            }
+        }
+
+        /// <summary>
+        /// The process-wide limit on address lookups in flight. Separate from
+        /// <see cref="ProviderGate"/> because the two are bound by different
+        /// providers: one by model tokens, the other by Prospeo's request rate.
+        /// Created once and never resized, for the reason given above.
+        /// </summary>
+        private SemaphoreSlim LookupGate
+        {
+            get
+            {
+                if (_lookupGate != null)
+                    return _lookupGate;
+
+                lock (LookupGateLock)
+                {
+                    var width = MaxParallelLookups;
+                    return _lookupGate ??= new SemaphoreSlim(width, width);
+                }
+            }
+        }
+
         private static readonly object ProviderGateLock = new();
         private static SemaphoreSlim? _providerGate;
+        private static readonly object LookupGateLock = new();
+        private static SemaphoreSlim? _lookupGate;
 
         // =================================================================
         // Queueing
@@ -306,9 +349,26 @@
                 modelName = await _aiModelSettings.GetModelAsync(checkType);
             }
 
-            var credits = CreditsFor(ownedIds.Count);
+            // Email discovery is the one check that does not reserve anything
+            // up front. It runs the extension's four-stage unlock, which
+            // deducts one credit per contact itself and only once an address
+            // has actually been produced - so reserving here as well would
+            // charge for the same contact twice. All that is checked is that
+            // there is credit to begin with, exactly as the unlock endpoint
+            // does before it starts.
+            var perContactCredit = checkType == ValidationCheckTypes.EmailVerification;
 
-            if (!await _contactRepository.CreditDeduction(request.ClientId, credits))
+            var credits = perContactCredit ? 0 : CreditsFor(ownedIds.Count);
+
+            if (perContactCredit)
+            {
+                if (!await _contactRepository.HasAvailableCreditAsync(request.ClientId))
+                {
+                    throw new InvalidOperationException(
+                        "No credit is available. Email discovery costs one credit per contact.");
+                }
+            }
+            else if (!await _contactRepository.CreditDeduction(request.ClientId, credits))
             {
                 throw new InvalidOperationException(
                     $"This run needs {credits} credit{(credits == 1 ? "" : "s")} " +
@@ -602,6 +662,12 @@
             ContactValidationJob job,
             CancellationToken cancellationToken)
         {
+            // Nothing was reserved for the email check, so there is nothing to
+            // give back: its credits are deducted one at a time as addresses
+            // are found, and a contact that found none was never charged.
+            if (job.CheckType == ValidationCheckTypes.EmailVerification)
+                return;
+
             var earned = CreditsFor(job.ProcessedCount);
 
             if (earned >= job.CreditsCharged)
@@ -2301,9 +2367,9 @@
                 return;
 
             // The same shape as the model checks: the lookups run in parallel
-            // under the process-wide gate and every database write stays on this
-            // thread. Unlike the model path no scope is needed - Prospeo and
-            // Hunter hold no database context of their own, only an HttpClient.
+            // under a process-wide gate and every database write stays on this
+            // thread. Its own gate, though, and a much narrower one - see
+            // MaxParallelLookups.
             var channel = Channel.CreateUnbounded<EmailOutcome>(
                 new UnboundedChannelOptions { SingleReader = true });
 
@@ -2315,12 +2381,12 @@
                         contacts,
                         new ParallelOptions
                         {
-                            MaxDegreeOfParallelism = MaxParallelBatches,
+                            MaxDegreeOfParallelism = MaxParallelLookups,
                             CancellationToken = cancellationToken
                         },
                         async (contact, token) =>
                         {
-                            await ProviderGate.WaitAsync(token);
+                            await LookupGate.WaitAsync(token);
 
                             try
                             {
@@ -2329,7 +2395,7 @@
                             }
                             finally
                             {
-                                ProviderGate.Release();
+                                LookupGate.Release();
                             }
                         });
                 }
@@ -2390,12 +2456,16 @@
         }
 
         /// <summary>
-        /// One address lookup with a single retry, and nothing that touches the
-        /// job's database context.
+        /// One contact through the four-stage unlock, with a single retry.
         ///
-        /// "Not found" is an answer, not a failure: it is recorded as a low
-        /// confidence result and never retried, because asking the same two
-        /// providers the same question again produces the same nothing. Only a
+        /// This is the extension's own chain - the 30-day cache, then Prospeo,
+        /// then an AI web search, then Hunter - run over a list instead of over
+        /// one profile. It is the same service the extension calls, so the two
+        /// can no longer drift apart.
+        ///
+        /// "No address found" is an answer, not a failure, and is never
+        /// retried: every stage has already been asked and the second pass
+        /// would spend another AI search to be told the same thing. Only a
         /// lookup that threw or ran out of time gets a second attempt.
         /// </summary>
         private async Task<EmailOutcome> LookUpOneAddressAsync(
@@ -2403,6 +2473,26 @@
             Contact contact,
             CancellationToken cancellationToken)
         {
+            // Its own scope, for the same reason the model batches take one:
+            // the unlock chain reaches the unlock ledger and the credit rows
+            // through a DbContext, and the run's own context belongs to the
+            // thread applying results.
+            using var scope = _scopeFactory.CreateScope();
+
+            var unlockService = scope.ServiceProvider.GetRequiredService<IEmailUnlockService>();
+
+            var request = new ProspeoUnlockRequestDto
+            {
+                ClientID = job.ClientId,
+                ContactID = contact.id.ToString(),
+                LinkedInUrl = contact.linkedin_url ?? "",
+                Name = contact.full_name ?? $"{contact.first_name} {contact.last_name}".Trim(),
+                JobTitle = contact.job_title,
+                CompanyName = contact.company_name,
+                Location = contact.country_or_address,
+                CompanyUrl = contact.website
+            };
+
             string? failure = null;
 
             for (var attempt = 1; attempt <= 2; attempt++)
@@ -2412,9 +2502,12 @@
 
                 try
                 {
-                    var outcome = await VerifyOneAddressAsync(contact, lookupTimeout.Token);
+                    // isAdmin false: the trace carries the raw prompt and the
+                    // raw model reply, and a bulk run has nobody to show it to.
+                    var unlock = await unlockService.UnlockAsync(
+                        request, isAdmin: false, lookupTimeout.Token);
 
-                    return new EmailOutcome { Contact = contact, Outcome = outcome };
+                    return new EmailOutcome { Contact = contact, Unlock = unlock };
                 }
                 catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
                 {
@@ -2455,18 +2548,37 @@
             if (!itemsByContact.TryGetValue(contact.id, out var item))
                 return;
 
-            // A lookup that never produced an answer is a failure and is now
+            // A lookup that never produced an answer is a failure and is
             // recorded as one. This check could not fail an item at all before,
-            // so a provider outage was billed in full and reported as complete.
-            if (result.Outcome == null)
+            // so a provider outage was reported as complete.
+            if (result.Unlock == null)
             {
                 item.Status = ValidationItemStatuses.Failed;
                 item.Error = result.Error ?? "The address lookup returned nothing.";
                 return;
             }
 
-            var outcome = result.Outcome;
+            var unlock = result.Unlock;
+
+            // Running out of credit part-way is a failure, not a verdict. The
+            // contact was never looked at, so recording it as checked-and-found-
+            // nothing would be a lie the customer pays for twice: once in the
+            // credit that ran out, and again when a re-run skips it as done.
+            if (unlock.CreditUnavailable)
+            {
+                item.Status = ValidationItemStatuses.Failed;
+                item.Error = unlock.Status;
+                return;
+            }
+
+            var found = unlock.Success && !string.IsNullOrWhiteSpace(unlock.Email);
             var now = DateTime.UtcNow;
+
+            // One credit was deducted by the chain, and only if it produced an
+            // address. Counted here so the run reports what it actually spent
+            // rather than what it guessed up front.
+            if (found)
+                job.CreditsCharged += 1;
 
             if (!byContact.TryGetValue(contact.id, out var row))
             {
@@ -2481,30 +2593,33 @@
                 byContact[contact.id] = row;
             }
 
-            var comments = outcome.Comments;
+            var comments = unlock.Status;
 
             // A contact with no address on file gets the discovered one written
             // back. Finding an address and leaving it in a comment where nothing
             // can send to it would waste the lookup, which is the expensive part
             // of this check.
-            if (string.IsNullOrWhiteSpace(contact.email) &&
-                !string.IsNullOrWhiteSpace(outcome.FoundEmail))
+            if (found &&
+                string.IsNullOrWhiteSpace(contact.email))
             {
                 var (filled, reason) = await FillMissingEmailAsync(
-                    contact.id, clientFileIds, outcome.FoundEmail!, cancellationToken);
+                    contact.id, clientFileIds, unlock.Email, cancellationToken);
 
                 comments = filled
                     ? comments + " It has been saved to this contact."
                     : comments + " " + reason;
             }
 
-            row.EmailValidityConfidence = outcome.Confidence;
-            row.EmailValidityStatus = outcome.Status;
-            row.EmailValiditySource = outcome.Source;
+            // The cache and Prospeo do not score themselves - they either
+            // verified the address or they did not - so a null confidence from
+            // those stages means verified, not unknown.
+            row.EmailValidityConfidence = found ? unlock.Confidence ?? 98 : 10;
+            row.EmailValidityStatus = found ? "found" : "not_found";
+            row.EmailValiditySource = string.IsNullOrWhiteSpace(unlock.Source) ? "none" : unlock.Source;
             row.EmailValidityComments = comments;
             row.SetSuggestionsJson(
                 ValidationCheckTypes.EmailVerification,
-                BuildEmailSuggestion(contact, outcome));
+                BuildEmailSuggestion(contact, unlock));
             row.EmailCheckedAt = now;
             row.UpdatedAt = now;
 
@@ -2512,36 +2627,33 @@
             item.Error = null;
         }
 
-        /// <summary>One finished address lookup on its way back to the run's thread.</summary>
+        /// <summary>One finished unlock on its way back to the run's thread.</summary>
         private sealed class EmailOutcome
         {
             public Contact Contact { get; init; } = null!;
 
-            /// <summary>Null when the lookup failed outright, even after its retry.</summary>
-            public EmailCheckOutcome? Outcome { get; init; }
+            /// <summary>Null when the lookup threw or timed out, even after its retry.</summary>
+            public UnlockEmailResult? Unlock { get; init; }
 
             public string? Error { get; init; }
         }
 
         /// <summary>
-        /// Offers the provider's address when it differs from the one on file.
+        /// Offers the discovered address when it differs from the one on file.
         /// </summary>
         /// <remarks>
-        /// No model is involved: this is Prospeo's or Hunter's answer, and the
-        /// evidence is the provider's own verification. That is also why it is
-        /// offered rather than written. A contact with no address gets the
+        /// Offered rather than written. A contact with no address gets the
         /// discovered one saved automatically, because there is nothing to lose
-        /// — but replacing an address someone may have been mailing for a year
-        /// is a decision, and the provider being confident is not the same as
-        /// the provider being right.
+        /// - but replacing an address someone may have been mailing for a year
+        /// is a decision, and a confident search is not the same as a right one.
         ///
-        /// Nothing is offered when the addresses match, when the lookup found
+        /// Nothing is offered when the addresses match, when the search found
         /// nothing, or when the field was empty and has just been filled in.
         /// </remarks>
-        private static string? BuildEmailSuggestion(Contact contact, EmailCheckOutcome outcome)
+        private static string? BuildEmailSuggestion(Contact contact, UnlockEmailResult unlock)
         {
             var stored = contact.email?.Trim();
-            var found = outcome.FoundEmail?.Trim();
+            var found = unlock.Email?.Trim();
 
             if (string.IsNullOrWhiteSpace(stored) || string.IsNullOrWhiteSpace(found))
                 return null;
@@ -2549,16 +2661,22 @@
             if (string.Equals(stored, found, StringComparison.OrdinalIgnoreCase))
                 return null;
 
-            var provider = outcome.Source switch
+            // Which of the four stages actually answered. Worth naming: an
+            // address the cache has held for a month and one a model proposed
+            // this minute deserve different amounts of trust from whoever is
+            // deciding whether to accept the correction.
+            var source = unlock.Source switch
             {
+                "cache" => "A previous unlock of this profile",
                 "prospeo" => "Prospeo",
                 "hunter" => "Hunter",
-                _ => outcome.Source
+                "ai" => "An AI web search",
+                _ => "The email search"
             };
 
-            var status = string.IsNullOrWhiteSpace(outcome.Status)
-                ? ""
-                : $" It reports the address as {outcome.Status}.";
+            var confidence = unlock.Confidence is int score
+                ? $" It is {score}% confident."
+                : "";
 
             return ValidationSuggestionJson.Serialize(new[]
             {
@@ -2568,106 +2686,11 @@
                     Field = ValidationSuggestionFields.Email,
                     Current = stored,
                     Suggested = found,
-                    Reason = $"{provider} returned this address for this person " +
-                             $"instead of the one on file.{status}",
+                    Reason = $"{source} returned this address for this person " +
+                             $"instead of the one on file.{confidence}",
                     Status = ValidationSuggestionStatuses.Pending
                 }
             });
-        }
-
-        /// <summary>
-        /// What one lookup established.
-        ///
-        /// <see cref="FoundEmail"/> is carried separately from the comments so a
-        /// contact with an empty address field can be filled in from it: for
-        /// those contacts the check is discovery, not verification, and the
-        /// address is the result rather than a footnote about it.
-        /// </summary>
-        private sealed record EmailCheckOutcome(
-            int Confidence,
-            string? Status,
-            string Source,
-            string Comments,
-            string? FoundEmail);
-
-        private async Task<EmailCheckOutcome> VerifyOneAddressAsync(
-            Contact contact,
-            CancellationToken cancellationToken)
-        {
-            var stored = contact.email?.Trim();
-            var hasStored = !string.IsNullOrWhiteSpace(stored);
-
-            // Prospeo matches on a LinkedIn profile, so a contact without one
-            // goes straight to Hunter rather than spending a lookup that cannot
-            // succeed.
-            if (!string.IsNullOrWhiteSpace(contact.linkedin_url) && _prospeoService.IsConfigured)
-            {
-                var prospeo = await _prospeoService.FindEmailAsync(contact.linkedin_url!, cancellationToken);
-
-                if (prospeo.Found)
-                {
-                    if (!hasStored)
-                        return new EmailCheckOutcome(98, prospeo.EmailStatus, "prospeo",
-                            $"No address was on file. Prospeo found and verified {prospeo.Email}.",
-                            prospeo.Email);
-
-                    var matchesStored = string.Equals(
-                        prospeo.Email, stored, StringComparison.OrdinalIgnoreCase);
-
-                    // A verified address that differs from the stored one is not
-                    // a pass: the record on file is still the wrong address, and
-                    // saying so is the whole value of the check.
-                    return matchesStored
-                        ? new EmailCheckOutcome(98, prospeo.EmailStatus, "prospeo",
-                            "Prospeo verified the address on file.", prospeo.Email)
-                        : new EmailCheckOutcome(60, prospeo.EmailStatus, "prospeo",
-                            $"Prospeo verified a different address for this person: {prospeo.Email}. The address on file may be out of date.",
-                            prospeo.Email);
-                }
-            }
-
-            if (_hunterService.IsConfigured)
-            {
-                var hunter = await _hunterService.FindEmailAsync(
-                    new HunterLookupRequest
-                    {
-                        FullName = contact.full_name ?? $"{contact.first_name} {contact.last_name}".Trim(),
-                        CompanyUrl = contact.website,
-                        Company = contact.company_name,
-                        EmailHint = stored
-                    },
-                    cancellationToken);
-
-                if (hunter.Found)
-                {
-                    if (!hasStored)
-                        return new EmailCheckOutcome(hunter.Score, hunter.VerificationStatus, "hunter",
-                            $"No address was on file. Hunter found {hunter.Email} with a confidence of {hunter.Score}.",
-                            hunter.Email);
-
-                    var matchesStored = string.Equals(
-                        hunter.Email, stored, StringComparison.OrdinalIgnoreCase);
-
-                    return matchesStored
-                        ? new EmailCheckOutcome(hunter.Score, hunter.VerificationStatus, "hunter",
-                            $"Hunter confirmed the address on file with a confidence of {hunter.Score}.",
-                            hunter.Email)
-                        : new EmailCheckOutcome(Math.Min(hunter.Score, 60), hunter.VerificationStatus, "hunter",
-                            $"Hunter found a different address for this person: {hunter.Email}. The address on file may be out of date.",
-                            hunter.Email);
-                }
-
-                return new EmailCheckOutcome(10, null, "hunter",
-                    hunter.RejectedBecause ??
-                        (hasStored
-                            ? "Neither provider could confirm an address for this contact."
-                            : "No address is on file and neither provider could find one."),
-                    null);
-            }
-
-            return new EmailCheckOutcome(0, null, "none",
-                "No email verification provider is configured. An admin needs to add a Prospeo or Hunter API key.",
-                null);
         }
 
         /// <summary>

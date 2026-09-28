@@ -218,6 +218,11 @@ builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
 builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
 builder.Services.AddScoped<IForwardRepository, ForwardRepository>();
 builder.Services.AddScoped<IExtensionRepository, ExtensionRepository>();
+
+// The four-stage email unlock. Scoped rather than a typed client: it makes no
+// HTTP call of its own, it orchestrates the services that do. Both the
+// extension endpoint and the Audience Assurance email check resolve it.
+builder.Services.AddScoped<IEmailUnlockService, EmailUnlockService>();
 // No typed HttpClient: the profile summary now goes through IPitchService /
 // DeepSeekPitchService instead of calling OpenAI directly.
 builder.Services.AddScoped<IExtensionProfileService, ExtensionProfileService>();
