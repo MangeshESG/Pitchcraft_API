@@ -1,16 +1,11 @@
-﻿using Microsoft.AspNetCore.Http.HttpResults;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
 using PitchGenApi.Models;
 using PitchGenApi.Services;
 using Serilog;
-using System.Net;
-using System.Runtime.CompilerServices;
 using System.Text;
-using System.Text.RegularExpressions;
-using static ContactRepository;
 
 public class ContactRepository
 {
@@ -241,25 +236,72 @@ public class ContactRepository
     }
 
 
-    public async Task<string> AddUnsubscribedAsync(int clientId, string email)
+    public async Task<bool> UnsubscribeAsync(string? token = null, int? clientId = null, int? contactId = null, string? email = null)
     {
-        var existing = await _context.UnsubscribedContacts
-            .FirstOrDefaultAsync(x => x.ClientId == clientId && x.Email == email);
-
-        if (existing != null)
-            return "Already Unsubscribed";
-
-        var item = new UnsubscribedContacts
+        // NEW FLOW: Token based
+        if (!string.IsNullOrWhiteSpace(token))
         {
-            ClientId = clientId,
-            Email = email,
-            CreatedAt = DateTime.UtcNow
-        };
+            var tokenData = await _context.UnsubscribeTokens
+                .FirstOrDefaultAsync(x =>
+                    x.Token == token &&
+                    x.IsActive == true);
 
-        _context.UnsubscribedContacts.Add(item);
+            if (tokenData == null)
+                return false;
+
+            clientId = tokenData.ClientId;
+            contactId = tokenData.ContactId;
+            email = tokenData.Email;
+
+            tokenData.IsActive = false;
+            tokenData.UpdatedAt = DateTime.UtcNow;
+        }
+
+        // OLD FLOW:
+        // Token nahi hai to ClientId + ContactId / Email se bhi kaam kare
+        if (string.IsNullOrWhiteSpace(token) &&
+            !clientId.HasValue &&
+            !contactId.HasValue &&
+            string.IsNullOrWhiteSpace(email))
+        {
+            return false;
+        }
+
+        bool alreadyUnsubscribed = false;
+
+        // ClientId + ContactId available hain
+        if (clientId.HasValue && contactId.HasValue)
+        {
+            alreadyUnsubscribed = await _context.UnsubscribedContacts
+                .AnyAsync(x =>
+                    x.ClientId == clientId.Value &&
+                    x.ContactId == contactId.Value);
+        }
+        // Agar IDs nahi hain lekin email hai
+        else if (!string.IsNullOrWhiteSpace(email))
+        {
+            alreadyUnsubscribed = await _context.UnsubscribedContacts
+                .AnyAsync(x =>
+                    x.Email == email); 
+        }
+
+        if (!alreadyUnsubscribed)
+        {
+            var unsubscribe = new UnsubscribedContacts
+            {
+                ClientId = clientId,
+                ContactId = contactId,
+                Email = email,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            await _context.UnsubscribedContacts
+                .AddAsync(unsubscribe);
+        }
+
         await _context.SaveChangesAsync();
 
-        return "Unsubscribed Added Successfully";
+        return true;
     }
 
     public async Task<ContactEmailTimelineDto?> GetEmailTimeline(int contactId)

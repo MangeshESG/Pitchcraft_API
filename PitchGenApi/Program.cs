@@ -177,7 +177,8 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(
                 "http://localhost:3000",
                 "http://app.pitchkraft.ai",
-                "https://app.pitchkraft.ai")
+                "https://app.pitchkraft.ai",
+                "https://link.pitchkraft.ai")
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
@@ -218,6 +219,7 @@ builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
 builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
 builder.Services.AddScoped<IForwardRepository, ForwardRepository>();
 builder.Services.AddScoped<IExtensionRepository, ExtensionRepository>();
+builder.Services.AddScoped<IUnsubscribeRepository,UnsubscribeRepository>();
 // No typed HttpClient: the profile summary now goes through IPitchService /
 // DeepSeekPitchService instead of calling OpenAI directly.
 builder.Services.AddScoped<IExtensionProfileService, ExtensionProfileService>();
