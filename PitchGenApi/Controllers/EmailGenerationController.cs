@@ -321,71 +321,61 @@ namespace PitchGenApi.Controllers
                             professionalSummary);
                 }
 
-                // ---- web / personalization search (non-GPT only) ----
+                // ---- web / personalization search (every model) ----
                 PitchResult? searchResult = null;
                 string webSearchData = "";
                 string filledSearchInstructions = "";
 
-                if (!isGptModel)
-                {
-                    var personalization = campaignPlaceholderValues.TryGetValue("use_personalization_search", out var ps)
-                        ? (ps ?? "").Trim().ToLower()
-                        : "";
+                var personalization = campaignPlaceholderValues.TryGetValue("use_personalization_search", out var ps)
+                    ? (ps ?? "").Trim().ToLower()
+                    : "";
 
-                    if (personalization == "no")
+                if (personalization == "no")
+                {
+                    finalPrompt = finalPrompt.Replace("{web_searched_data}", "");
+                }
+                else
+                {
+                    var instructionTemplate = !string.IsNullOrWhiteSpace(template.TemplateDefinition.WebSearchInstructions)
+                        ? template.TemplateDefinition.WebSearchInstructions
+                        : (campaignPlaceholderValues.TryGetValue("search_objective", out var so) ? so ?? "" : "");
+
+                    var webSearchReplacements =
+                        new Dictionary<string, string>(campaignPlaceholderValues, StringComparer.OrdinalIgnoreCase);
+
+                    webSearchReplacements["hook"] =
+                        (campaignPlaceholderValues.TryGetValue("hook", out var hk) && !string.IsNullOrWhiteSpace(hk))
+                            ? hk
+                            : (campaignPlaceholderValues.TryGetValue("hook_search_terms", out var hst) ? hst ?? "" : "");
+
+                    foreach (var kv in runtimeReplacements)
+                        webSearchReplacements[kv.Key] = kv.Value;
+
+                    filledSearchInstructions = ApplyPlaceholders(instructionTemplate, webSearchReplacements);
+
+                    if (string.IsNullOrWhiteSpace(filledSearchInstructions))
                     {
                         finalPrompt = finalPrompt.Replace("{web_searched_data}", "");
                     }
                     else
                     {
-                        var instructionTemplate = !string.IsNullOrWhiteSpace(template.TemplateDefinition.WebSearchInstructions)
-                            ? template.TemplateDefinition.WebSearchInstructions
-                            : (campaignPlaceholderValues.TryGetValue("search_objective", out var so) ? so ?? "" : "");
-
-                        var webSearchReplacements =
-                            new Dictionary<string, string>(campaignPlaceholderValues, StringComparer.OrdinalIgnoreCase);
-
-                        webSearchReplacements["hook"] =
-                            (campaignPlaceholderValues.TryGetValue("hook", out var hk) && !string.IsNullOrWhiteSpace(hk))
-                                ? hk
-                                : (campaignPlaceholderValues.TryGetValue("hook_search_terms", out var hst) ? hst ?? "" : "");
-
-                        foreach (var kv in runtimeReplacements)
-                            webSearchReplacements[kv.Key] = kv.Value;
-
-                        filledSearchInstructions = ApplyPlaceholders(instructionTemplate, webSearchReplacements);
-
-                        if (string.IsNullOrWhiteSpace(filledSearchInstructions))
+                        searchResult = await GenerateWebSearchByProviderAsync(new EnquiryRequest
                         {
-                            finalPrompt = finalPrompt.Replace("{web_searched_data}", "");
-                        }
-                        else
-                        {
-                            searchResult = await GenerateWebSearchByProviderAsync(new EnquiryRequest
-                            {
-                                Prompt = filledSearchInstructions,
-                                ScrappedData = "",
-                                ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
-                            }, parsedClientId);
+                            Prompt = filledSearchInstructions,
+                            ScrappedData = "",
+                            ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
+                        }, parsedClientId);
 
-                            if (searchResult != null && searchResult.IsSuccess)
-                                webSearchData = searchResult.Content ?? "";
+                        if (searchResult != null && searchResult.IsSuccess)
+                            webSearchData = searchResult.Content ?? "";
 
-                            finalPrompt = finalPrompt.Contains("{web_searched_data}")
-                                ? finalPrompt.Replace("{web_searched_data}", webSearchData)
-                                : $"{finalPrompt}\n\n{webSearchData}";
-                        }
+                        finalPrompt = finalPrompt.Contains("{web_searched_data}")
+                            ? finalPrompt.Replace("{web_searched_data}", webSearchData)
+                            : $"{finalPrompt}\n\n{webSearchData}";
                     }
+                }
 
-                    runtimeReplacements["search_output_summary"] = webSearchData;
-                }
-                else
-                {
-                    // GPT models do their own research, so the search block above
-                    // is skipped — but the blueprint's {web_searched_data} slot
-                    // still has to go, or the literal token is sent to the model.
-                    finalPrompt = finalPrompt.Replace("{web_searched_data}", "");
-                }
+                runtimeReplacements["search_output_summary"] = webSearchData;
 
                 // ---- system prompt is EMPTY (matches frontend) ----
                 var systemPrompt = "";
@@ -395,11 +385,14 @@ namespace PitchGenApi.Controllers
                 // UI shows is byte-for-byte what the model received.
                 var promptSentToAi = finalPrompt;
 
+                // The dedicated search above already supplied the research, so
+                // the writing call must not search again on any provider.
                 var bodyResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                 {
                     Prompt = promptSentToAi,
                     ScrappedData = systemPrompt,
-                    ModelName = selectedModel
+                    ModelName = selectedModel,
+                    DisableWebSearchTool = true
                 });
 
                 if (!bodyResult.IsSuccess || string.IsNullOrWhiteSpace(bodyResult.Content))
@@ -742,8 +735,8 @@ namespace PitchGenApi.Controllers
         // Campaign placeholder values are authored in rich-text fields, so they
         // arrive as HTML. The model only needs the words — sending the markup
         // burns tokens and buries the instruction. The example output email is
-        // the worst offender (a whole styled email), so it also gets the
-        // mail-specific cleanup: no footers, no tracking links, no quoted trail.
+        // the exception: its HTML is kept so the model reproduces the formatting
+        // (paragraphs, bold, lists, links); only non-content markup is dropped.
         private static readonly HashSet<string> ExampleOutputKeys =
             new(StringComparer.OrdinalIgnoreCase)
             {
@@ -757,7 +750,7 @@ namespace PitchGenApi.Controllers
                 return value ?? "";
 
             if (ExampleOutputKeys.Contains(key))
-                return PromptTextCleaner.CleanEmailBody(value, maxChars: 0);
+                return PromptTextCleaner.CleanEmailHtml(value);
 
             return PromptTextCleaner.LooksLikeHtml(value)
                 ? PromptTextCleaner.StripHtml(value)

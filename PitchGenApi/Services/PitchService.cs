@@ -86,7 +86,7 @@ namespace PitchGenApi.Services
             AiModelDefaults.ApplySampling(
                 requestData, request.ModelName, (double)rate.Temperature);
 
-            if (!isSearchPreviewModel)
+            if (!isSearchPreviewModel && !request.DisableWebSearchTool)
             {
                 requestData["tools"] = new object[]
                 {
@@ -376,19 +376,38 @@ namespace PitchGenApi.Services
             }
         }
 
+        /// <summary>
+        /// Walks the Responses output items when the convenience output_text
+        /// field isn't present.
+        ///
+        /// Only assistant answers count. The same array carries reasoning items,
+        /// whose content is the model's private chain of thought, and commentary
+        /// it narrates between searches. Both have a text field, so taking every
+        /// text field prepended pages of deliberation to the generated email.
+        /// </summary>
         private string ExtractText(JObject parsed)
         {
-            var outputs = parsed["output"] as JArray;
-            if (outputs == null) return "";
+            if (parsed["output"] is not JArray outputs) return "";
 
             var sb = new StringBuilder();
+
             foreach (var item in outputs)
             {
-                var contentArray = item["content"] as JArray;
-                if (contentArray == null) continue;
+                if (!string.Equals(item["type"]?.ToString(), "message", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (string.Equals(item["phase"]?.ToString(), "commentary", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (item["content"] is not JArray contentArray) continue;
 
                 foreach (var c in contentArray)
                 {
+                    // output_text is the answer; refusals and any other content
+                    // type are not something a caller can use.
+                    if (!string.Equals(c["type"]?.ToString(), "output_text", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
                     string? text = c["text"]?.ToString();
                     if (!string.IsNullOrWhiteSpace(text))
                         sb.AppendLine(text.Trim());

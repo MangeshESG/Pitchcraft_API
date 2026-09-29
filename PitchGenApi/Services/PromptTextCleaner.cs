@@ -169,6 +169,40 @@ namespace PitchGenApi.Services
         }
 
         /// <summary>
+        /// Keeps the markup of an HTML email (paragraphs, bold, lists, links,
+        /// inline styles) so the model can reproduce its formatting, and only
+        /// drops what carries nothing for it: scripts/styles, comments, event
+        /// handlers, class/id attributes, embedded base64 images and invisible
+        /// characters. Plain-text input comes back unchanged apart from trimming.
+        /// </summary>
+        public static string CleanEmailHtml(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return "";
+
+            if (!LooksLikeHtml(input))
+                return input.Trim();
+
+            var html = NonContentBlocks.Replace(input, "");
+            html = HtmlComments.Replace(html, "");
+            html = EventHandlerAttrs.Replace(html, "");
+            html = ClassIdAttrs.Replace(html, "");
+            html = DataUri.Replace(html, "");
+            html = InvisibleChars.Replace(html, "");
+            html = Regex.Replace(html, @">\s+<", "><");
+
+            return html.Trim();
+        }
+
+        private static readonly Regex EventHandlerAttrs = new(
+            @"\s+on[a-z]+\s*=\s*(""[^""]*""|'[^']*'|[^\s>]+)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex ClassIdAttrs = new(
+            @"\s+(class|id)\s*=\s*(""[^""]*""|'[^']*'|[^\s>]+)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
         /// True when the value looks like markup rather than plain text, so
         /// callers can leave hand-typed text untouched.
         /// </summary>

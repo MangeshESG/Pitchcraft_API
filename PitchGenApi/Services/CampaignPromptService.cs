@@ -575,24 +575,39 @@ namespace PitchGenApi.Services
             }
         }
 
+        /// <summary>
+        /// Walks the Responses output items when the convenience output_text
+        /// field isn't present.
+        ///
+        /// Only assistant answers count. Reasoning items and the commentary a
+        /// model narrates between searches sit in the same array and carry a
+        /// text field too, so taking every text field returns the deliberation
+        /// with the answer buried in it.
+        /// </summary>
         private string ExtractTextFromOutputs(JObject parsed)
         {
-            var outputs = parsed["output"] as JArray;
-            if (outputs == null) return string.Empty;
+            if (parsed["output"] is not JArray outputs) return string.Empty;
 
             var sb = new StringBuilder();
 
             foreach (var outItem in outputs)
             {
-                var contentArray = outItem["content"] as JArray;
-                if (contentArray != null)
+                if (!string.Equals(outItem["type"]?.ToString(), "message", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (string.Equals(outItem["phase"]?.ToString(), "commentary", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (outItem["content"] is not JArray contentArray) continue;
+
+                foreach (var c in contentArray)
                 {
-                    foreach (var c in contentArray)
-                    {
-                        var text = c["text"]?.ToString();
-                        if (!string.IsNullOrWhiteSpace(text))
-                            sb.AppendLine(text.Trim());
-                    }
+                    if (!string.Equals(c["type"]?.ToString(), "output_text", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var text = c["text"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(text))
+                        sb.AppendLine(text.Trim());
                 }
             }
 

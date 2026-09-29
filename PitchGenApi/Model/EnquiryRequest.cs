@@ -18,5 +18,13 @@
         /// be able to set it.
         /// </summary>
         public int? MaxTokens { get; set; }
+
+        /// <summary>
+        /// When true, the generation call is sent without the provider's
+        /// built-in web search tool. Set by callers that already ran a
+        /// dedicated search step and passed its result in the prompt, so the
+        /// model should write from that rather than search (and bill) again.
+        /// </summary>
+        public bool DisableWebSearchTool { get; set; }
     }
 }
