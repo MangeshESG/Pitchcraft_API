@@ -506,7 +506,8 @@ namespace PitchGenApi.Controllers
                             dto.isFollowUp,
                             dto.CcEmail,
                             dto.BccEmail,
-                            dto.Outboxid
+                            dto.Outboxid,
+                            dto.IsContactCompose
                         );
                         break;
 
@@ -518,7 +519,8 @@ namespace PitchGenApi.Controllers
                             dto.isFollowUp,
                             dto.CcEmail,
                             dto.BccEmail,
-                            dto.Outboxid
+                            dto.Outboxid,
+                            dto.IsContactCompose
                         );
                         break;
 
@@ -530,7 +532,8 @@ namespace PitchGenApi.Controllers
                             dto.isFollowUp,
                             dto.CcEmail,
                             dto.BccEmail,
-                            dto.Outboxid
+                            dto.Outboxid,
+                            dto.IsContactCompose
                         );
                         break;
 

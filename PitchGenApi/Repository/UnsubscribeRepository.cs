@@ -1,3 +1,4 @@
+using Microsoft.Data.SqlClient;
 ﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
@@ -56,10 +57,10 @@ public class UnsubscribeRepository : IUnsubscribeRepository
             await _context.UnsubscribeTokens
                 .FirstOrDefaultAsync(x =>
                     x.ClientId == clientId &&
-                    x.ContactId == contactId &&
-                    x.IsActive == true);
+                    x.ContactId == contactId);
 
         string token;
+        UnsubscribeTokens? unsubscribeToken = null;
 
         if (existingToken != null)
         {
@@ -82,7 +83,7 @@ public class UnsubscribeRepository : IUnsubscribeRepository
                 .ToHexString(bytes)
                 .ToLowerInvariant();
 
-            var unsubscribeToken =
+            unsubscribeToken =
                 new UnsubscribeTokens
                 {
                     ClientId = clientId,
@@ -99,12 +100,82 @@ public class UnsubscribeRepository : IUnsubscribeRepository
                 .AddAsync(unsubscribeToken);
         }
 
-        await _context.SaveChangesAsync();
+        try
+        {
+            await _context.SaveChangesAsync();
+        }
+        catch (DbUpdateException ex) when (IsDuplicateTokenKey(ex) && existingToken == null)
+        {
+            // Another request created the token after our lookup.
+            _context.Entry(unsubscribeToken!).State = EntityState.Detached;
+            existingToken = await _context.UnsubscribeTokens.SingleAsync(x =>
+                x.ClientId == clientId && x.ContactId == contactId);
+            token = existingToken.Token;
+        }
 
         var unsubscribeLink =
             $"https://link.pitchkraft.ai/{companySlug}/unsubscribe" +
             $"?token={Uri.EscapeDataString(token)}";
 
         return unsubscribeLink;
+    }
+
+    private static bool IsDuplicateTokenKey(DbUpdateException exception)
+    {
+        return exception.InnerException is SqlException sqlException
+            && (sqlException.Number == 2601 || sqlException.Number == 2627);
+    }
+
+    public async Task<string> GenerateOneClickUnsubscribeLinkAsync(string companyName, int clientId, int contactId, string email)
+    {
+        var tokenData = await _context.UnsubscribeTokens
+            .FirstOrDefaultAsync(x =>
+                x.ClientId == clientId &&
+                x.ContactId == contactId);
+
+        string token;
+
+        if (tokenData != null)
+        {
+            token = tokenData.Token;
+        }
+        else
+        {
+            var bytes = RandomNumberGenerator.GetBytes(32);
+
+            token = Convert
+                .ToHexString(bytes)
+                .ToLowerInvariant();
+
+            var newToken = new UnsubscribeTokens
+            {
+                ClientId = clientId,
+                ContactId = contactId,
+                Email = email,
+                CompanyName = companyName,
+                Token = token,
+                CreatedAt = DateTime.UtcNow,
+                IsActive = true
+            };
+
+            await _context.UnsubscribeTokens.AddAsync(newToken);
+
+            try
+            {
+                await _context.SaveChangesAsync();
+            }
+            catch (DbUpdateException ex) when (IsDuplicateTokenKey(ex))
+            {
+                // Another request created the token after our lookup.
+                _context.Entry(newToken).State = EntityState.Detached;
+                tokenData = await _context.UnsubscribeTokens.SingleAsync(x =>
+                    x.ClientId == clientId && x.ContactId == contactId);
+                token = tokenData.Token;
+            }
+        }
+
+        return
+            $"https://localhost:7216/api/crm/OneClick" +
+            $"?token={Uri.EscapeDataString(token)}";
     }
 }

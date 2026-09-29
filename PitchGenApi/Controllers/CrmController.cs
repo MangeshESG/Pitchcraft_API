@@ -3991,6 +3991,49 @@ namespace PitchGenApi.Controllers
             }
         }
 
+        [HttpGet("rfc-unsubscribe-by-id")]
+        public async Task<IActionResult> GetRfcUnsubscribeById([FromQuery] int clientId)
+        {
+            var client = await _context.ClientDetails
+                .Where(c => c.Id == clientId)
+                .Select(c => new { c.Id, c.IsRfcUnsubscribeAllowed })
+                .FirstOrDefaultAsync();
+
+            if (client == null)
+            {
+                return NotFound(new { message = "Client not found" });
+            }
+
+            return Ok(new
+            {
+                clientId = client.Id,
+                isRfcUnsubscribeAllowed = client.IsRfcUnsubscribeAllowed
+            });
+        }
+
+        [HttpPost("update-rfc-unsubscribe")]
+        public async Task<IActionResult> UpdateRfcUnsubscribe(
+            [FromQuery] int clientId,
+            [FromQuery] bool isRfcUnsubscribeAllowed)
+        {
+            var client = await _context.ClientDetails
+                .FirstOrDefaultAsync(c => c.Id == clientId);
+
+            if (client == null)
+            {
+                return NotFound(new { message = "Client not found" });
+            }
+
+            client.IsRfcUnsubscribeAllowed = isRfcUnsubscribeAllowed;
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                clientId,
+                isRfcUnsubscribeAllowed = client.IsRfcUnsubscribeAllowed
+            });
+        }
+
         [HttpPost("updatebounceback")]
         public async Task<IActionResult> UpdateBounceBack([FromQuery] int clientId, [FromQuery] bool bounceBack)
         {
@@ -5035,7 +5078,7 @@ namespace PitchGenApi.Controllers
             try
             {
                 var link = await _unsubscribeRepository
-                        .GenerateUnsubscribeLinkAsync(
+                        .GenerateOneClickUnsubscribeLinkAsync(
                             companyName,
                             clientId,
                             contactId,
@@ -5111,6 +5154,33 @@ namespace PitchGenApi.Controllers
                 success = true,
                 message = "Unsubscribed successfully."
             });
+        }
+
+        [HttpPost("OneClick")]
+        public async Task<IActionResult> OneClickUnsubscribe([FromQuery] string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Token is required."
+                });
+            }
+
+            var response = await _contactRepository
+                .UnsubscribeAsync(token: token);
+
+            if (!response)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Invalid or expired unsubscribe token."
+                });
+            }
+
+            return Ok();
         }
     }
 

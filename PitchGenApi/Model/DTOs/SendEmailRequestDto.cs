@@ -6,6 +6,7 @@ namespace PitchGenApi.Model.DTOs
         public int contactid { get; set; }
         public int? campaignid { get; set; }
         public bool isFollowUp { get; set; }
+        public bool IsContactCompose { get; set; }
         public List<string>? CcEmail { get; set; }
         public List<string>? BccEmail { get; set; }
         public int Outboxid { get; set; }
