@@ -247,6 +247,10 @@ builder.Services.AddScoped<IValidationSettingsService, ValidationSettingsService
 // Per-contact personalization inputs shared by email and LinkedIn generation
 builder.Services.AddScoped<IContactPromptContextService, ContactPromptContextService>();
 
+// Gate on the account- and credit-granting endpoints. Being an admin is not
+// enough for those; the caller has to be listed under SuperAdmins:ClientIds.
+builder.Services.AddScoped<ISuperAdminGuard, SuperAdminGuard>();
+
 // Hunter.io, the stage after the AI email search. Its own timeout sits just
 // above the max_duration the service asks Hunter for, so a slow lookup ends as
 // a skipped stage rather than holding the unlock open.

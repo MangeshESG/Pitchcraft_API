@@ -29,10 +29,11 @@ namespace PitchGenApi.Controllers
         private readonly ICompanyAlertService _companyAlert;
         private readonly DefaultCustomFieldSeeder _defaultCustomFieldSeeder;
         private readonly ISecuritySettingsService _securitySettings;
+        private readonly ISuperAdminGuard _superAdminGuard;
 
 
 
-        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert, DefaultCustomFieldSeeder defaultCustomFieldSeeder, ISecuritySettingsService securitySettings)
+        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert, DefaultCustomFieldSeeder defaultCustomFieldSeeder, ISecuritySettingsService securitySettings, ISuperAdminGuard superAdminGuard)
         {
             _context = context;
             _userRepository = userRepository;
@@ -43,6 +44,7 @@ namespace PitchGenApi.Controllers
             _companyAlert = companyAlert;
             _defaultCustomFieldSeeder = defaultCustomFieldSeeder;
             _securitySettings = securitySettings;
+            _superAdminGuard = superAdminGuard;
         }
 
         [HttpPost("login")]
@@ -528,10 +530,52 @@ namespace PitchGenApi.Controllers
             public int RequestedBy { get; set; }
         }
 
+        /// <summary>
+        /// Whether the signed-in admin is on the super-admin allowlist.
+        ///
+        /// Only so the admin page can hide the Accounts and Credits tabs from
+        /// admins who would be refused anyway — every action still checks for
+        /// itself, so a "true" from here grants nothing on its own.
+        /// </summary>
+        [Authorize]
+        [HttpGet("admin/is-super-admin")]
+        public async Task<IActionResult> IsSuperAdmin()
+        {
+            var check = await _superAdminGuard.AuthorizeAsync(User);
+
+            return Ok(new { allowed = check.IsAllowed });
+        }
+
+        /// <summary>
+        /// Creates a client account from the admin page (Settings &gt; Admin &gt;
+        /// Accounts), for onboarding someone without sending them through
+        /// sign-up.
+        ///
+        /// Limited to the client ids listed under <c>SuperAdmins:ClientIds</c>
+        /// rather than to admins in general: this hands out working logins,
+        /// so it is a narrower permission than the rest of the admin page.
+        /// </summary>
+        [Authorize]
         [HttpPost("admin/create-user")]
         public async Task<IActionResult> CreateUserByAdmin(
         [FromBody] AdminCreateUserRequest request)
         {
+            var check = await _superAdminGuard.AuthorizeAsync(User);
+
+            if (!check.IsAllowed)
+                return StatusCode(check.StatusCode, new { message = check.Message });
+
+            if (request == null ||
+                string.IsNullOrWhiteSpace(request.Email) ||
+                string.IsNullOrWhiteSpace(request.Username) ||
+                string.IsNullOrWhiteSpace(request.Password))
+            {
+                return BadRequest(new
+                {
+                    message = "Email, username and password are required."
+                });
+            }
+
             try
             {
                 // Check duplicate email/username
@@ -584,6 +628,8 @@ namespace PitchGenApi.Controllers
                     0,
                     null);
 
+                Console.WriteLine(
+                    $"✅ Admin {check.CallerId} created client {client.Username} ({client.Id})");
 
                 return Ok(new
                 {

@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Http.HttpResults;
+﻿using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
@@ -711,6 +711,143 @@ namespace PitchGenApi.Repositories
                 Console.WriteLine($"❌ Error in SaveUserCreditsAsync: {ex.Message}");
                 Console.WriteLine(ex.StackTrace);
                 throw;
+            }
+        }
+
+        /// <summary>
+        /// Removes credits from a client's balance — the counterpart to the
+        /// "add credits" path above, for a grant made to the wrong account, a
+        /// refund taken back, or a trial being wound down.
+        ///
+        /// Custom credit goes first and the plan allowance second, which is
+        /// the order <c>CreditDeduction</c> spends them in: taking back a
+        /// grant should undo the grant rather than eat into what the client
+        /// paid for.
+        ///
+        /// All-or-nothing. A request for more than the client holds removes
+        /// nothing and reports the balance, so an admin is never left guessing
+        /// how much of a correction actually landed.
+        ///
+        /// UsedCredit and LimitUsed are deliberately left alone: an admin
+        /// removal is not consumption, and counting it as usage would burn
+        /// monthly allowance on work the client never ran.
+        /// </summary>
+        public async Task<ReduceUserCreditsResult> ReduceUserCreditsAsync(
+            int clientId, int credits, string? reason)
+        {
+            var finalCredit = await _context.FinalUserCredit
+                .FirstOrDefaultAsync(f => f.ClientId == clientId);
+
+            if (finalCredit == null)
+            {
+                return new ReduceUserCreditsResult
+                {
+                    Success = false,
+                    Message = "This client has no credit record yet, so there is nothing to remove."
+                };
+            }
+
+            var custom = finalCredit.CustomLimit ?? 0;
+            var plan = finalCredit.TotalCredit ?? 0;
+
+            if (credits > custom + plan)
+            {
+                return new ReduceUserCreditsResult
+                {
+                    Success = false,
+                    Message =
+                        $"This client holds {custom + plan} credits ({custom} custom, {plan} plan), " +
+                        $"so {credits} cannot be removed.",
+                    RemainingCustom = custom,
+                    RemainingPlan = plan
+                };
+            }
+
+            var fromCustom = Math.Min(credits, custom);
+            var fromPlan = credits - fromCustom;
+
+            finalCredit.CustomLimit = custom - fromCustom;
+            finalCredit.TotalCredit = plan - fromPlan;
+            finalCredit.UpdatedAt = DateTime.UtcNow;
+            _context.FinalUserCredit.Update(finalCredit);
+
+            // The per-row ledger has to move with the aggregate: CreditDeduction
+            // needs an active row that still covers the spend, so leaving the
+            // rows untouched would let a client keep spending credit the
+            // aggregate says is gone.
+            await DrainCreditLedgerAsync(clientId, fromCustom, customBucket: true);
+            await DrainCreditLedgerAsync(clientId, fromPlan, customBucket: false);
+
+            await _context.SaveChangesAsync();
+
+            Console.WriteLine(
+                $"✅ Removed {credits} credits from ClientId {clientId} " +
+                $"({fromCustom} custom, {fromPlan} plan). Reason: {reason ?? "not given"}");
+
+            return new ReduceUserCreditsResult
+            {
+                Success = true,
+                Message = $"Removed {credits} credits.",
+                RemovedFromCustom = fromCustom,
+                RemovedFromPlan = fromPlan,
+                RemainingCustom = finalCredit.CustomLimit ?? 0,
+                RemainingPlan = finalCredit.TotalCredit ?? 0
+            };
+        }
+
+        /// <summary>
+        /// Takes <paramref name="units"/> off the client's active UserCredits
+        /// rows in one bucket, newest first, clamping each row at zero and
+        /// moving on to the next. Spreading rather than hitting one row is
+        /// what keeps the rows summing to the aggregate when a grant was made
+        /// over several top-ups.
+        /// </summary>
+        private async Task DrainCreditLedgerAsync(int clientId, int units, bool customBucket)
+        {
+            if (units <= 0)
+                return;
+
+            var query = _context.UserCredits
+                .Where(u =>
+                    u.ClientId == clientId &&
+                    u.Status != null &&
+                    u.Status.ToLower() == "active");
+
+            query = customBucket
+                ? query.Where(u => u.Plane == "Custom Credit" || u.Plane == "Internal")
+                : query.Where(u => u.Plane != "Custom Credit" && u.Plane != "Internal");
+
+            var rows = await query
+                .OrderByDescending(u => u.StartDate ?? u.CreatedAt)
+                .ToListAsync();
+
+            var remaining = units;
+
+            foreach (var row in rows)
+            {
+                if (remaining <= 0)
+                    break;
+
+                var available = row.Credits ?? 0;
+
+                if (available <= 0)
+                    continue;
+
+                var taken = Math.Min(available, remaining);
+                row.Credits = available - taken;
+                remaining -= taken;
+
+                _context.UserCredits.Update(row);
+            }
+
+            if (remaining > 0)
+            {
+                // The aggregate said the credit was there but no active row
+                // holds it — worth a line, and not worth failing the removal
+                // over: the balance the client spends against is the aggregate.
+                Console.WriteLine(
+                    $"⚠️ ClientId {clientId}: {remaining} of {units} " +
+                    $"{(customBucket ? "custom" : "plan")} credits had no active row to come off.");
             }
         }
     }

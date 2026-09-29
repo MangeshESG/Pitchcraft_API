@@ -19,5 +19,12 @@ namespace PitchGenApi.Repositories
         Task<PlanHistoryPagedResult<object>> GetPlanHistoryByClientIdAsync(int clientId, int pageNumber = 1, int pageSize = 10);
         Task<string> CreateCreditPurchaseIntentAsync(string userId, int credits);
 
+        /// <summary>
+        /// Takes credits off a client's balance, custom credit first, then the
+        /// plan allowance. All-or-nothing: a request for more than they hold
+        /// removes nothing and comes back with the balance.
+        /// </summary>
+        Task<ReduceUserCreditsResult> ReduceUserCreditsAsync(int clientId, int credits, string? reason);
+
     }
 }
