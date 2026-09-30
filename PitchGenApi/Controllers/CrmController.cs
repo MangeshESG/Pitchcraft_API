@@ -17,6 +17,7 @@ using Serilog;
 using System.Globalization;
 using System.Text.Json.Serialization;
 using System.Linq.Expressions;
+using PitchGenApi.Interfaces;
 
 
 
@@ -112,12 +113,13 @@ namespace PitchGenApi.Controllers
 
         private readonly AppDbContext _context;
         private readonly ContactRepository _contactRepository;
+        private readonly IUnsubscribeRepository _unsubscribeRepository;
 
-        public CrmController(AppDbContext context, ContactRepository contactRepository)
+        public CrmController(AppDbContext context, ContactRepository contactRepository, IUnsubscribeRepository unsubscribeRepository)
         {
             _context = context;
             _contactRepository = contactRepository;
-
+            _unsubscribeRepository = unsubscribeRepository;
         }
 
         // ===========================================================
@@ -780,6 +782,7 @@ namespace PitchGenApi.Controllers
             if (dto == null || dto.ClientId <= 0)
                 return BadRequest(new { success = false, message = "clientId must be greater than 0." });
             dto.ScopeType = dto.ScopeType?.Trim().ToLowerInvariant();
+
             if (!IsValidColumnScope(dto.ScopeType, dto.ScopeId))
                 return BadRequest(new { success = false, message = "A valid scopeType (list, segment or view) and scopeId are required." });
 
@@ -3374,10 +3377,19 @@ namespace PitchGenApi.Controllers
 
 
         [HttpGet("UnsubscribeContacts")]
-        public async Task<IActionResult> UnsubscribeContacts([FromQuery] int ClientId, [FromQuery] string email)
+        public async Task<IActionResult> UnsubscribeContacts([FromQuery] int clientId, [FromQuery] string email)
         {
-            var response = await _contactRepository.AddUnsubscribedAsync(ClientId, email);
-            return Ok(response);
+            var response = await _contactRepository.UnsubscribeAsync(
+                clientId: clientId,
+                email: email);
+
+            return Ok(new
+            {
+                success = response,
+                message = response
+                    ? "Unsubscribed successfully."
+                    : "Unable to unsubscribe."
+            });
         }
 
 
@@ -3977,6 +3989,49 @@ namespace PitchGenApi.Controllers
             {
                 return StatusCode(500, new { message = "Error fetching tracking status" });
             }
+        }
+
+        [HttpGet("rfc-unsubscribe-by-id")]
+        public async Task<IActionResult> GetRfcUnsubscribeById([FromQuery] int clientId)
+        {
+            var client = await _context.ClientDetails
+                .Where(c => c.Id == clientId)
+                .Select(c => new { c.Id, c.IsRfcUnsubscribeAllowed })
+                .FirstOrDefaultAsync();
+
+            if (client == null)
+            {
+                return NotFound(new { message = "Client not found" });
+            }
+
+            return Ok(new
+            {
+                clientId = client.Id,
+                isRfcUnsubscribeAllowed = client.IsRfcUnsubscribeAllowed
+            });
+        }
+
+        [HttpPost("update-rfc-unsubscribe")]
+        public async Task<IActionResult> UpdateRfcUnsubscribe(
+            [FromQuery] int clientId,
+            [FromQuery] bool isRfcUnsubscribeAllowed)
+        {
+            var client = await _context.ClientDetails
+                .FirstOrDefaultAsync(c => c.Id == clientId);
+
+            if (client == null)
+            {
+                return NotFound(new { message = "Client not found" });
+            }
+
+            client.IsRfcUnsubscribeAllowed = isRfcUnsubscribeAllowed;
+            await _context.SaveChangesAsync();
+
+            return Ok(new
+            {
+                clientId,
+                isRfcUnsubscribeAllowed = client.IsRfcUnsubscribeAllowed
+            });
         }
 
         [HttpPost("updatebounceback")]
@@ -5017,6 +5072,116 @@ namespace PitchGenApi.Controllers
             return Ok(emails); // plain string[]; the frontend also accepts { emails: [...] }
         }
 
+        [HttpGet("GenerateLink")]
+        public async Task<IActionResult> GenerateLink(string companyName,int clientId, int contactId,string email)
+        {
+            try
+            {
+                var link = await _unsubscribeRepository
+                        .GenerateOneClickUnsubscribeLinkAsync(
+                            companyName,
+                            clientId,
+                            contactId,
+                            email);
+
+                return Ok(new
+                {
+                    success = true,
+                    unsubscribeLink = link
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
+
+        [HttpGet("/{companySlug}/unsubscribe")]
+        public IActionResult RedirectToUnsubscribePage(string companySlug, [FromQuery] string token)
+        {
+            if (string.IsNullOrWhiteSpace(companySlug))
+                return BadRequest("Company is required.");
+
+            if (string.IsNullOrWhiteSpace(token))
+                return BadRequest("Token is required.");
+
+            var redirectUrl =
+                $"https://app.pitchkraft.ai/unsubscribe" +
+                $"?company={Uri.EscapeDataString(companySlug)}" +
+                $"&token={Uri.EscapeDataString(token)}";
+
+            return Redirect(redirectUrl);
+        }
+
+
+        [HttpPost("UnsubscribeByToken")]
+        public async Task<IActionResult> UnsubscribeByToken([FromQuery] string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Token is required."
+                });
+            }
+
+            var result = await _contactRepository.UnsubscribeAsync(token: token);
+
+            if (!result)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Invalid or expired unsubscribe token."
+                });
+            }
+
+            return Ok(new
+            {
+                success = true,
+                message = "Unsubscribed successfully."
+            });
+        }
+
+        [HttpPost("OneClick")]
+        public async Task<IActionResult> OneClickUnsubscribe([FromQuery] string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Token is required."
+                });
+            }
+
+            var response = await _contactRepository
+                .UnsubscribeAsync(token: token);
+
+            if (!response)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "Invalid or expired unsubscribe token."
+                });
+            }
+
+            return Ok();
+        }
     }
 
 }

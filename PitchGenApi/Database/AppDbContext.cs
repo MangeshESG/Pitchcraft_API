@@ -91,7 +91,7 @@ namespace PitchGenApi.Database
         public DbSet<ContactValidationJob> contact_validation_jobs { get; set; }
         public DbSet<ContactValidationJobItem> contact_validation_job_items { get; set; }
         public DbSet<CompanyIntelligence> company_intelligence { get; set; }
-
+        public DbSet<UnsubscribeTokens> UnsubscribeTokens { get; set; }
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             modelBuilder.Entity<ModelRate>().ToTable("ModelRates");

@@ -18,14 +18,51 @@ public class EmailSendingHelper
     private readonly IDomainVerificationRepository _domain;
     private readonly IConfiguration _config;
     private readonly IInboxRepository _inboxRepository;
+    private readonly IUnsubscribeRepository _unsubscribeRepository;
      
-    public EmailSendingHelper(AppDbContext context, ContactRepository repository,IDomainVerificationRepository domain, IConfiguration config, IInboxRepository inboxRepository)
+    public EmailSendingHelper(
+        AppDbContext context,
+        ContactRepository repository,
+        IDomainVerificationRepository domain,
+        IConfiguration config,
+        IInboxRepository inboxRepository,
+        IUnsubscribeRepository unsubscribeRepository)
     {
         _context = context;
         _repository = repository;
         _domain = domain;
         _config = config;
         _inboxRepository = inboxRepository;
+        _unsubscribeRepository = unsubscribeRepository;
+    }
+
+    private async Task AddOneClickUnsubscribeHeadersAsync(
+        MimeMessage message,
+        ClientDetails? client,
+        int clientId,
+        int contactId,
+        string email,
+        bool isContactCompose)
+    {
+        if (isContactCompose || client?.IsRfcUnsubscribeAllowed != true)
+        {
+            return;
+        }
+
+        var unsubscribeLink = await _unsubscribeRepository.GenerateOneClickUnsubscribeLinkAsync(
+            string.IsNullOrWhiteSpace(client.CompanyName) ? "Pitchkraft" : client.CompanyName,
+            clientId,
+            contactId,
+            email);
+
+        if (!Uri.TryCreate(unsubscribeLink, UriKind.Absolute, out var unsubscribeUri)
+            || unsubscribeUri.Scheme != Uri.UriSchemeHttps)
+        {
+            throw new InvalidOperationException("One-click unsubscribe link must be an HTTPS URL.");
+        }
+
+        message.Headers.Add("List-Unsubscribe", $"<{unsubscribeUri.AbsoluteUri}>");
+        message.Headers.Add("List-Unsubscribe-Post", "List-Unsubscribe=One-Click");
     }
 
     private static List<string> NormalizeEmailList(IEnumerable<string>? emails)
@@ -107,7 +144,7 @@ public class EmailSendingHelper
     {
         return SendEmailUsingSmtp(clientId, contactId, CampaignId, isFollowUp, null, NormalizeEmailList(BccEmail), SmtpID);
     }
-    public async Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId,bool isFollowUp, List<string>? CcEmail = null, List<string>? BccEmail = null, int SmtpID = 0)
+    public async Task<EmailSendResult> SendEmailUsingSmtp(int clientId, int contactId, int? CampaignId,bool isFollowUp, List<string>? CcEmail = null, List<string>? BccEmail = null, int SmtpID = 0, bool isContactCompose = false)
     {
         var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
 
@@ -294,6 +331,8 @@ public class EmailSendingHelper
                     envelopeRecipients.Add(bccRecipient);
                 }
                 toMessage.Subject = EmailDetails.email_subject;
+                await AddOneClickUnsubscribeHeadersAsync(
+                    toMessage, user, clientId, contactId, EmailDetails.email, isContactCompose);
 
                 toMessage.Headers.Replace(HeaderId.MessageId, messageId); // keep <> brackets
 
@@ -407,7 +446,7 @@ public class EmailSendingHelper
     }
 
     public async Task<EmailSendResult> SendEmailUsingGmailApi(
-    int clientId, int contactId, int? CampaignId, bool isFollowUp, List<string>? CcEmail = null, List<string>? BccEmail = null, int OutBoxId = 0)
+    int clientId, int contactId, int? CampaignId, bool isFollowUp, List<string>? CcEmail = null, List<string>? BccEmail = null, int OutBoxId = 0, bool isContactCompose = false)
     {
         var EmailDetails = await _context.contacts.FirstOrDefaultAsync(x => x.id == contactId);
         var Blueprint = CampaignId.HasValue
@@ -499,6 +538,8 @@ public class EmailSendingHelper
                 mimeMessage.Bcc.Add(new MailboxAddress("", bcc));
             }
             mimeMessage.Subject = EmailDetails.email_subject;
+            await AddOneClickUnsubscribeHeadersAsync(
+                mimeMessage, user, clientId, contactId, EmailDetails.email, isContactCompose);
 
             mimeMessage.Headers.Add("Message-ID", customMessageId);
             mimeMessage.Headers.Add("X-Tracking-Id", trackingId);
@@ -617,7 +658,8 @@ public class EmailSendingHelper
     bool isFollowUp,
     List<string>? CcEmail = null,
     List<string>? BccEmail = null,
-    int OutBoxId = 0)
+    int OutBoxId = 0,
+    bool isContactCompose = false)
     {
         var EmailDetails = await _context.contacts
             .FirstOrDefaultAsync(x => x.id == contactId);
@@ -696,46 +738,38 @@ public class EmailSendingHelper
                 finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
             }
 
-            var ccRecipients = NormalizeEmailList(CcEmail)
-                .Select(email => new { emailAddress = new { address = email } })
-                .ToArray();
-            var bccRecipients = NormalizeEmailList(BccEmail)
-                .Select(email => new { emailAddress = new { address = email } })
-                .ToArray();
+            // Build a MIME draft so Graph preserves standard unsubscribe headers.
+            var mimeMessage = new MimeMessage();
+            mimeMessage.From.Add(new MailboxAddress(tokenData.SenderName, tokenData.Email));
+            mimeMessage.To.Add(new MailboxAddress("", EmailDetails.email));
 
-            var message = new
+            foreach (var cc in NormalizeEmailList(CcEmail))
             {
-                subject = EmailDetails.email_subject,
-
-                body = new
-                {
-                    contentType = "HTML",
-                    content = finalEmailBody
-                },
-
-                toRecipients = new[]
-                {
-                new
-                {
-                    emailAddress = new
-                    {
-                        address = EmailDetails.email
-                    }
-                }
-            },
-
-                ccRecipients = ccRecipients,
-                bccRecipients = bccRecipients,
-
-                internetMessageHeaders = new[]
-                {
-                new
-                {
-                    name = "X-Tracking-Id",
-                    value = trackingId
-                }
+                mimeMessage.Cc.Add(new MailboxAddress("", cc));
             }
-            };
+
+            foreach (var bcc in NormalizeEmailList(BccEmail))
+            {
+                mimeMessage.Bcc.Add(new MailboxAddress("", bcc));
+            }
+
+            mimeMessage.Subject = EmailDetails.email_subject;
+            mimeMessage.MessageId = MimeUtils.GenerateMessageId();
+            mimeMessage.Headers.Add("X-Tracking-Id", trackingId);
+
+            await AddOneClickUnsubscribeHeadersAsync(
+                mimeMessage,
+                user,
+                clientId,
+                contactId,
+                EmailDetails.email,
+                isContactCompose);
+
+            mimeMessage.Body = new TextPart("html") { Text = finalEmailBody };
+
+            using var draftStream = new MemoryStream();
+            await mimeMessage.WriteToAsync(draftStream);
+            var rawDraft = Convert.ToBase64String(draftStream.ToArray());
 
             using var client = new HttpClient();
             client.DefaultRequestHeaders.Authorization =
@@ -744,9 +778,13 @@ public class EmailSendingHelper
                     tokenData.AccessToken);
 
             // CREATE DRAFT
-            var createResponse = await client.PostAsJsonAsync(
+            using var draftContent = new StringContent(
+                rawDraft,
+                System.Text.Encoding.UTF8,
+                "text/plain");
+            var createResponse = await client.PostAsync(
                 "https://graph.microsoft.com/v1.0/me/messages",
-                message);
+                draftContent);
 
             var createResult = await createResponse.Content.ReadAsStringAsync();
 

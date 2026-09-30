@@ -177,7 +177,8 @@ builder.Services.AddCors(options =>
         policy.WithOrigins(
                 "http://localhost:3000",
                 "http://app.pitchkraft.ai",
-                "https://app.pitchkraft.ai")
+                "https://app.pitchkraft.ai",
+                "https://link.pitchkraft.ai")
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
@@ -218,10 +219,8 @@ builder.Services.AddScoped<IReplyEmailRepository, ReplyEmailRepository>();
 builder.Services.AddHttpClient<IContactQAService, ContactQAService>();
 builder.Services.AddScoped<IForwardRepository, ForwardRepository>();
 builder.Services.AddScoped<IExtensionRepository, ExtensionRepository>();
+builder.Services.AddScoped<IUnsubscribeRepository, UnsubscribeRepository>();
 
-// The four-stage email unlock. Scoped rather than a typed client: it makes no
-// HTTP call of its own, it orchestrates the services that do. Both the
-// extension endpoint and the Audience Assurance email check resolve it.
 builder.Services.AddScoped<IEmailUnlockService, EmailUnlockService>();
 // No typed HttpClient: the profile summary now goes through IPitchService /
 // DeepSeekPitchService instead of calling OpenAI directly.
