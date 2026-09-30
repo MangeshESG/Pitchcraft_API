@@ -175,7 +175,7 @@ public class UnsubscribeRepository : IUnsubscribeRepository
         }
 
         return
-            $"https://localhost:7216/api/crm/OneClick" +
+            $"https://www.app.pitchkraft.ai/api/crm/OneClick" +
             $"?token={Uri.EscapeDataString(token)}";
     }
 }

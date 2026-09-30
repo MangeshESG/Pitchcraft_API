@@ -5118,7 +5118,7 @@ namespace PitchGenApi.Controllers
                 return BadRequest("Token is required.");
 
             var redirectUrl =
-                $"https://app.pitchkraft.ai/unsubscribe" +
+                $"https://www.app.pitchkraft.ai/unsubscribe" +
                 $"?company={Uri.EscapeDataString(companySlug)}" +
                 $"&token={Uri.EscapeDataString(token)}";
 
