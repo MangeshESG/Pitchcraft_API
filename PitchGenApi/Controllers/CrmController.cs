@@ -421,8 +421,8 @@ namespace PitchGenApi.Controllers
             var fieldCount = await _context.crm_custom_fields
                 .CountAsync(x => x.client_id == dto.ClientId);
 
-            if (fieldCount >= 20)
-                return BadRequest("Maximum 10 custom fields allowed.");
+            if (fieldCount >= 30)
+                return BadRequest("Maximum 30 custom fields allowed.");
 
             var field = new CrmCustomField
             {
