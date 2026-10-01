@@ -322,7 +322,7 @@
 
                 if (briefId is null)
                     throw new InvalidOperationException(
-                        "Contact fit needs a targeting brief. Pick one, or save a default in Settings > Verification.");
+                        "Target Audience Match needs a targeting brief. Pick one, or save a default in Settings > Verification.");
 
                 var briefExists = await _context.contact_fit_briefs
                     .AnyAsync(b => b.Id == briefId && b.ClientId == request.ClientId);
