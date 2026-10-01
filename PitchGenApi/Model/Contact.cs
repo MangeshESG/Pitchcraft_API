@@ -25,6 +25,17 @@ namespace PitchGenApi.Models
         [DisplayName("Email Body")]
         public string? email_body { get; set; }
 
+        /// <summary>
+        /// Source highlights for the krafted email, as the JSON array the
+        /// generator returned: [{ "text", "owner", "label" }, ...].
+        ///
+        /// Stored beside the body rather than inside it. The body itself is
+        /// clean HTML, so nothing has to be stripped out of it before the
+        /// email is sent; the UI re-applies the highlights at display time by
+        /// matching each "text" snippet against the rendered body.
+        /// </summary>
+        public string? email_highlights { get; set; }
+
         public DateTime created_at { get; set; }
         public DateTime? updated_at { get; set; }
         public string? CompanyTelephone { get; set; }

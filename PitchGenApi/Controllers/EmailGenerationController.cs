@@ -28,6 +28,12 @@ namespace PitchGenApi.Controllers
         private readonly IContactPromptContextService _promptContext;
         private readonly IUnsubscribeRepository _unsubscribeRepository;
 
+        /// <summary>
+        /// Blueprint slot that receives the campaign's subject rules, so the
+        /// subject can be written in the same call as the body.
+        /// </summary>
+        private const string SubjectInstructionsKey = "subject_instructions";
+
         public EmailGenerationController(
             AppDbContext dbContext,
             IPitchService pitchService,
@@ -113,6 +119,7 @@ namespace PitchGenApi.Controllers
                         ContactId = contact.id,
                         EmailSubject = contact.email_subject,
                         EmailBody = contact.email_body,
+                        EmailHighlights = ReadStoredHighlights(contact.email_highlights),
 
                         Notes = existingInsights.Notes,
                         Emails = existingInsights.EmailContext,
@@ -200,6 +207,13 @@ namespace PitchGenApi.Controllers
                 // for should get an empty string rather than a literal token in
                 // the email.
                 runtimeReplacements[PlaceholderEngine.UnsubscribeUrlKey] = "";
+
+                // {subject_instructions}. The subject is written in the same
+                // call as the body now, so the blueprint needs a slot to drop
+                // the subject rules into. Registered empty for the same reason
+                // as the keys above, and filled further down once the campaign
+                // values it may itself contain can be resolved.
+                runtimeReplacements[SubjectInstructionsKey] = "";
 
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
@@ -303,8 +317,86 @@ namespace PitchGenApi.Controllers
 
                 var isGptModel = selectedModel.Trim().StartsWith("gpt", StringComparison.OrdinalIgnoreCase);
 
+                // ---- subject instructions, folded into the body call ----
+                // Subject and body used to be two calls: write the email, then
+                // hand the finished email back and ask for a line to put on
+                // top. One call does both, which halves the latency and the
+                // per-contact spend on the writing model.
+                //
+                // The exception is an instruction that asks to read the
+                // finished email ({generated_pitch}). That cannot be answered
+                // before the email exists, so those blueprints keep the second
+                // call — see the subject resolution below.
+                var aiMode = campaignPlaceholderValues.TryGetValue("email_subject-AI", out var aiModeValue)
+                    ? (aiModeValue ?? "").Trim().ToLower()
+                    : "yes";
+
+                var isAiSubject = aiMode != "no";
+
+                var manualSubjectTemplate = campaignPlaceholderValues.TryGetValue("email_subject-manual", out var manualVal)
+                    ? manualVal ?? ""
+                    : "";
+
+                // The definition table is the live source of truth for subject
+                // instructions — CampaignTemplates.SubjectInstructions is only a
+                // snapshot taken when the campaign was created, so an admin edit
+                // to the definition would never reach existing campaigns.
+                // The campaign copy is kept as a fallback for definitions that
+                // have no instruction of their own.
+                var subjectInstructionTemplate =
+                    !string.IsNullOrWhiteSpace(template.TemplateDefinition.SubjectInstructions)
+                        ? template.TemplateDefinition.SubjectInstructions
+                        : template.SubjectInstructions ?? "";
+
+                var subjectInstructionSource =
+                    !string.IsNullOrWhiteSpace(template.TemplateDefinition.SubjectInstructions)
+                        ? "template-definition"
+                        : (!string.IsNullOrWhiteSpace(template.SubjectInstructions) ? "campaign-template" : "none");
+
+                var subjectNeedsFinishedBody =
+                    ContainsPlaceholder(subjectInstructionTemplate, "generated_pitch");
+
+                var subjectIsFolded =
+                    isAiSubject &&
+                    !subjectNeedsFinishedBody &&
+                    !string.IsNullOrWhiteSpace(subjectInstructionTemplate);
+
+                if (subjectIsFolded)
+                {
+                    // Same two-pass fill the body gets: campaign-level values
+                    // first, then the per-contact runtime values, so a campaign
+                    // value that itself contains {first_name} still resolves.
+                    var filledForFold = ApplyPlaceholders(
+                        ApplyPlaceholders(subjectInstructionTemplate, campaignOnlyValues),
+                        runtimeReplacements);
+
+                    // Subject rules are authored in a rich-text field, so they
+                    // arrive as HTML. As a system message that cost nothing;
+                    // inside the prompt the markup burns tokens and buries the
+                    // instruction, so it is stripped the same way campaign
+                    // placeholder values are.
+                    runtimeReplacements[SubjectInstructionsKey] =
+                        PromptTextCleaner.LooksLikeHtml(filledForFold)
+                            ? PromptTextCleaner.StripHtml(filledForFold)
+                            : filledForFold;
+                }
+
                 // ---- body prompt ----
                 var finalPrompt = ApplyPlaceholders(campaignBlueprint, runtimeReplacements);
+
+                // A blueprint that has no {subject_instructions} slot still has
+                // to receive the rules, or folding would silently drop them and
+                // the model would invent a subject from nothing.
+                var hasSubjectInstructionsPlaceholder =
+                    ContainsPlaceholder(campaignBlueprint, SubjectInstructionsKey);
+
+                if (subjectIsFolded && !hasSubjectInstructionsPlaceholder)
+                {
+                    finalPrompt = AppendContextSection(
+                        finalPrompt,
+                        "Subject line rules (write the subject for this email and return it in the \"subject\" field):",
+                        runtimeReplacements[SubjectInstructionsKey]);
+                }
 
                 // ============================================================
                 // 2️⃣ MAKE SURE EVERY RESOLVED INPUT REACHES THE MODEL
@@ -433,22 +525,59 @@ namespace PitchGenApi.Controllers
                     });
                 }
 
+                // ---- read the reply ----
+                // The generator answers with one JSON object: the subject, the
+                // body as clean HTML, and the source highlights as records.
+                // A reply that does not parse is taken as bare HTML, which is
+                // what an un-migrated blueprint still returns — those keep the
+                // old behaviour, highlight spans baked into the body and all.
+                var generated = GeneratedEmailParser.Parse(bodyResult.Content);
+
+                // A reply that tried to be the JSON object and did not finish
+                // is not an email. Saving it would hand the contact a body
+                // full of visible JSON and charge a credit for it, so this
+                // fails the same way an empty generation does.
+                if (generated.LooksTruncated)
+                {
+                    Log.Error(
+                        "Email generation returned unreadable JSON — most likely truncated by the model's "
+                        + "output budget. ContactId={ContactId}, BlueprintId={BlueprintId}, ReplyLength={Length}",
+                        request.ContactId, request.BlueprintId, (bodyResult.Content ?? "").Length);
+
+                    return StatusCode(500, new
+                    {
+                        Message = "The generated email came back as unreadable JSON, which usually means the "
+                                + "model's output limit was reached. Raise MaxTokens for this model in Model "
+                                + "rates, or shorten the blueprint, then kraft again.",
+                        Error = bodyResult.Content,
+                        FinalPrompt = promptSentToAi,
+                        WebSearchData = webSearchData,
+                        Notes = generationNotes,
+                        Emails = emailConversation,
+                        ProfessionalSummary = professionalSummary
+                    });
+                }
+
+                if (!generated.IsStructured)
+                {
+                    Log.Information(
+                        "Email generation reply was not structured JSON; falling back to raw HTML. "
+                        + "ContactId={ContactId}, BlueprintId={BlueprintId}",
+                        request.ContactId, request.BlueprintId);
+                }
+
+                var emailBody = generated.BodyHtml;
+
                 // ---- subject ----
                 string subjectLine = "";
                 PitchResult? subjectResult = null;
-                string filledSubjectInstruction = "";
-
-                var aiMode = campaignPlaceholderValues.TryGetValue("email_subject-AI", out var aiModeValue)
-                    ? (aiModeValue ?? "").Trim().ToLower()
-                    : "yes";
-
-                var manualSubjectTemplate = campaignPlaceholderValues.TryGetValue("email_subject-manual", out var manualVal)
-                    ? manualVal ?? ""
+                string filledSubjectInstruction = subjectIsFolded
+                    ? runtimeReplacements[SubjectInstructionsKey]
                     : "";
 
                 var subjectReplacements = new Dictionary<string, string>(runtimeReplacements, StringComparer.OrdinalIgnoreCase)
                 {
-                    ["generated_pitch"] = bodyResult.Content ?? ""
+                    ["generated_pitch"] = emailBody
                 };
 
                 // Subjects get the same two-pass fill as the body: campaign-level
@@ -459,31 +588,34 @@ namespace PitchGenApi.Controllers
                 string FillSubjectPlaceholders(string text) =>
                     ApplyPlaceholders(ApplyPlaceholders(text, campaignOnlyValues), subjectReplacements);
 
-                var isAiSubject = aiMode != "no";
+                string subjectMode;
 
-                // The definition table is the live source of truth for subject
-                // instructions — CampaignTemplates.SubjectInstructions is only a
-                // snapshot taken when the campaign was created, so an admin edit
-                // to the definition would never reach existing campaigns.
-                // The campaign copy is kept as a fallback for definitions that
-                // have no instruction of their own.
-                var subjectInstructionTemplate =
-                    !string.IsNullOrWhiteSpace(template.TemplateDefinition.SubjectInstructions)
-                        ? template.TemplateDefinition.SubjectInstructions
-                        : template.SubjectInstructions ?? "";
-
-                var subjectInstructionSource =
-                    !string.IsNullOrWhiteSpace(template.TemplateDefinition.SubjectInstructions)
-                        ? "template-definition"
-                        : (!string.IsNullOrWhiteSpace(template.SubjectInstructions) ? "campaign-template" : "none");
-
-                if (isAiSubject)
+                if (!isAiSubject)
                 {
+                    subjectMode = "manual";
+                    if (!string.IsNullOrWhiteSpace(manualSubjectTemplate))
+                        subjectLine = FillSubjectPlaceholders(manualSubjectTemplate);
+                }
+                else if (subjectIsFolded && !string.IsNullOrWhiteSpace(generated.Subject))
+                {
+                    // The point of the whole change: the subject came back with
+                    // the body, so there is no second call to make.
+                    subjectMode = "ai-folded";
+                    subjectLine = generated.Subject.Trim();
+                }
+                else
+                {
+                    // Either the blueprint's subject rules need the finished
+                    // email, or folding was asked for and the model did not
+                    // return a subject. Both land on the original second call,
+                    // so a contact never ends up with a blank subject.
+                    subjectMode = subjectIsFolded ? "ai-second-call-fallback" : "ai-second-call";
+
                     filledSubjectInstruction = FillSubjectPlaceholders(subjectInstructionTemplate);
 
                     subjectResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                     {
-                        Prompt = bodyResult.Content,
+                        Prompt = emailBody,
                         ScrappedData = filledSubjectInstruction,
                         ModelName = selectedModel,
                         // A subject is written from the body that is already in
@@ -496,16 +628,20 @@ namespace PitchGenApi.Controllers
                     if (subjectResult.IsSuccess)
                         subjectLine = subjectResult.Content ?? "";
                 }
-                else if (!string.IsNullOrWhiteSpace(manualSubjectTemplate))
-                {
-                    subjectLine = FillSubjectPlaceholders(manualSubjectTemplate);
-                }
+
+                var highlightsJson = GeneratedEmailParser.Serialize(generated.Highlights);
 
                 // ---- Preview mode: no DB write, no credit, no history ----
                 if (!request.Preview)
                 {
-                    contact.email_body = bodyResult.Content;
+                    contact.email_body = emailBody;
                     contact.email_subject = subjectLine;
+
+                    // Always written, including the null that clears it. A
+                    // re-kraft that produced no highlights must not leave the
+                    // previous generation's highlights pointing at wording
+                    // that is no longer in the email.
+                    contact.email_highlights = highlightsJson;
 
                     // Persist the research the same way the Generate-insights
                     // endpoint does, so the profile Insights panel always shows
@@ -532,7 +668,11 @@ namespace PitchGenApi.Controllers
                     ClientId = request.ClientId,
 
                     EmailSubject = subjectLine,
-                    EmailBody = bodyResult.Content,
+                    EmailBody = emailBody,
+
+                    // Source highlights, kept out of the body. The UI matches
+                    // each Text against the rendered email to paint it.
+                    EmailHighlights = generated.Highlights,
 
                     // 👇 EVERYTHING THE UI SHOWS IN THE INSIGHTS TABS
                     WebSearchData = webSearchData,
@@ -582,8 +722,19 @@ namespace PitchGenApi.Controllers
                         UnsubscribePlaceholderFound = hasUnsubscribePlaceholder,
                         UnsubscribeUrl = unsubscribeUrl,
                         FilledSearchInstructions = filledSearchInstructions,
-                        SubjectMode = isAiSubject ? "ai" : "manual",
+                        SubjectMode = subjectMode,
                         SubjectInstructionSource = subjectInstructionSource,
+                        SubjectFolded = subjectIsFolded,
+                        SubjectInstructionsPlaceholderFound = hasSubjectInstructionsPlaceholder,
+
+                        // Did the model answer with the JSON contract, and did
+                        // every highlight it returned actually land in the
+                        // body? Both are the signals to watch after a prompt
+                        // edit — a drop to false/non-zero means the blueprint
+                        // and the parser have drifted apart.
+                        StructuredReply = generated.IsStructured,
+                        HighlightCount = generated.Highlights.Count,
+                        UnmatchedHighlightCount = generated.UnmatchedHighlights,
                         FilledSubjectInstruction = filledSubjectInstruction,
                         ManualSubjectTemplate = manualSubjectTemplate,
                         RuntimeReplacements = runtimeReplacements,
@@ -668,6 +819,7 @@ namespace PitchGenApi.Controllers
                     HasKraftedEmail = !string.IsNullOrWhiteSpace(contact.email_body),
                     EmailSubject = contact.email_subject ?? "",
                     EmailBody = contact.email_body ?? "",
+                    EmailHighlights = ReadStoredHighlights(contact.email_highlights),
 
                     Notes = insights.Notes,
                     Emails = insights.EmailContext,
@@ -1032,6 +1184,32 @@ namespace PitchGenApi.Controllers
                     "Failed to build generation notes. ClientId={ClientId}, ContactId={ContactId}",
                     clientId, contactId);
                 return "";
+            }
+        }
+
+        /// <summary>
+        /// The contact's stored highlights, as records rather than a JSON
+        /// string, so the UI reads them the same way whether they came from a
+        /// fresh generation or from the database. A row written before the
+        /// split, or one holding unreadable JSON, yields an empty list — the
+        /// email still renders, just without highlights.
+        /// </summary>
+        private static List<EmailHighlight> ReadStoredHighlights(string? stored)
+        {
+            if (string.IsNullOrWhiteSpace(stored))
+                return new List<EmailHighlight>();
+
+            try
+            {
+                return JsonSerializer.Deserialize<List<EmailHighlight>>(
+                    stored,
+                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                    ?? new List<EmailHighlight>();
+            }
+            catch (JsonException ex)
+            {
+                Log.Warning(ex, "Stored email highlights could not be read; returning none.");
+                return new List<EmailHighlight>();
             }
         }
 
