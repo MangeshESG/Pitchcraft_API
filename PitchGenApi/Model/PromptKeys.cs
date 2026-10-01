@@ -46,13 +46,13 @@ namespace PitchGenApi.Model
                 "Find email (extension unlock)",
                 "The research instruction sent to the model when the browser extension unlocks a contact's email address. It also asks for the company website, industry and size, so keep the JSON output block intact."),
             ContactFit => (
-                "Contact fit (Audience Assurance)",
+                "Target Audience Match (Audience Assurance)",
                 "Scores selected contacts against the saved targeting brief. {brief} is replaced with the brief the user picked and {company_intelligence} with what we already know about those companies — leaving that placeholder out means every company gets researched again, which is what web search costs money for. Keep the JSON output block intact."),
             DataIntegrity => (
-                "Data integrity (Audience Assurance)",
+                "Data Integrity Check (Audience Assurance)",
                 "Checks the supplied record for missing fields, generic or malformed emails, contaminated names and titles, domain mismatches and duplicates. Runs with web search off, so it stays nearly free. The rule that comments contain problems only is what keeps the column readable — don't soften it. Keep the JSON output block intact."),
             LiveContact => (
-                "Live contact (Audience Assurance)",
+                "Employment Match (Audience Assurance)",
                 "Checks against current public evidence whether the person is still at that company in that role. This is the most search-heavy check, so the instruction to reuse evidence across contacts at the same employer is doing real work. Keep the JSON output block intact."),
             _ => (key, "")
         };

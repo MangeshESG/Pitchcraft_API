@@ -64,13 +64,13 @@ namespace PitchGenApi.Model
                     "Profile summary (extension)",
                     "Writes the professional summary from the LinkedIn profile the browser extension captured."),
                 ContactFit => (
-                    "Contact fit (Audience Assurance)",
+                    "Target Audience Match (Audience Assurance)",
                     "Scores selected contacts against a saved targeting brief. Needs web search, so pick a model that can reach the live web."),
                 DataIntegrity => (
-                    "Data integrity (Audience Assurance)",
+                    "Data Integrity Check (Audience Assurance)",
                     "Checks the supplied record for structural problems. Runs with web search off, so the cheapest capable model is the right choice here."),
                 LiveContact => (
-                    "Live contact (Audience Assurance)",
+                    "Employment Match (Audience Assurance)",
                     "Checks whether the contact is still at that company in that role. The most search-heavy check — pick a model that can reach the live web."),
                 _ => (purposeKey, "")
             };

@@ -76,13 +76,13 @@ namespace PitchGenApi.Model
         public static (string Label, string Description) Describe(string checkType) => Normalize(checkType) switch
         {
             ContactFit => (
-                "Contact fit",
+                "Target Audience Match",
                 "Scores each contact against a saved targeting brief: is this company, and this job title, someone we want in the audience?"),
             DataIntegrity => (
-                "Data integrity",
+                "Data Integrity Check",
                 "Checks the record itself for missing fields, generic or malformed emails, contaminated names and titles, website/email domain mismatches and duplicates. Never uses web search."),
             LiveContact => (
-                "Live contact",
+                "Employment Match",
                 "Checks against current public evidence whether the person is still at that company in that role."),
             EmailVerification => (
                 "Email discovery and verification",
