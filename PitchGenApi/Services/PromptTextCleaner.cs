@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -169,11 +169,19 @@ namespace PitchGenApi.Services
         }
 
         /// <summary>
-        /// Keeps the markup of an HTML email (paragraphs, bold, lists, links,
-        /// inline styles) so the model can reproduce its formatting, and only
-        /// drops what carries nothing for it: scripts/styles, comments, event
-        /// handlers, class/id attributes, embedded base64 images and invisible
-        /// characters. Plain-text input comes back unchanged apart from trimming.
+        /// Keeps the structure of an HTML email (paragraphs, bold, lists,
+        /// links, colours, alignment) so the model can reproduce its
+        /// formatting, and drops what carries nothing for it: scripts/styles,
+        /// comments, event handlers, class/id attributes, embedded base64
+        /// images and invisible characters.
+        ///
+        /// Typeface and text size go too. They are not formatting the model
+        /// should copy: whatever font the example happened to be typed in gets
+        /// reproduced on some runs of the generated mail and not others, and
+        /// the result renders in two fonts. The app decides the typeface;
+        /// the example only decides the shape.
+        ///
+        /// Plain-text input comes back unchanged apart from trimming.
         /// </summary>
         public static string CleanEmailHtml(string? input)
         {
@@ -189,10 +197,59 @@ namespace PitchGenApi.Services
             html = ClassIdAttrs.Replace(html, "");
             html = DataUri.Replace(html, "");
             html = InvisibleChars.Replace(html, "");
+            html = StripTypography(html);
             html = Regex.Replace(html, @">\s+<", "><");
 
             return html.Trim();
         }
+
+        /// <summary>
+        /// Drops the typeface and text-size declarations from inline styles and
+        /// the legacy face/size attributes from &lt;font&gt; tags, leaving every
+        /// other declaration (colour, weight, alignment, spacing) in place. A
+        /// style attribute left with nothing in it is removed rather than kept
+        /// empty.
+        /// </summary>
+        private static string StripTypography(string html)
+        {
+            html = StyleAttr.Replace(html, match =>
+            {
+                var quoted = match.Groups[1].Value;
+                var quote = quoted[0];
+                var declarations = quoted[1..^1];
+
+                var kept = TypographyDeclarations.Replace(declarations, "")
+                                                 .Trim(TrimmedFromStyle);
+
+                return kept.Length == 0 ? "" : $" style={quote}{kept}{quote}";
+            });
+
+            // face/size are scoped to the <font> tag they sit in, so a size=
+            // on an <input> or <hr> elsewhere in the mail is left alone.
+            return FontTag.Replace(html, m => FontPresentationAttrs.Replace(m.Value, ""));
+        }
+
+        private static readonly char[] TrimmedFromStyle = { ' ', ';', '\t', '\n', '\r' };
+
+        private static readonly Regex StyleAttr = new(
+            @"\s+style\s*=\s*(""[^""]*""|'[^']*')",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // font-family / font-size / the font shorthand / line-height, together
+        // with the separator in front of them. "font" is tried last and only
+        // matches when a ":" follows immediately, so font-weight and font-style
+        // fall through untouched.
+        private static readonly Regex TypographyDeclarations = new(
+            @"(?:^|;)\s*(?:font-family|font-size|line-height|font)\s*:[^;]*",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex FontTag = new(
+            @"<font\b[^>]*>",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex FontPresentationAttrs = new(
+            @"\s+(?:face|size)\s*=\s*(""[^""]*""|'[^']*'|[^\s>]+)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex EventHandlerAttrs = new(
             @"\s+on[a-z]+\s*=\s*(""[^""]*""|'[^']*'|[^\s>]+)",

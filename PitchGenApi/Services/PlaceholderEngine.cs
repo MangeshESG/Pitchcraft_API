@@ -82,6 +82,16 @@ namespace PitchGenApi.Services
         public const string LinkedInConversationToggleKey = "use_linkedin_conversation";
 
         /// <summary>
+        /// {unsubscribe_url} — the contact's own unsubscribe link, minted by
+        /// IUnsubscribeRepository and unique per client + contact.
+        ///
+        /// Opt-in like the LinkedIn slots: the link is only generated when a
+        /// blueprint actually contains this token, so a blueprint that never
+        /// asks for one costs nothing and writes no token row.
+        /// </summary>
+        public const string UnsubscribeUrlKey = "unsubscribe_url";
+
+        /// <summary>
         /// Reads the yes/no switch out of a blueprint's saved placeholder values.
         /// </summary>
         public static bool IsHistoryEnabled(

@@ -26,6 +26,7 @@ namespace PitchGenApi.Controllers
         private readonly QwenPitchService _qwenService;
         private readonly IAiModelSettingsService _aiModelSettings;
         private readonly IContactPromptContextService _promptContext;
+        private readonly IUnsubscribeRepository _unsubscribeRepository;
 
         public EmailGenerationController(
             AppDbContext dbContext,
@@ -35,7 +36,8 @@ namespace PitchGenApi.Controllers
             DeepSeekPitchService deepSeekService,
             QwenPitchService qwenService,
             IAiModelSettingsService aiModelSettings,
-            IContactPromptContextService promptContext)
+            IContactPromptContextService promptContext,
+            IUnsubscribeRepository unsubscribeRepository)
         {
             _dbContext = dbContext;
             _pitchService = pitchService;
@@ -45,6 +47,7 @@ namespace PitchGenApi.Controllers
             _qwenService = qwenService;
             _aiModelSettings = aiModelSettings;
             _promptContext = promptContext;
+            _unsubscribeRepository = unsubscribeRepository;
         }
 
         // ============================================
@@ -191,6 +194,13 @@ namespace PitchGenApi.Controllers
                 runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = "";
                 runtimeReplacements[PlaceholderEngine.LinkedInConversationKey] = "";
 
+                // {unsubscribe_url}. Registered here for the same reason as the
+                // keys above: the campaign-level pass must not claim it, and a
+                // blueprint that asks for it on a contact we cannot mint a link
+                // for should get an empty string rather than a literal token in
+                // the email.
+                runtimeReplacements[PlaceholderEngine.UnsubscribeUrlKey] = "";
+
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
 
@@ -247,6 +257,20 @@ namespace PitchGenApi.Controllers
                     : new LinkedInConversationContext();
 
                 runtimeReplacements[PlaceholderEngine.LinkedInConversationKey] = linkedInConversation.Text;
+
+                // ---- the contact's unsubscribe link ----
+                // {unsubscribe_url} is the slot. Minting a link writes a token
+                // row, so it is resolved only when the blueprint actually asks
+                // for one — a blueprint without the token behaves exactly as
+                // before and costs nothing extra.
+                var hasUnsubscribePlaceholder =
+                    ContainsPlaceholder(campaignBlueprint, PlaceholderEngine.UnsubscribeUrlKey);
+
+                var unsubscribeUrl = hasUnsubscribePlaceholder
+                    ? await BuildUnsubscribeUrlAsync(parsedClientId, contact)
+                    : "";
+
+                runtimeReplacements[PlaceholderEngine.UnsubscribeUrlKey] = unsubscribeUrl;
 
                 // ---- email history: only an explicit "no" turns it off ----
                 var emailHistorySetting =
@@ -461,7 +485,12 @@ namespace PitchGenApi.Controllers
                     {
                         Prompt = bodyResult.Content,
                         ScrappedData = filledSubjectInstruction,
-                        ModelName = selectedModel
+                        ModelName = selectedModel,
+                        // A subject is written from the body that is already in
+                        // hand, so there is nothing left to research. Without
+                        // this the Responses call still carries the web-search
+                        // tool and can spend a live search on one line of text.
+                        DisableWebSearchTool = true
                     });
 
                     if (subjectResult.IsSuccess)
@@ -550,6 +579,8 @@ namespace PitchGenApi.Controllers
                         LinkedInHistoryEnabled = linkedInHistoryEnabled,
                         LinkedInConversationPlaceholderFound = hasLinkedInConversationPlaceholder,
                         LinkedInConversationEnabled = linkedInConversationEnabled,
+                        UnsubscribePlaceholderFound = hasUnsubscribePlaceholder,
+                        UnsubscribeUrl = unsubscribeUrl,
                         FilledSearchInstructions = filledSearchInstructions,
                         SubjectMode = isAiSubject ? "ai" : "manual",
                         SubjectInstructionSource = subjectInstructionSource,
@@ -655,6 +686,54 @@ namespace PitchGenApi.Controllers
                     Message = "Error fetching contact insights",
                     Error = ex.Message
                 });
+            }
+        }
+
+        // ============================================
+        // Unsubscribe link
+        // ============================================
+
+        /// <summary>
+        /// Mints the contact's unsubscribe link for {unsubscribe_url}. The link
+        /// is branded with the SENDING client's company — the same name the
+        /// one-click header uses — not the prospect's, because the unsubscribe
+        /// page is that client's.
+        ///
+        /// A failure here must not fail the generation: an email that comes back
+        /// without its link is a visible, fixable problem, whereas losing the
+        /// whole kraft over it costs the contact a credit for nothing.
+        /// </summary>
+        private async Task<string> BuildUnsubscribeUrlAsync(int clientId, Contact contact)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(contact.email))
+                {
+                    Log.Warning(
+                        "Blueprint asked for {{unsubscribe_url}} but the contact has no email address. "
+                        + "ClientId={ClientId}, ContactId={ContactId}",
+                        clientId, contact.id);
+                    return "";
+                }
+
+                var companyName = await _dbContext.ClientDetails
+                    .AsNoTracking()
+                    .Where(c => c.Id == clientId)
+                    .Select(c => c.CompanyName)
+                    .FirstOrDefaultAsync();
+
+                return await _unsubscribeRepository.GenerateUnsubscribeLinkAsync(
+                    string.IsNullOrWhiteSpace(companyName) ? "Pitchkraft" : companyName,
+                    clientId,
+                    contact.id,
+                    contact.email);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex,
+                    "Failed to generate unsubscribe link. ClientId={ClientId}, ContactId={ContactId}",
+                    clientId, contact.id);
+                return "";
             }
         }
 
