@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
@@ -30,10 +30,12 @@ namespace PitchGenApi.Controllers
         private readonly DefaultCustomFieldSeeder _defaultCustomFieldSeeder;
         private readonly ISecuritySettingsService _securitySettings;
         private readonly ISuperAdminGuard _superAdminGuard;
+        private readonly IConfiguration _configuration;
+        private readonly IHttpClientFactory _httpClientFactory;
 
 
 
-        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert, DefaultCustomFieldSeeder defaultCustomFieldSeeder, ISecuritySettingsService securitySettings, ISuperAdminGuard superAdminGuard)
+        public LoginController(AppDbContext context, IStripeRepository stripe, IUserRepository userRepository, JwtService jwtService, IResetPassworde resetPassword, IRegisterEmailSender register, ICompanyAlertService companyAlert, DefaultCustomFieldSeeder defaultCustomFieldSeeder, ISecuritySettingsService securitySettings, ISuperAdminGuard superAdminGuard, IConfiguration configuration, IHttpClientFactory httpClientFactory)
         {
             _context = context;
             _userRepository = userRepository;
@@ -45,11 +47,55 @@ namespace PitchGenApi.Controllers
             _defaultCustomFieldSeeder = defaultCustomFieldSeeder;
             _securitySettings = securitySettings;
             _superAdminGuard = superAdminGuard;
+            _configuration = configuration;
+            _httpClientFactory = httpClientFactory;
+        }
+
+        private async Task<bool> IsCaptchaValidAsync(string? token)
+        {
+            var secret = _configuration["Recaptcha:SecretKey"];
+            if (string.IsNullOrWhiteSpace(secret) || string.IsNullOrWhiteSpace(token)) return false;
+
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                using var response = await _httpClientFactory.CreateClient().PostAsync(
+                    "https://www.google.com/recaptcha/api/siteverify",
+                    new FormUrlEncodedContent(new Dictionary<string, string>
+                    {
+                        ["secret"] = secret,
+                        ["response"] = token
+                    }), timeout.Token);
+                if (!response.IsSuccessStatusCode) return false;
+
+                var result = JsonConvert.DeserializeObject<RecaptchaResult>(
+                    await response.Content.ReadAsStringAsync());
+                return result?.Success == true;
+            }
+            catch (HttpRequestException)
+            {
+                return false;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+        }
+
+        private sealed class RecaptchaResult
+        {
+            [JsonProperty("success")]
+            public bool Success { get; set; }
         }
 
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequestDTO dto)
         {
+            if (dto == null || !await IsCaptchaValidAsync(dto.CaptchaToken))
+            {
+                return BadRequest(new { Message = "Please complete the I’m not a robot check and try again." });
+            }
+
             try
             {
                 Console.WriteLine($"Login started for user: {dto?.username}");
