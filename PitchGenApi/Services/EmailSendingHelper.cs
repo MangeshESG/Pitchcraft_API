@@ -213,7 +213,9 @@ public class EmailSendingHelper
             };
         }
 
-        var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
+        var user = await _context.ClientDetails
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == clientId);
 
         //bool isVerified = await _domain.IsSmtpFullyVerifiedAsync(SmtpID);
 
@@ -473,7 +475,9 @@ public class EmailSendingHelper
             };
         }
 
-        var user = await _context.ClientDetails.FirstOrDefaultAsync(x => x.Id == clientId);
+        var user = await _context.ClientDetails
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == clientId);
 
         var tokenData = await GetValidGmailTokenAsync(OutBoxId);
         if (tokenData == null)
@@ -689,6 +693,7 @@ public class EmailSendingHelper
         }
 
         var user = await _context.ClientDetails
+            .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == clientId);
 
         var tokenData = await GetValidOutlookTokenAsync(OutBoxId);
@@ -738,7 +743,9 @@ public class EmailSendingHelper
                 finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
             }
 
-            // Build a MIME draft so Graph preserves standard unsubscribe headers.
+            bool useRfcUnsubscribe = !isContactCompose && user?.IsRfcUnsubscribeAllowed == true;
+
+            // Both routes use the same MIME content; RFC-enabled sends require SMTP.
             var mimeMessage = new MimeMessage();
             mimeMessage.From.Add(new MailboxAddress(tokenData.SenderName, tokenData.Email));
             mimeMessage.To.Add(new MailboxAddress("", EmailDetails.email));
@@ -767,51 +774,66 @@ public class EmailSendingHelper
 
             mimeMessage.Body = new TextPart("html") { Text = finalEmailBody };
 
-            using var draftStream = new MemoryStream();
-            await mimeMessage.WriteToAsync(draftStream);
-            var rawDraft = Convert.ToBase64String(draftStream.ToArray());
+            string internetMessageId;
+            string threadId;
 
-            using var client = new HttpClient();
-            client.DefaultRequestHeaders.Authorization =
-                new AuthenticationHeaderValue(
-                    "Bearer",
-                    tokenData.AccessToken);
+            if (useRfcUnsubscribe)
+            {
+                internetMessageId = $"<{mimeMessage.MessageId.Trim('<', '>')}>";
+                threadId = internetMessageId;
+                string smtpAccessToken = await GetOutlookSmtpAccessTokenAsync(
+                    tokenData.RefreshToken, tokenData.Email);
 
-            // CREATE DRAFT
-            using var draftContent = new StringContent(
-                rawDraft,
-                System.Text.Encoding.UTF8,
-                "text/plain");
-            var createResponse = await client.PostAsync(
-                "https://graph.microsoft.com/v1.0/me/messages",
-                draftContent);
+                using var smtpClient = new MailKit.Net.Smtp.SmtpClient();
+                await smtpClient.ConnectAsync(
+                    "smtp.office365.com", 587, SecureSocketOptions.StartTls);
+                await smtpClient.AuthenticateAsync(
+                    new SaslMechanismOAuth2(tokenData.Email, smtpAccessToken));
+                await smtpClient.SendAsync(mimeMessage);
+                await smtpClient.DisconnectAsync(true);
+            }
+            else
+            {
+                // Use the original Graph draft/send flow when RFC headers aren't needed.
+                using var draftStream = new MemoryStream();
+                await mimeMessage.WriteToAsync(draftStream);
+                var rawDraft = Convert.ToBase64String(draftStream.ToArray());
 
-            var createResult = await createResponse.Content.ReadAsStringAsync();
+                using var client = new HttpClient();
+                client.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
 
-            if (!createResponse.IsSuccessStatusCode)
-                throw new Exception(createResult);
+                using var draftContent = new StringContent(
+                    rawDraft,
+                    System.Text.Encoding.UTF8,
+                    "text/plain");
+                using var createResponse = await client.PostAsync(
+                    "https://graph.microsoft.com/v1.0/me/messages",
+                    draftContent);
 
-            dynamic createdMail =
-                Newtonsoft.Json.JsonConvert.DeserializeObject(createResult);
+                var createResult = await createResponse.Content.ReadAsStringAsync();
+                if (!createResponse.IsSuccessStatusCode)
+                    throw new Exception(createResult);
 
-            string graphMessageId = createdMail?.id?.ToString();
-            string internetMessageId = createdMail?.internetMessageId?.ToString();
+                dynamic createdMail = Newtonsoft.Json.JsonConvert.DeserializeObject(createResult);
+                string graphMessageId = createdMail?.id?.ToString();
+                internetMessageId = createdMail?.internetMessageId?.ToString();
 
-            if (string.IsNullOrWhiteSpace(graphMessageId))
-                throw new Exception("Outlook draft id not returned");
+                if (string.IsNullOrWhiteSpace(graphMessageId))
+                    throw new Exception("Outlook draft id not returned");
+                if (string.IsNullOrWhiteSpace(internetMessageId))
+                    throw new Exception("internetMessageId not returned");
 
-            if (string.IsNullOrWhiteSpace(internetMessageId))
-                throw new Exception("internetMessageId not returned");
+                using var sendResponse = await client.PostAsync(
+                    $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(graphMessageId)}/send",
+                    null);
 
-            // SEND
-            var sendResponse = await client.PostAsync(
-                $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(graphMessageId)}/send",
-                null);
+                var sendResult = await sendResponse.Content.ReadAsStringAsync();
+                if (!sendResponse.IsSuccessStatusCode)
+                    throw new Exception(sendResult);
 
-            var sendResult = await sendResponse.Content.ReadAsStringAsync();
-
-            if (!sendResponse.IsSuccessStatusCode)
-                throw new Exception(sendResult);
+                threadId = graphMessageId;
+            }
 
             // SAVE
             _context.EmailLogs.Add(new EmailLog
@@ -838,7 +860,7 @@ public class EmailSendingHelper
                 MessageId = internetMessageId,
 
                 // optional
-                ThreadId = graphMessageId,
+                ThreadId = threadId,
 
                 process_name = "Single"
             });
@@ -848,11 +870,16 @@ public class EmailSendingHelper
             return new EmailSendResult
             {
                 Success = true,
-                Message = $"Email sent via Outlook API to {EmailDetails.email}"
+                Message = $"Email sent via Outlook {(useRfcUnsubscribe ? "SMTP" : "API")} to {EmailDetails.email}"
             };
         }
         catch (Exception ex)
         {
+            var sendError = ex.Message.Contains("5.7.139", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("SmtpClientAuthentication is disabled", StringComparison.OrdinalIgnoreCase)
+                ? "Outlook SMTP AUTH is disabled. Ask your Microsoft 365 admin to enable Authenticated SMTP for this sender mailbox. If it is blocked by tenant settings or Security Defaults, the admin must review those settings. The email was not sent."
+                : ex.Message;
+
             _context.EmailLogs.Add(new EmailLog
             {
                 ClientId = clientId,
@@ -871,7 +898,7 @@ public class EmailSendingHelper
             return new EmailSendResult
             {
                 Success = false,
-                Message = ex.Message
+                Message = sendError
             };
         }
     }
@@ -919,6 +946,48 @@ public class EmailSendingHelper
 
         return tokenData;
     }
+    private async Task<string> GetOutlookSmtpAccessTokenAsync(string refreshToken, string email)
+    {
+        if (string.IsNullOrWhiteSpace(refreshToken))
+            throw new InvalidOperationException("Outlook must be reconnected before SMTP sending.");
+
+        var cfg = _config.GetSection("MicrosoftOAuth");
+        using var client = new HttpClient();
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["client_id"] = cfg["ClientId"],
+            ["client_secret"] = cfg["ClientSecret"],
+            ["refresh_token"] = refreshToken,
+            ["grant_type"] = "refresh_token",
+            ["scope"] = "https://outlook.office.com/SMTP.Send"
+        });
+
+        using var response = await client.PostAsync(
+            $"https://login.microsoftonline.com/{cfg["TenantId"]}/oauth2/v2.0/token",
+            content);
+        if (!response.IsSuccessStatusCode)
+        {
+            var domain = email?.Split('@').LastOrDefault();
+            var isPersonalOutlook = domain != null &&
+                (domain.Equals("outlook.com", StringComparison.OrdinalIgnoreCase) ||
+                 domain.Equals("hotmail.com", StringComparison.OrdinalIgnoreCase) ||
+                 domain.Equals("live.com", StringComparison.OrdinalIgnoreCase) ||
+                 domain.Equals("msn.com", StringComparison.OrdinalIgnoreCase));
+
+            throw new InvalidOperationException(isPersonalOutlook
+                ? "This personal Outlook.com account cannot send through SMTP yet. Pitchcraft must request separate SMTP consent from this account; Microsoft 365 admin consent does not apply. Email was not sent."
+                : "Could not get an Outlook SMTP token. This mailbox must authorize SMTP.Send for Pitchcraft. Email was not sent.");
+        }
+
+        var json = await response.Content.ReadAsStringAsync();
+        dynamic token = Newtonsoft.Json.JsonConvert.DeserializeObject(json);
+        string accessToken = token?.access_token?.ToString();
+        if (string.IsNullOrWhiteSpace(accessToken))
+            throw new InvalidOperationException("Outlook SMTP access token was missing.");
+
+        return accessToken;
+    }
+
     public async Task<EmailOAuthTokens> GetValidOutlookTokenAsync(int id)
     {
         var cfg = _config.GetSection("MicrosoftOAuth");
