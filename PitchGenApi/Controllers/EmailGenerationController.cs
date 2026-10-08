@@ -9,6 +9,7 @@ using PitchGenApi.Services;
 using Serilog;
 using System.Net;
 using System.Text;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -1135,6 +1136,39 @@ namespace PitchGenApi.Controllers
             };
         }
 
+
+        /// <summary>
+        /// The date the model should cite for a note: when it was last changed,
+        /// which is its update if it has one and its creation otherwise.
+        /// </summary>
+        private static string DescribeNoteDate(JsonElement note)
+        {
+            var updated = ReadDateProperty(note, "updatedAt");
+            var stamp = updated ?? ReadDateProperty(note, "createdAt");
+
+            if (stamp == null)
+                return "";
+
+            var label = updated.HasValue ? "updated" : "written";
+            var date = stamp.Value.ToString("dddd, MMMM d, yyyy", CultureInfo.InvariantCulture);
+
+            return $"{label} {date}";
+        }
+
+        private static DateTime? ReadDateProperty(JsonElement element, string property)
+        {
+            if (element.ValueKind != JsonValueKind.Object)
+                return null;
+
+            if (!element.TryGetProperty(property, out var prop))
+                return null;
+
+            if (prop.ValueKind == JsonValueKind.String && prop.TryGetDateTime(out var value))
+                return value;
+
+            return null;
+        }
+
         private async Task<string> GetGenerationNotesAsync(int clientId, int contactId)
         {
             try
@@ -1172,11 +1206,24 @@ namespace PitchGenApi.Controllers
 
                     var cleaned = StripHtml(note);
 
-                    if (!string.IsNullOrWhiteSpace(cleaned))
-                        usableNotes.Add(cleaned);
+                    if (string.IsNullOrWhiteSpace(cleaned))
+                        continue;
+
+                    // Numbered and dated, so the model can say which note a line
+                    // came from and how old that note is. A note with neither
+                    // date keeps its heading rather than being dropped.
+                    var heading = $"Note {usableNotes.Count + 1}";
+                    var written = DescribeNoteDate(item);
+
+                    usableNotes.Add(string.IsNullOrEmpty(written)
+                        ? $"{heading}:\n{cleaned}"
+                        : $"{heading} ({written}):\n{cleaned}");
                 }
 
-                return string.Join("\n", usableNotes);
+                // A blank line between notes: joined by a single newline they
+                // read as one block, and nothing in the email could then be
+                // attributed to one note rather than another.
+                return string.Join("\n\n", usableNotes);
             }
             catch (Exception ex)
             {
