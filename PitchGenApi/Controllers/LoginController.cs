@@ -295,6 +295,12 @@ namespace PitchGenApi.Controllers
         [HttpPost("register")]
         public async Task<IActionResult> Register([FromBody] RegisterRequest request)
         {
+            if (request == null || !await IsCaptchaValidAsync(request.CaptchaToken))
+                return BadRequest("Please complete the CAPTCHA check and try again.");
+
+            // Only registration details are kept while the email OTP is pending.
+            request.CaptchaToken = null;
+
             if (_context.ClientDetails.Any(u => u.Email == request.Email || u.Username == request.Username))
             {
                 return BadRequest("Email or Username already exists.");
