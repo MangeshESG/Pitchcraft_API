@@ -1048,8 +1048,14 @@ public class InboxRepository : IInboxRepository
         // INBOX EMAILS
         // =========================================
 
+        // Scoped by client as well as inbox. An inbox id that belongs to another
+        // client must return nothing rather than that client's mail: the threads
+        // carry their Contactid, and every action offered on a thread — kraft,
+        // reply, open contact — then runs against a contact this client cannot
+        // reach. GetCombinedInboxThreadsAsync already filters this way.
         var query = _context.InboxEmails
             .Where(x =>
+                x.ClientId == clientId &&
                 x.InboxId == inboxId &&
                 !x.IsDeleted &&
                 x.TrackingId != null)

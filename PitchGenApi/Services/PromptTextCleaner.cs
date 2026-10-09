@@ -45,6 +45,34 @@ namespace PitchGenApi.Services
 
         private static readonly Regex AnyTag = new("<[^>]*>", RegexOptions.Compiled);
 
+        // ---- Word / Outlook markup -----------------------------------------
+        // Anything pasted out of Word brings these along. They carry no content
+        // a reader or a model needs, and <o:p> in particular is how Word marks
+        // a paragraph - left in, it is the thing the generator learns to copy.
+        private static readonly Regex OfficeXmlIslands = new(
+            @"<xml\b[^>]*>.*?</xml\s*>",
+            RegexOptions.IgnoreCase | RegexOptions.Singleline | RegexOptions.Compiled);
+
+        // <o:p>, </o:p>, <w:WordDocument>, <v:shape>, <m:oMath>, <st1:place> ...
+        private static readonly Regex OfficeNamespaceTags = new(
+            @"</?(?:o|w|v|m|x|st\d)\s*:[^>]*>",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // mso-* declarations inside a style attribute. Only Word reads them,
+        // and they are part of why a mail spaces itself differently in Outlook.
+        private static readonly Regex MsoDeclarations = new(
+            @"(?:^|;)\s*mso-[a-z-]+\s*:[^;]*",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // A paragraph or div holding nothing but blank space - Word's way of
+        // drawing a gap. An <img> or <a> inside is content, so neither is
+        // listed here and a block containing one is never dropped.
+        private static readonly Regex EmptyBlocks = new(
+            @"<(p|div)\b[^>]*>(?:\s|&nbsp;|&#160;| |<br\s*/?>"
+            + @"|<(?:span|font|em|strong|b|i|u|o:p)\b[^>]*>"
+            + @"|</(?:span|font|em|strong|b|i|u|o:p)\s*>)*</\1\s*>",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         // Leftover CSS that survives when a mail ships styles outside <style>.
         private static readonly Regex CssRuleBlocks = new(
             @"[.#@]?[-\w]+\s*\{[^{}]*(?:font|color|margin|padding|width|height|border|background|display)\s*:[^{}]*\}",
@@ -181,6 +209,14 @@ namespace PitchGenApi.Services
         /// the result renders in two fonts. The app decides the typeface;
         /// the example only decides the shape.
         ///
+        /// Word's own markup goes too. An example email pasted out of Word or
+        /// Outlook carries &lt;o:p&gt; paragraph markers, mso- declarations and
+        /// paragraphs holding nothing but &amp;nbsp; to draw a blank line. The
+        /// model copies the shape of the example, so left in they are taught as
+        /// formatting - and they are the kind that renders as a differently
+        /// sized gap in every mail client. The paragraphs survive; only Word's
+        /// way of spacing them does not.
+        ///
         /// Plain-text input comes back unchanged apart from trimming.
         /// </summary>
         public static string CleanEmailHtml(string? input)
@@ -193,11 +229,17 @@ namespace PitchGenApi.Services
 
             var html = NonContentBlocks.Replace(input, "");
             html = HtmlComments.Replace(html, "");
+            html = OfficeXmlIslands.Replace(html, "");
+            html = OfficeNamespaceTags.Replace(html, "");
             html = EventHandlerAttrs.Replace(html, "");
             html = ClassIdAttrs.Replace(html, "");
             html = DataUri.Replace(html, "");
             html = InvisibleChars.Replace(html, "");
             html = StripTypography(html);
+
+            // After the Office tags have gone, so that Word's
+            // <p><o:p>&nbsp;</o:p></p> spacer is by then an empty paragraph.
+            html = RemoveEmptyBlocks(html);
             html = Regex.Replace(html, @">\s+<", "><");
 
             return html.Trim();
@@ -212,22 +254,145 @@ namespace PitchGenApi.Services
         /// </summary>
         private static string StripTypography(string html)
         {
-            html = StyleAttr.Replace(html, match =>
-            {
-                var quoted = match.Groups[1].Value;
-                var quote = quoted[0];
-                var declarations = quoted[1..^1];
-
-                var kept = TypographyDeclarations.Replace(declarations, "")
-                                                 .Trim(TrimmedFromStyle);
-
-                return kept.Length == 0 ? "" : $" style={quote}{kept}{quote}";
-            });
+            html = RewriteStyleAttributes(
+                html,
+                declarations => MsoDeclarations.Replace(
+                    TypographyDeclarations.Replace(declarations, ""), ""));
 
             // face/size are scoped to the <font> tag they sit in, so a size=
             // on an <input> or <hr> elsewhere in the mail is left alone.
             return FontTag.Replace(html, m => FontPresentationAttrs.Replace(m.Value, ""));
         }
+
+        /// <summary>
+        /// Makes a generated email render the same in the Kraft editor, in
+        /// Gmail and in Outlook.
+        ///
+        /// The example output email is the one input whose HTML is kept, so
+        /// that the model reproduces its formatting. When that example was
+        /// pasted out of Word, what the model reproduces includes Word's way
+        /// of spacing paragraphs: &lt;o:p&gt; markers and paragraphs holding
+        /// nothing but &amp;nbsp;. A browser renders such a spacer as a blank
+        /// line plus two default paragraph margins; Outlook renders it with
+        /// Word's engine and Word's defaults; so one email arrives with a
+        /// different gap in each. <see cref="CleanEmailHtml"/> keeps the
+        /// pattern out of the prompt, and this keeps it out of the answer -
+        /// whether the model learned it from the example or invented it.
+        ///
+        /// The spacers go, and every paragraph is given an explicit bottom
+        /// margin, so the spacing is declared by the email rather than
+        /// inherited from whatever default the reading client applies. A
+        /// paragraph that already sets a margin of its own - a signature
+        /// block, say - is left exactly as it is, and nothing else about the
+        /// formatting is touched: bold, lists, links, colours, alignment and
+        /// the paragraph structure the example taught all survive.
+        ///
+        /// Plain-text input comes back unchanged apart from trimming.
+        /// </summary>
+        public static string NormalizeEmailHtml(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return "";
+
+            if (!LooksLikeHtml(input))
+                return input.Trim();
+
+            var html = OfficeXmlIslands.Replace(input, "");
+            html = OfficeNamespaceTags.Replace(html, "");
+            html = InvisibleChars.Replace(html, "");
+            html = RewriteStyleAttributes(html, d => MsoDeclarations.Replace(d, ""));
+            html = RemoveEmptyBlocks(html);
+            html = EnsureParagraphSpacing(html);
+
+            return html.Trim();
+        }
+
+        /// <summary>
+        /// Runs <paramref name="rewrite"/> over the declarations of every style
+        /// attribute in the markup. A style left with nothing in it is removed
+        /// rather than kept empty.
+        /// </summary>
+        private static string RewriteStyleAttributes(string html, Func<string, string> rewrite)
+            => StyleAttr.Replace(html, match =>
+            {
+                var quoted = match.Groups[1].Value;
+                var quote = quoted[0];
+
+                var kept = rewrite(quoted[1..^1]).Trim(TrimmedFromStyle);
+
+                return kept.Length == 0 ? "" : $" style={quote}{kept}{quote}";
+            });
+
+        /// <summary>
+        /// Drops the blank-space-only blocks, repeatedly: a wrapper only turns
+        /// empty once what it wrapped has gone, so Word's trailing
+        /// &lt;div&gt;&lt;div&gt;&lt;span&gt;&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+        /// takes three passes. The loop stops as soon as a pass changes
+        /// nothing, and the cap is there so no input can spin it.
+        /// </summary>
+        private static string RemoveEmptyBlocks(string html)
+        {
+            for (var pass = 0; pass < 8; pass++)
+            {
+                var next = EmptyBlocks.Replace(html, "");
+
+                if (next.Length == html.Length)
+                    return next;
+
+                html = next;
+            }
+
+            return html;
+        }
+
+        /// <summary>
+        /// Gives every paragraph that does not already declare a margin an
+        /// explicit bottom one. Browsers default to 1em above and below, which
+        /// collapse to the same 16px between two paragraphs, so the editor
+        /// looks exactly as it did; Outlook, which has no such default, now
+        /// agrees with it.
+        /// </summary>
+        private static string EnsureParagraphSpacing(string html)
+            => ParagraphOpenTag.Replace(html, match =>
+            {
+                var attributes = match.Groups[1].Value;
+
+                // <p /> holds no content to space.
+                if (attributes.TrimEnd().EndsWith("/", StringComparison.Ordinal))
+                    return match.Value;
+
+                var style = StyleAttr.Match(attributes);
+
+                if (!style.Success)
+                    return $"<p{attributes} style=\"{ParagraphSpacing}\">";
+
+                var quoted = style.Groups[1].Value;
+                var declarations = quoted[1..^1];
+
+                // The email asked for its own spacing; leave it alone.
+                if (MarginDeclaration.IsMatch(declarations))
+                    return match.Value;
+
+                var quote = quoted[0];
+                var kept = declarations.Trim(TrimmedFromStyle);
+                var merged = kept.Length == 0 ? ParagraphSpacing : $"{kept};{ParagraphSpacing}";
+
+                return $"<p{attributes[..style.Index]} style={quote}{merged}{quote}"
+                     + $"{attributes[(style.Index + style.Length)..]}>";
+            });
+
+        // One declared gap between paragraphs, in the unit the rest of the app
+        // uses. It is what a browser already does by default, so making it
+        // explicit changes nothing on screen and everything in Outlook.
+        private const string ParagraphSpacing = "margin:0 0 16px 0";
+
+        private static readonly Regex ParagraphOpenTag = new(
+            @"<p\b([^>]*)>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        // Any margin declaration at all, shorthand or side-specific, so a
+        // paragraph that sets only margin-left never has it reset by ours.
+        private static readonly Regex MarginDeclaration = new(
+            @"(?:^|;)\s*margin[a-z-]*\s*:", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly char[] TrimmedFromStyle = { ' ', ';', '\t', '\n', '\r' };
 

@@ -1030,6 +1030,15 @@ public class ContactRepository
             messages.Add(message);
         }
 
+        // The addresses we send from on this thread. A mailbox sync can pull
+        // our own messages into the inbound tables, and that is the only case
+        // where a row in them is really outbound — so this, rather than "the
+        // sender is not the contact", is what identifies one.
+        var ourSendingAddresses = sentLogs
+            .Select(x => (x.SenderEmailId ?? "").Trim().ToLower())
+            .Where(x => x.Length > 0)
+            .ToHashSet();
+
         // Our own sends win over a mailbox copy of the same mail: they carry
         // the campaign/blueprint metadata and the body we actually generated.
         foreach (var log in sentLogs)
@@ -1145,14 +1154,34 @@ public class ContactRepository
 
         // A mailbox-synced message is inbound when it comes from the contact;
         // anything else on the thread is one of ours that the sync pulled back.
+        // Direction for a row that came out of EmailReplies or InboxEmails.
+        //
+        // Both are inbound tables: the message arrived in our mailbox, so it is
+        // received unless we sent it ourselves. The earlier form asked only
+        // whether the sender matched the contact's stored address and called
+        // everything else "Sent", which mislabels a genuine reply sent from any
+        // other address — a personal account, an alias, a colleague answering
+        // on the prospect's behalf, or a contact whose stored address is simply
+        // out of date.
+        //
+        // That mislabelling is not cosmetic. Reply blueprints count the
+        // prospect-authored messages to find the one they are answering, and a
+        // transcript that reports "0 received from the contact" tells the model
+        // there is nothing to reply to.
         string DirectionFor(string? fromEmail, string fallback)
         {
-            if (!hasContactEmail)
+            var from = (fromEmail ?? "").Trim().ToLower();
+
+            if (from.Length == 0)
                 return fallback;
 
-            return (fromEmail ?? "").Trim().ToLower() == contactEmail
-                ? "Received"
-                : "Sent";
+            if (ourSendingAddresses.Contains(from))
+                return "Sent";
+
+            if (hasContactEmail && from == contactEmail)
+                return "Received";
+
+            return fallback;
         }
     }
 

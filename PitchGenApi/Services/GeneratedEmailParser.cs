@@ -56,6 +56,17 @@ namespace PitchGenApi.Services
         public bool LooksTruncated { get; set; }
 
         /// <summary>
+        /// True when the reply parsed as the JSON contract and was complete,
+        /// but carried no body — the model answered {"body_html":"",...}.
+        ///
+        /// Nothing was cut short here, so this must not be reported as a
+        /// truncation: the output budget is not the problem and raising it
+        /// changes nothing. The model declined to write, which points at the
+        /// blueprint or the inputs it was given.
+        /// </summary>
+        public bool IsEmptyBody { get; set; }
+
+        /// <summary>
         /// Highlights the model returned whose text could not be found in the
         /// body. They are dropped rather than shipped, because a snippet that
         /// does not match is invisible in the UI and unexplainable later. The
@@ -87,13 +98,20 @@ namespace PitchGenApi.Services
 
             // A JSON object with no body is not a usable structured reply —
             // treat the whole thing as HTML rather than saving an empty email.
+            //
+            // Which of the two failures it is matters to the caller. A reply
+            // that did not parse at all may well have been cut off mid-object.
+            // One that parsed cleanly and simply has an empty body_html was
+            // complete when it arrived, so the output budget is not involved
+            // and only the first of these may be called a truncation.
             if (json == null || bodyHtml.Length == 0)
             {
                 return new GeneratedEmail
                 {
                     BodyHtml = raw.Trim(),
                     IsStructured = false,
-                    LooksTruncated = LooksLikeBrokenJson(raw)
+                    IsEmptyBody = json != null,
+                    LooksTruncated = json == null && LooksLikeBrokenJson(raw)
                 };
             }
 

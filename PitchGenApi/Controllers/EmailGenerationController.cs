@@ -559,6 +559,33 @@ namespace PitchGenApi.Controllers
                     });
                 }
 
+                // A complete reply carrying an empty body_html. Saving it would
+                // blank the contact's email and charge a credit for nothing, so
+                // it fails here — but not as a truncation: the model answered in
+                // full and wrote nothing, which no output budget fixes.
+                if (generated.IsEmptyBody)
+                {
+                    Log.Error(
+                        "Email generation returned a complete reply with an empty body. "
+                        + "ContactId={ContactId}, BlueprintId={BlueprintId}, Model={Model}, Reply={Reply}",
+                        request.ContactId, request.BlueprintId, selectedModel, bodyResult.Content);
+
+                    return StatusCode(500, new
+                    {
+                        Message = "The model returned an empty email body. The reply arrived complete, so this "
+                                + "is not an output-limit problem and raising MaxTokens will not change it. "
+                                + "The writing step is sampled, so krafting again often succeeds. If it keeps "
+                                + "happening for this contact, the blueprint is likely leaving the model "
+                                + "nothing to write from — check the final prompt below.",
+                        Error = bodyResult.Content,
+                        FinalPrompt = promptSentToAi,
+                        WebSearchData = webSearchData,
+                        Notes = generationNotes,
+                        Emails = emailConversation,
+                        ProfessionalSummary = professionalSummary
+                    });
+                }
+
                 if (!generated.IsStructured)
                 {
                     Log.Information(
@@ -567,7 +594,13 @@ namespace PitchGenApi.Controllers
                         request.ContactId, request.BlueprintId);
                 }
 
-                var emailBody = generated.BodyHtml;
+                // Spacing made explicit before the body is used for anything
+                // else. An example email pasted out of Word teaches the model
+                // to separate paragraphs with <o:p> markers and &nbsp;-only
+                // paragraphs, and those render as a differently sized gap in
+                // the editor, in Gmail and in Outlook. Formatting the example
+                // really does teach - paragraphs, bold, lists, links - is kept.
+                var emailBody = PromptTextCleaner.NormalizeEmailHtml(generated.BodyHtml);
 
                 // ---- subject ----
                 string subjectLine = "";
