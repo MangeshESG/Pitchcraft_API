@@ -11,6 +11,7 @@ namespace PitchGenApi.Model.DTOs
         public string Password { get; set; }  // plain password, will hash it
         public string CompanyName { get; set; }
         public string JobTitle { get; set; }
+        public string? CaptchaToken { get; set; }
     }
 }
 
