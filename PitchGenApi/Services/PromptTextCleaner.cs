@@ -61,7 +61,7 @@ namespace PitchGenApi.Services
         // mso-* declarations inside a style attribute. Only Word reads them,
         // and they are part of why a mail spaces itself differently in Outlook.
         private static readonly Regex MsoDeclarations = new(
-            @"(?:^|;)\s*mso-[a-z-]+\s*:[^;]*",
+            @"(?:^|;)\s*mso-[a-z-]+\s*:" + DeclarationValue,
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         // A paragraph or div holding nothing but blank space - Word's way of
@@ -219,13 +219,93 @@ namespace PitchGenApi.Services
         ///
         /// Plain-text input comes back unchanged apart from trimming.
         /// </summary>
+        // ---- placeholders broken apart by the editor's own markup ----------
+        // A rich-text editor styles what is typed, not what is meant, so a
+        // placeholder typed into the example output email can end up with a tag
+        // between its brace and its name:
+        //
+        //     {<span style="...">Source of data}
+        //
+        // The literal "{Source of data}" is then nowhere in the stored value,
+        // so placeholder substitution - which looks for exactly that string -
+        // never matches and the token reaches the model unfilled. Values whose
+        // markup is stripped heal by accident (removing the tag closes the gap);
+        // the example output email is the one value whose HTML is kept, so it is
+        // the one that stays broken.
+        //
+        // Only inline formatting tags are moved. A <br> or a paragraph boundary
+        // inside the braces means the text was never one placeholder, and
+        // guessing there would corrupt the example rather than repair it.
+        private static readonly Regex BracedRegion = new(
+            @"\{(?<inner>(?:[^{}<>]|<[^<>]*>)*)\}",
+            RegexOptions.Compiled);
+
+        private static readonly Regex InlineFormattingTag = new(
+            @"^</?(?:span|font|b|strong|i|em|u|s|small|sub|sup|mark|a)\b[^<>]*>$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private static readonly Regex TagInRegion = new(
+            @"<[^<>]*>", RegexOptions.Compiled);
+
+        // What a field_name may contain. Deliberately excludes ":" and ";" so a
+        // stray CSS declaration ("{ color: red }") is never mistaken for a
+        // placeholder, and capped at 60 to match the column.
+        private static readonly Regex PlaceholderNameShape = new(
+            @"^[\p{L}\p{N}][\p{L}\p{N} _\-?&'()./]{0,59}$",
+            RegexOptions.Compiled);
+
+        /// <summary>
+        /// Moves inline tags out from between a placeholder's braces and its
+        /// name, so "{&lt;span&gt;Source of data}" becomes
+        /// "&lt;span&gt;{Source of data}" and substitution can match it.
+        ///
+        /// The tags are relocated, never dropped, so the markup stays balanced
+        /// and the filled value keeps the styling the author gave it. Text with
+        /// no split placeholder comes back unchanged.
+        /// </summary>
+        public static string HealSplitPlaceholders(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input) || input.IndexOf('{') < 0)
+                return input ?? "";
+
+            return BracedRegion.Replace(input, match =>
+            {
+                var inner = match.Groups["inner"].Value;
+
+                // Nothing between the braces but the name already.
+                if (inner.IndexOf('<') < 0)
+                    return match.Value;
+
+                var tags = new List<string>();
+
+                foreach (Match tag in TagInRegion.Matches(inner))
+                {
+                    // A <br>, a </p> or anything else structural: not a split
+                    // placeholder, so leave the region exactly as it is.
+                    if (!InlineFormattingTag.IsMatch(tag.Value))
+                        return match.Value;
+
+                    tags.Add(tag.Value);
+                }
+
+                var name = WebUtility.HtmlDecode(TagInRegion.Replace(inner, "")).Trim();
+
+                if (!PlaceholderNameShape.IsMatch(name))
+                    return match.Value;
+
+                // Tags first, so the braces (and the value that replaces them)
+                // sit inside the span the author styled.
+                return string.Concat(tags) + "{" + name + "}";
+            });
+        }
+
         public static string CleanEmailHtml(string? input)
         {
             if (string.IsNullOrWhiteSpace(input))
                 return "";
 
             if (!LooksLikeHtml(input))
-                return input.Trim();
+                return HealSplitPlaceholders(input.Trim());
 
             var html = NonContentBlocks.Replace(input, "");
             html = HtmlComments.Replace(html, "");
@@ -242,7 +322,9 @@ namespace PitchGenApi.Services
             html = RemoveEmptyBlocks(html);
             html = Regex.Replace(html, @">\s+<", "><");
 
-            return html.Trim();
+            // Last, so the tag rewriting above cannot re-split a token that
+            // has just been healed.
+            return HealSplitPlaceholders(html.Trim());
         }
 
         /// <summary>
@@ -404,8 +486,23 @@ namespace PitchGenApi.Services
         // with the separator in front of them. "font" is tried last and only
         // matches when a ":" follows immediately, so font-weight and font-style
         // fall through untouched.
+        // One CSS declaration's value, matched entity-aware rather than as
+        // [^;]*. An HTML entity ends in a semicolon, so
+        // font-family: &quot;Segoe UI&quot;, sans-serif used to match only as
+        // far as the ";" closing the first &quot;: the declaration was
+        // half-removed and its tail left stranded in the style attribute as
+        // rubbish CSS, which the model then copied into real emails.
+        //
+        // The entity alternative comes first and the catch-all excludes "&",
+        // or the catch-all consumes "&quot" one character at a time and the
+        // match ends at that semicolon anyway. A bare "&" is still allowed by
+        // the final alternative.
+        private const string DeclarationValue =
+            @"(?:&(?:[a-z][a-z0-9]*|\#\d+|\#x[0-9a-f]+);|[^;&]|&)*";
+
         private static readonly Regex TypographyDeclarations = new(
-            @"(?:^|;)\s*(?:font-family|font-size|line-height|font)\s*:[^;]*",
+            @"(?:^|;)\s*(?:font-family|font-size|line-height|font)\s*:"
+            + DeclarationValue,
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static readonly Regex FontTag = new(

@@ -19,7 +19,7 @@ namespace PitchGenApi.Model
         public string? TimeZoneLabel { get; set; }
 
         [MaxLength(20)]
-        public string DateFormat { get; set; } = "DD-MM-YYYY";
+        public string DateFormat { get; set; } = "DD MMM YYYY";
 
         [MaxLength(10)]
         public string TimeFormat { get; set; } = "24";

@@ -166,7 +166,10 @@ namespace PitchGenApi.Controllers
                         kv => PlaceholderEngine.CleanValue(kv.Key, kv.Value),
                         StringComparer.OrdinalIgnoreCase);
 
-                var campaignBlueprint = PlaceholderEngine.Apply(
+                // ApplyNested: a campaign value may itself contain a
+                // placeholder (an example output written with {hook} inside it),
+                // which one pass resolves only by luck of dictionary order.
+                var campaignBlueprint = PlaceholderEngine.ApplyNested(
                     template.TemplateDefinition.MasterBlueprintUnpopulated ?? "",
                     campaignOnlyValues);
 

@@ -776,7 +776,9 @@ namespace PitchGenApi.Controllers
             {
                 TimeZone = settings?.TimeZone,
                 TimeZoneLabel = settings?.TimeZoneLabel,
-                DateFormat = settings?.DateFormat ?? "DD-MM-YYYY",
+                // No saved row means the account has never chosen, so it gets
+                // the default rather than being pinned to the old numeric one.
+                DateFormat = settings?.DateFormat ?? "DD MMM YYYY",
                 TimeFormat = settings?.TimeFormat ?? "12"
             });
         }

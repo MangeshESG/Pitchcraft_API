@@ -388,7 +388,10 @@ namespace PitchGenApi.Controllers
                     .Where(kv => !RuntimeOnlyPlaceholders.Contains(kv.Key))
                     .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
 
-                string filledBlueprint = ApplyPlaceholders(
+                // Nested: a campaign value may itself contain a placeholder,
+                // so the preview has to expand until the text settles or it
+                // shows a literal {hook} the real generation would have filled.
+                string filledBlueprint = ApplyPlaceholdersNested(
                     template.TemplateDefinition.MasterBlueprintUnpopulated,
                     campaignOnlyValues
                 );
@@ -884,28 +887,23 @@ namespace PitchGenApi.Controllers
             });
         }
 
+        // Delegated to the shared engine rather than kept as a local copy:
+        // the copy passed the value to Regex.Replace as a replacement STRING,
+        // so a "$" in a note, an example output or a LinkedIn summary was read
+        // as a substitution token ("$1", "$&") and silently mangled the prompt.
+        // PlaceholderEngine.Apply uses a MatchEvaluator, which cannot.
         private static string ApplyPlaceholders(
-
             string blueprint,
             Dictionary<string, string>? values)
-        {
-            if (string.IsNullOrEmpty(blueprint) || values == null || values.Count == 0)
-                return blueprint ?? "";
+            => PlaceholderEngine.Apply(blueprint, values);
 
-            string result = blueprint;
-
-            foreach (var (key, value) in values)
-            {
-                result = Regex.Replace(
-                    result,
-                    $"{{{Regex.Escape(key)}}}",
-                    value ?? "",
-                    RegexOptions.IgnoreCase
-                );
-            }
-
-            return result;
-        }
+        // The campaign-level pass, repeated until the text settles, so a
+        // campaign value that itself contains a placeholder resolves. Runtime
+        // (per-contact) values stay on the single pass above.
+        private static string ApplyPlaceholdersNested(
+            string blueprint,
+            Dictionary<string, string>? values)
+            => PlaceholderEngine.ApplyNested(blueprint, values);
 
         private static readonly HashSet<string> RuntimeOnlyPlaceholders =
         new(StringComparer.OrdinalIgnoreCase)
@@ -1421,7 +1419,10 @@ namespace PitchGenApi.Controllers
                     .Where(kv => !runtimeReplacements.ContainsKey(kv.Key))
                     .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
 
-                var campaignBlueprint = ApplyPlaceholders(
+                // Nested, matching the single-contact generator: a campaign
+                // value written with another placeholder inside it must resolve
+                // whatever order the saved JSON holds its keys in.
+                var campaignBlueprint = ApplyPlaceholdersNested(
                     template.TemplateDefinition.MasterBlueprintUnpopulated ?? "",
                     campaignOnlyValues
                 );
@@ -1571,7 +1572,7 @@ namespace PitchGenApi.Controllers
                 // Same two-pass fill as the body: campaign-level values first,
                 // then per-contact runtime values on top.
                 string FillSubjectPlaceholders(string text) =>
-                    ApplyPlaceholders(ApplyPlaceholders(text, campaignOnlyValues), subjectReplacements);
+                    ApplyPlaceholders(ApplyPlaceholdersNested(text, campaignOnlyValues), subjectReplacements);
 
                 if (isAiSubject)
                 {

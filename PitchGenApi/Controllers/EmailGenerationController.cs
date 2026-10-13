@@ -224,7 +224,12 @@ namespace PitchGenApi.Controllers
                     .Where(kv => !runtimeReplacements.ContainsKey(kv.Key))
                     .ToDictionary(kv => kv.Key, kv => CleanPlaceholderValue(kv.Key, kv.Value), StringComparer.OrdinalIgnoreCase);
 
-                var campaignBlueprint = ApplyPlaceholders(
+                // ApplyPlaceholdersNested, not ApplyPlaceholders: a campaign
+                // value may itself contain a placeholder — {example_output_email}
+                // written with {hook} or {sender_name} inside it — and a single
+                // pass only fills those when the dictionary happens to visit the
+                // outer key first.
+                var campaignBlueprint = ApplyPlaceholdersNested(
                     template.TemplateDefinition.MasterBlueprintUnpopulated ?? "",
                     campaignOnlyValues
                 );
@@ -368,7 +373,7 @@ namespace PitchGenApi.Controllers
                     // first, then the per-contact runtime values, so a campaign
                     // value that itself contains {first_name} still resolves.
                     var filledForFold = ApplyPlaceholders(
-                        ApplyPlaceholders(subjectInstructionTemplate, campaignOnlyValues),
+                        ApplyPlaceholdersNested(subjectInstructionTemplate, campaignOnlyValues),
                         runtimeReplacements);
 
                     // Subject rules are authored in a rich-text field, so they
@@ -992,6 +997,16 @@ namespace PitchGenApi.Controllers
             }
             return result;
         }
+
+        // The campaign-level pass, repeated until the text settles, so a
+        // campaign value that itself contains a placeholder resolves whatever
+        // order the saved JSON holds its keys in. Runtime (per-contact) values
+        // deliberately stay on the single pass above — a brace inside a note or
+        // a custom attribute is content, not a slot.
+        private static string ApplyPlaceholdersNested(
+            string blueprint,
+            Dictionary<string, string>? values)
+            => PlaceholderEngine.ApplyNested(blueprint, values);
 
         private static bool ContainsPlaceholder(string? text, string key)
             => !string.IsNullOrEmpty(text) &&

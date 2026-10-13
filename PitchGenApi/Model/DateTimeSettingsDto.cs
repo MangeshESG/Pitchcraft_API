@@ -8,8 +8,10 @@ namespace PitchGenApi.Model
         public string TimeZone { get; set; }
         public string? TimeZoneLabel { get; set; }
 
-        [RegularExpression("^(DD-MM-YYYY|MM-DD-YYYY)$")]
-        public string DateFormat { get; set; } = "DD-MM-YYYY";
+        // "DD MMM YYYY" renders as "10 May 2027". A month name reads the same
+        // way everywhere, so it is what an account gets until it says otherwise.
+        [RegularExpression("^(DD MMM YYYY|DD-MM-YYYY|MM-DD-YYYY)$")]
+        public string DateFormat { get; set; } = "DD MMM YYYY";
 
         [RegularExpression("^(12|24)$")]
         public string TimeFormat { get; set; } = "24";
