@@ -105,7 +105,7 @@ namespace PitchGenApi.Controllers
             return Ok(new { groups, attributes });
         }
 
-        [HttpPut("order")]
+        [HttpPost("order")]
         public async Task<IActionResult> ReorderGroups([FromBody] ReorderGroupPageRequest request)
         {
             if (CurrentClientId is not int clientId) return Unauthorized();
@@ -135,7 +135,7 @@ namespace PitchGenApi.Controllers
             });
         }
 
-        [HttpPut("{groupId:int}/attributes/order")]
+        [HttpPost("{groupId:int}/attributes/order")]
         public async Task<IActionResult> ReorderAttributes(int groupId, [FromBody] ReorderGroupPageRequest request)
         {
             if (CurrentClientId is not int clientId) return Unauthorized();
@@ -171,7 +171,7 @@ namespace PitchGenApi.Controllers
         public Task<IActionResult> Create([FromBody] SaveCustomAttributeGroupRequest request) =>
             Save(null, request);
 
-        [HttpPut("{id:int}")]
+        [HttpPost("{id:int}")]
         public Task<IActionResult> Update(int id, [FromBody] SaveCustomAttributeGroupRequest request) =>
             Save(id, request);
 
