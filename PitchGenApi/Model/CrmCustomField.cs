@@ -1,4 +1,4 @@
-﻿namespace PitchGenApi.Model
+namespace PitchGenApi.Model
 {
     public class CrmCustomField
     {
@@ -8,6 +8,8 @@
         public string field_key { get; set; }
         public string field_type { get; set; }
         public string? options_json { get; set; }
+        public int? group_id { get; set; }
+        public long sort_order { get; set; }
         public DateTime created_at { get; set; }
     }
 }
