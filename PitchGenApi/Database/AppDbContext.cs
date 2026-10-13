@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
 using PitchGenApi.Models;
 
@@ -52,6 +52,7 @@ namespace PitchGenApi.Database
         public DbSet<UploadedImage> UploadedImages { get; set; }
         public DbSet<ContactAttachments> ContactAttachments { get; set; }
         public DbSet<CrmCustomField> crm_custom_fields { get; set; }
+        public DbSet<CrmCustomFieldGroup> crm_custom_field_groups { get; set; }
         public DbSet<ContactCustomFieldValue> contact_custom_field_values { get; set; }
         public DbSet<CrmColumnPreference> crm_column_preferences { get; set; }
 
