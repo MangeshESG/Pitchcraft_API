@@ -502,6 +502,13 @@ namespace PitchGenApi.Controllers
                 // ---- system prompt is EMPTY (matches frontend) ----
                 var systemPrompt = "";
 
+                // JSON mode is refused by every provider unless the word
+                // "json" is in the prompt, and the services append it when a
+                // blueprint has lost it. Doing that here instead keeps the
+                // guarantee below true: the services then find the word
+                // already present and change nothing.
+                finalPrompt = JsonObjectMode.EnsureJsonMentioned(finalPrompt);
+
                 // From here on the prompt is frozen. Everything the response
                 // reports as the final prompt reads this variable, so what the
                 // UI shows is byte-for-byte what the model received.
@@ -509,12 +516,21 @@ namespace PitchGenApi.Controllers
 
                 // The dedicated search above already supplied the research, so
                 // the writing call must not search again on any provider.
+                //
+                // RequireJsonObject makes the provider itself guarantee the
+                // reply is one parseable object. The blueprint's worked
+                // example still defines the fields: this is object mode, not
+                // schema mode, so the shape stays editable in the admin UI.
+                // Without it the model hand-writes JSON around HTML and the
+                // generation fails whenever an attribute quote goes unescaped
+                // or a closing line of prose follows the final brace.
                 var bodyResult = await GeneratePitchByProviderAsync(new EnquiryRequest
                 {
                     Prompt = promptSentToAi,
                     ScrappedData = systemPrompt,
                     ModelName = selectedModel,
-                    DisableWebSearchTool = true
+                    DisableWebSearchTool = true,
+                    RequireJsonObject = true
                 });
 
                 if (!bodyResult.IsSuccess || string.IsNullOrWhiteSpace(bodyResult.Content))

@@ -263,7 +263,13 @@ namespace PitchGenApi.Services
                     messages.Add(new { role = "system", content = request.ScrappedData });
                 }
 
-                messages.Add(new { role = "user", content = request.Prompt });
+                messages.Add(new
+                {
+                    role = "user",
+                    content = request.RequireJsonObject
+                        ? JsonObjectMode.EnsureJsonMentioned(request.Prompt)
+                        : request.Prompt
+                });
 
                 var requestBody = new Dictionary<string, object>
                 {
@@ -277,6 +283,13 @@ namespace PitchGenApi.Services
                     // not settle this one way or the other.
                     { "enable_thinking", false }
                 };
+
+                // Model Studio's compatible mode takes the chat-completions
+                // spelling. Object mode is the one every Qwen model supports;
+                // schema mode is limited to the newest series, so it is not
+                // used here.
+                if (request.RequireJsonObject)
+                    requestBody["response_format"] = JsonObjectMode.ResponseFormat();
 
                 using var httpContent = new StringContent(
                     JsonConvert.SerializeObject(requestBody),
@@ -843,10 +856,22 @@ namespace PitchGenApi.Services
             var requestBody = new Dictionary<string, object>
             {
                 { "model", apiModelName },
-                { "input", request.Prompt },
+                {
+                    "input",
+                    request.RequireJsonObject
+                        ? JsonObjectMode.EnsureJsonMentioned(request.Prompt)
+                        : request.Prompt
+                },
                 { "max_output_tokens", maxTokens },
                 { "reasoning", ReasoningEffort }
             };
+
+            // The Responses API spelling, not response_format: a thinking
+            // model only ever reaches Model Studio through this endpoint.
+            if (request.RequireJsonObject)
+            {
+                requestBody["text"] = JsonObjectMode.TextFormat();
+            }
 
             if (!string.IsNullOrWhiteSpace(request.ScrappedData))
             {

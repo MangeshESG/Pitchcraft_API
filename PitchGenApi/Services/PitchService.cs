@@ -55,6 +55,12 @@ namespace PitchGenApi.Services
                 request.ModelName = "gpt-5.1";
             }
 
+            // In JSON mode the word "json" must survive into the prompt or
+            // the API refuses the call, so it is settled before the prompt is
+            // read into either the request or the echoed input.
+            if (request.RequireJsonObject)
+                request.Prompt = JsonObjectMode.EnsureJsonMentioned(request.Prompt);
+
             // Build role-tagged input for Responses API
             var sbInput = new StringBuilder();
             sbInput.AppendLine($"system: {systemContent}");
@@ -93,6 +99,11 @@ namespace PitchGenApi.Services
         new { type = "web_search_preview" }
                 };
             }
+
+            // The Responses API takes this as text.format. response_format is
+            // the chat-completions spelling and is deprecated here.
+            if (request.RequireJsonObject)
+                requestData["text"] = JsonObjectMode.TextFormat();
 
             var requestBody = JsonConvert.SerializeObject(requestData);
             var content = new StringContent(requestBody, Encoding.UTF8, "application/json");

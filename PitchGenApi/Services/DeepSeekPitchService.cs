@@ -232,7 +232,9 @@ namespace PitchGenApi.Services
                 messages.Add(new
                 {
                     role = "user",
-                    content = request.Prompt
+                    content = request.RequireJsonObject
+                        ? JsonObjectMode.EnsureJsonMentioned(request.Prompt)
+                        : request.Prompt
                 });
 
                 bool isDeepSeekV4 = apiModelName.StartsWith(
@@ -247,6 +249,14 @@ namespace PitchGenApi.Services
                     { "max_tokens", maxTokens },
                     { "stream", false }
                 };
+
+                // DeepSeek is OpenAI-compatible here, so this is the chat
+                // completions spelling. Their docs warn that JSON mode can
+                // return empty content now and then; that surfaces as the
+                // caller's empty-body failure, which already says krafting
+                // again usually works.
+                if (request.RequireJsonObject)
+                    requestBody["response_format"] = JsonObjectMode.ResponseFormat();
 
                 if (isDeepSeekV4)
                 {
