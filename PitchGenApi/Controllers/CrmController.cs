@@ -250,7 +250,11 @@ namespace PitchGenApi.Controllers
                 liveContactSuggestions = v.LiveContactSuggestionsJson,
                 emailValiditySuggestions = v.EmailValiditySuggestionsJson,
                 isVerified = v.IsVerified,
-                verifiedAt = v.VerifiedAt
+                verifiedAt = v.VerifiedAt,
+                // The raw JSON, parsed in the browser like validationSources
+                // is, and for the same reason: an object here would become a
+                // column of its own in the auto-generated grid.
+                manualScores = v.ManualScoresJson
             };
         }
 

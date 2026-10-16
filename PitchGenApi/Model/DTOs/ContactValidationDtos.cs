@@ -127,6 +127,12 @@
         public bool IsVerified { get; set; }
         public DateTime? VerifiedAt { get; set; }
         public string? VerifiedBy { get; set; }
+
+        /// <summary>
+        /// Which of the four scores above were set by hand rather than earned,
+        /// keyed by check type. A score with no entry here came from a run.
+        /// </summary>
+        public Dictionary<string, ManualScoreMark> ManualScores { get; set; } = new();
     }
 
     public sealed class ValidationSourceDto
@@ -183,6 +189,20 @@
     {
         public int ClientId { get; set; }
         public int ContactId { get; set; }
+        /// <summary>A key from <see cref="ValidationCheckTypes"/>.</summary>
+        public string CheckType { get; set; } = "";
+        public string? VerifiedBy { get; set; }
+    }
+
+    /// <summary>
+    /// One check, many contacts — the bulk update panel's override. The
+    /// mirror image of <see cref="MarkVerifiedRequestDto"/>, which is many
+    /// checks on one contact at a time.
+    /// </summary>
+    public sealed class VerifyScoresRequestDto
+    {
+        public int ClientId { get; set; }
+        public List<int> ContactIds { get; set; } = new();
         /// <summary>A key from <see cref="ValidationCheckTypes"/>.</summary>
         public string CheckType { get; set; } = "";
         public string? VerifiedBy { get; set; }

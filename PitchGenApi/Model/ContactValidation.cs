@@ -1,4 +1,4 @@
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace PitchGenApi.Model
@@ -158,6 +158,24 @@ namespace PitchGenApi.Model
         public string? VerifiedBy { get; set; }
 
         /// <summary>
+        /// Which checks currently hold a 100 that a person typed rather than a
+        /// run produced, as {"check_type":{"at","by"}} — written by the bulk
+        /// update panel's verify action, by the single-score override beside a
+        /// cell, and by "Mark as verified" for each check it raises.
+        ///
+        /// It exists so the grid can say so. A hand-set 100 and an earned 100
+        /// are the same number in the same column, and a user reading a perfect
+        /// score deserves to know which of the two they are looking at before
+        /// they mail the contact. Sorting, filtering and export all stay on the
+        /// score itself: the mark explains the number, it does not qualify it.
+        ///
+        /// Read and written through <see cref="ManualScoreMarks"/>, which also
+        /// clears a check's mark when that check runs again.
+        /// </summary>
+        [Column("manual_scores_json")]
+        public string? ManualScoresJson { get; set; }
+
+        /// <summary>
         /// The corrections column belonging to one check.
         ///
         /// Four columns rather than one shared blob because each check replaces
@@ -176,6 +194,44 @@ namespace PitchGenApi.Model
                 ValidationCheckTypes.EmailVerification => EmailValiditySuggestionsJson,
                 _ => null
             };
+
+        /// <summary>
+        /// The confidence column belonging to one check.
+        ///
+        /// Four columns, one per check, are what the grid sorts and filters on,
+        /// so they stay columns rather than rows — but anything that acts on
+        /// "whichever check the caller named" needs them addressable by key as
+        /// well, and that switch is written once here instead of in every
+        /// endpoint that takes a check type.
+        /// </summary>
+        public int? ConfidenceFor(string checkType) =>
+            ValidationCheckTypes.Normalize(checkType) switch
+            {
+                ValidationCheckTypes.ContactFit => ContactFitConfidence,
+                ValidationCheckTypes.DataIntegrity => DataIntegrityConfidence,
+                ValidationCheckTypes.LiveContact => LiveContactConfidence,
+                ValidationCheckTypes.EmailVerification => EmailValidityConfidence,
+                _ => null
+            };
+
+        public void SetConfidence(string checkType, int? score)
+        {
+            switch (ValidationCheckTypes.Normalize(checkType))
+            {
+                case ValidationCheckTypes.ContactFit:
+                    ContactFitConfidence = score;
+                    break;
+                case ValidationCheckTypes.DataIntegrity:
+                    DataIntegrityConfidence = score;
+                    break;
+                case ValidationCheckTypes.LiveContact:
+                    LiveContactConfidence = score;
+                    break;
+                case ValidationCheckTypes.EmailVerification:
+                    EmailValidityConfidence = score;
+                    break;
+            }
+        }
 
         public void SetSuggestionsJson(string checkType, string? json)
         {

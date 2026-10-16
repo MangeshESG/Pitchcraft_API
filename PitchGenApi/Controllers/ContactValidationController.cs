@@ -522,6 +522,19 @@ namespace PitchGenApi.Controllers
 
                     if (row.EmailValidityConfidence.HasValue)
                         row.EmailValidityConfidence = 100;
+
+                    // Each raised score is marked as hand-set, so a cell can
+                    // say where its 100 came from. Only checks that actually
+                    // moved are marked: one that never ran has no score for the
+                    // note to explain.
+                    foreach (var check in ValidationCheckTypes.All)
+                    {
+                        if (row.ConfidenceFor(check).HasValue)
+                        {
+                            row.ManualScoresJson = ManualScoreMarks.Set(
+                                row.ManualScoresJson, check, now, request.VerifiedBy);
+                        }
+                    }
                 }
             }
 
@@ -570,23 +583,16 @@ namespace PitchGenApi.Controllers
             if (row == null)
                 return NotFound(new { success = false, message = "This contact has not been validated." });
 
-            switch (checkType)
-            {
-                case ValidationCheckTypes.ContactFit:
-                    row.ContactFitConfidence = 100;
-                    break;
-                case ValidationCheckTypes.DataIntegrity:
-                    row.DataIntegrityConfidence = 100;
-                    break;
-                case ValidationCheckTypes.LiveContact:
-                    row.LiveContactConfidence = 100;
-                    break;
-                case ValidationCheckTypes.EmailVerification:
-                    row.EmailValidityConfidence = 100;
-                    break;
-            }
+            var verifiedAt = DateTime.UtcNow;
 
-            row.UpdatedAt = DateTime.UtcNow;
+            row.SetConfidence(checkType, 100);
+
+            // A hand-set 100 is indistinguishable from an earned one once it is
+            // in the column, so the mark is what lets the cell say which it is.
+            row.ManualScoresJson = ManualScoreMarks.Set(
+                row.ManualScoresJson, checkType, verifiedAt, request.VerifiedBy);
+
+            row.UpdatedAt = verifiedAt;
             await _context.SaveChangesAsync();
 
             var (label, _) = ValidationCheckTypes.Describe(checkType);
@@ -596,7 +602,93 @@ namespace PitchGenApi.Controllers
                 success = true,
                 message = $"{label} set to 100.",
                 checkType,
-                score = 100
+                score = 100,
+                verifiedAt,
+                manualScores = ManualScoreMarks.Read(row.ManualScoresJson)
+            });
+        }
+
+        /// <summary>
+        /// Sets one check's score to 100 across many contacts at once — the
+        /// bulk update panel's version of the single-score override.
+        /// </summary>
+        /// <remarks>
+        /// One check, many contacts, which is the opposite axis to
+        /// mark-verified: that one speaks for a whole contact and raises all
+        /// four of its scores. A user working down an Employment Match column
+        /// who can see that fifty rows are fine is making one judgement about
+        /// one check, and should not have to claim their email addresses were
+        /// validated to record it.
+        ///
+        /// Contacts with no validation row yet get one. The judgement is the
+        /// user's own and does not depend on a run having happened first, and
+        /// the mark written beside the score says plainly that no run produced
+        /// it — the other three checks stay null, so nothing claims to have
+        /// been checked that has not been.
+        ///
+        /// Pending corrections are left alone, for the same reason the
+        /// single-contact override leaves them: deciding a score is acceptable
+        /// and wanting a typo fixed are two different decisions, and folding
+        /// them together would have one click silently discard the other.
+        /// </remarks>
+        [HttpPost("score/verify-bulk")]
+        public async Task<IActionResult> VerifyScores([FromBody] VerifyScoresRequestDto request)
+        {
+            if (request == null || request.ClientId <= 0)
+                return BadRequest(new { success = false, message = "A valid client is required." });
+
+            var checkType = ValidationCheckTypes.Normalize(request.CheckType ?? "");
+
+            if (!ValidationCheckTypes.IsKnown(checkType))
+                return BadRequest(new { success = false, message = "Unknown check." });
+
+            var ids = (request.ContactIds ?? new List<int>())
+                .Where(id => id > 0)
+                .Distinct()
+                .ToList();
+
+            if (ids.Count == 0)
+                return BadRequest(new { success = false, message = "Select at least one contact." });
+
+            var existing = await _context.contact_validations
+                .Where(v => v.ClientId == request.ClientId && ids.Contains(v.ContactId))
+                .ToListAsync();
+
+            var byContact = existing.ToDictionary(v => v.ContactId);
+            var now = DateTime.UtcNow;
+
+            foreach (var contactId in ids)
+            {
+                if (!byContact.TryGetValue(contactId, out var row))
+                {
+                    row = new ContactValidation
+                    {
+                        ClientId = request.ClientId,
+                        ContactId = contactId,
+                        CreatedAt = now
+                    };
+
+                    _context.contact_validations.Add(row);
+                }
+
+                row.SetConfidence(checkType, 100);
+                row.ManualScoresJson = ManualScoreMarks.Set(
+                    row.ManualScoresJson, checkType, now, request.VerifiedBy);
+                row.UpdatedAt = now;
+            }
+
+            await _context.SaveChangesAsync();
+
+            var (bulkLabel, _) = ValidationCheckTypes.Describe(checkType);
+
+            return Ok(new
+            {
+                success = true,
+                message = $"{bulkLabel} set to 100 for {ids.Count} contact(s).",
+                checkType,
+                score = 100,
+                verifiedAt = now,
+                updated = ids.Count
             });
         }
 
@@ -813,7 +905,8 @@ namespace PitchGenApi.Controllers
                 EmailValiditySuggestions = ValidationSuggestionJson.Deserialize(row.EmailValiditySuggestionsJson),
                 IsVerified = row.IsVerified,
                 VerifiedAt = row.VerifiedAt,
-                VerifiedBy = row.VerifiedBy
+                VerifiedBy = row.VerifiedBy,
+                ManualScores = ManualScoreMarks.Read(row.ManualScoresJson)
             };
         }
 

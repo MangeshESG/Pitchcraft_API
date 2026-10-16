@@ -2196,6 +2196,11 @@
                 row.SetSuggestionsJson(
                     job.CheckType, SerialiseSuggestions(result.Suggestions, contact));
 
+                // The check has just scored this contact itself, so any note
+                // that its last 100 was typed in by hand no longer describes
+                // the number in the column.
+                row.ManualScoresJson = ManualScoreMarks.Clear(row.ManualScoresJson, job.CheckType);
+
                 row.SourcesJson = MergeSources(row.SourcesJson, result.Sources);
                 row.UpdatedAt = now;
 
@@ -2621,6 +2626,8 @@
                 ValidationCheckTypes.EmailVerification,
                 BuildEmailSuggestion(contact, unlock));
             row.EmailCheckedAt = now;
+            row.ManualScoresJson = ManualScoreMarks.Clear(
+                row.ManualScoresJson, ValidationCheckTypes.EmailVerification);
             row.UpdatedAt = now;
 
             item.Status = ValidationItemStatuses.Completed;
