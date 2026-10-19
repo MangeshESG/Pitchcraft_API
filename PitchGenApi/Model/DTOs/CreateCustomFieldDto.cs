@@ -7,5 +7,7 @@
         public string FieldKey { get; set; }
         public string FieldType { get; set; }
         public string? OptionsJson { get; set; }
+        public int? GroupId { get; set; }
+        public string? SystemGroupKey { get; set; }
     }
 }
