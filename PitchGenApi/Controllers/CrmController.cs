@@ -418,11 +418,27 @@ namespace PitchGenApi.Controllers
         [HttpPost("custom-field")]
         public async Task<IActionResult> CreateCustomField([FromBody] CreateCustomFieldDto dto)
         {
+            var systemGroupKey = dto.SystemGroupKey?.Trim().ToLowerInvariant();
+            if (!string.IsNullOrEmpty(systemGroupKey) && systemGroupKey != "personal" && systemGroupKey != "company")
+                return BadRequest(new { message = "Selected system group is unavailable." });
+            if (dto.GroupId.HasValue && systemGroupKey != null)
+                return BadRequest(new { message = "Choose one attribute group." });
+            if (dto.GroupId.HasValue && !await _context.crm_custom_field_groups.AnyAsync(
+                group => group.client_id == dto.ClientId && group.id == dto.GroupId.Value))
+                return BadRequest(new { message = "Selected group is unavailable." });
+
             var fieldCount = await _context.crm_custom_fields
                 .CountAsync(x => x.client_id == dto.ClientId);
 
             if (fieldCount >= 30)
                 return BadRequest("Maximum 30 custom fields allowed.");
+
+            var lastOrder = await _context.crm_custom_fields
+                .Where(existing => existing.client_id == dto.ClientId &&
+                    (systemGroupKey != null ? existing.assigned_system_group_key == systemGroupKey :
+                     existing.group_id == dto.GroupId && existing.assigned_system_group_key == null))
+                .MaxAsync(existing => (long?)existing.sort_order) ?? 0;
+            if (systemGroupKey != null) lastOrder = Math.Max(lastOrder, 1024);
 
             var field = new CrmCustomField
             {
@@ -431,6 +447,9 @@ namespace PitchGenApi.Controllers
                 field_key = dto.FieldKey,
                 field_type = dto.FieldType,
                 options_json = dto.OptionsJson,
+                group_id = dto.GroupId,
+                assigned_system_group_key = systemGroupKey,
+                sort_order = lastOrder + 1024,
                 created_at = DateTime.UtcNow
             };
 
