@@ -21,10 +21,24 @@ namespace PitchGenApi.Controllers
             int.TryParse(User.FindFirst("UserId")?.Value, out var clientId) && clientId > 0
                 ? clientId : null;
 
+        private async Task<int?> ResolveClientIdAsync()
+        {
+            if (CurrentClientId is not int callerId) return null;
+            if (!Request.Query.TryGetValue("clientId", out var selectedValue)) return callerId;
+            if (!int.TryParse(selectedValue.ToString(), out var selectedId) || selectedId <= 0) return null;
+            if (selectedId == callerId) return callerId;
+
+            var isAdmin = await _context.tbl_clientdetails.AsNoTracking()
+                .AnyAsync(client => client.ClientID == callerId && client.IsAdmin == true);
+            if (!isAdmin) return null;
+            return await _context.tbl_clientdetails.AsNoTracking().AnyAsync(client => client.ClientID == selectedId)
+                ? selectedId : null;
+        }
+
         [HttpGet]
         public async Task<IActionResult> List(int page = 1, int pageSize = 20, string? search = null)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             page = Math.Max(page, 1);
             pageSize = Math.Clamp(pageSize, 1, 100);
             var query = _context.crm_custom_field_groups.AsNoTracking().Where(g => g.client_id == clientId);
@@ -53,7 +67,7 @@ namespace PitchGenApi.Controllers
         public async Task<IActionResult> ListAttributes(int page = 1, int pageSize = 20,
             string? search = null, int? groupId = null, bool ungroupedOnly = false, string? systemGroupKey = null)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             page = Math.Max(page, 1);
             pageSize = Math.Clamp(pageSize, 1, 100);
             if (groupId.HasValue && !await _context.crm_custom_field_groups
@@ -100,7 +114,7 @@ namespace PitchGenApi.Controllers
         [HttpGet("layout")]
         public async Task<IActionResult> Layout()
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             var groups = await _context.crm_custom_field_groups.AsNoTracking()
                 .Where(g => g.client_id == clientId)
                 .OrderBy(g => g.sort_order).ThenBy(g => g.id)
@@ -119,7 +133,7 @@ namespace PitchGenApi.Controllers
         [HttpPost("order")]
         public async Task<IActionResult> ReorderGroups([FromBody] ReorderGroupPageRequest request)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             if (request == null || request.Page < 1 || request.PageSize < 1 || request.PageSize > 100 ||
                 request.OrderedIds == null || request.OrderedIds.Count == 0 ||
                 request.OrderedIds.Count > request.PageSize ||
@@ -149,7 +163,7 @@ namespace PitchGenApi.Controllers
         [HttpPost("{groupId:int}/attributes/order")]
         public async Task<IActionResult> ReorderAttributes(int groupId, [FromBody] ReorderGroupPageRequest request)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             if (request == null || request.Page < 1 || request.PageSize < 1 || request.PageSize > 100 ||
                 request.OrderedIds == null || request.OrderedIds.Count == 0 ||
                 request.OrderedIds.Count > request.PageSize ||
@@ -186,7 +200,7 @@ namespace PitchGenApi.Controllers
         [HttpPost("{groupId:int}/mixed-order")]
         public async Task<IActionResult> ReorderMixedAttributes(int groupId, [FromBody] ReorderMixedAttributesRequest request)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             if (request?.OrderedKeys == null || request.OrderedKeys.Count == 0 ||
                 request.OrderedKeys.Count != request.OrderedKeys.Distinct(StringComparer.Ordinal).Count())
                 return BadRequest(new { message = "Invalid attribute order." });
@@ -261,7 +275,7 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey AND field_key = @
 
         private async Task<IActionResult> Save(int? id, SaveCustomAttributeGroupRequest request)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             if (request == null) return BadRequest("Group details are required.");
             var name = request.Name?.Trim();
             if (string.IsNullOrWhiteSpace(name) || name.Length > 120)
@@ -356,7 +370,7 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey AND field_key = @
         [HttpPost("attributes/move")]
         public async Task<IActionResult> MoveAttribute([FromBody] MoveCustomAttributeRequest request)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             if (request == null || request.AttributeId <= 0 || request.DestinationGroupId < 0)
                 return BadRequest(new { message = "Invalid attribute move." });
             var destinationSystemKey = request.DestinationSystemGroupKey?.Trim().ToLowerInvariant();
@@ -397,7 +411,7 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey AND field_key = @
         [HttpPost("{id:int}/delete")]
         public async Task<IActionResult> Delete(int id)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             var strategy = _context.Database.CreateExecutionStrategy();
             return await strategy.ExecuteAsync<IActionResult>(async () =>
             {
@@ -453,7 +467,7 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
         [HttpGet("system")]
         public async Task<IActionResult> ListSystemFields()
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             var saved = new Dictionary<string, (string groupKey, int order)>();
             var connection = _context.Database.GetDbConnection();
             await using var command = connection.CreateCommand();
@@ -510,7 +524,7 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
         [HttpPost("system/move")]
         public async Task<IActionResult> MoveSystemFields([FromBody] MoveSystemFieldsRequest request)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             var destination = request?.DestinationGroupKey?.ToLowerInvariant() ?? "";
             if (!Fields.ContainsKey(destination) &&
                 (!destination.StartsWith("custom:") || !int.TryParse(destination[7..], out var groupId) ||
@@ -563,7 +577,7 @@ IF @@ROWCOUNT = 0
         [HttpPost("system/{groupKey}/order")]
         public async Task<IActionResult> SaveOrder(string groupKey, [FromBody] SaveOrderRequest request)
         {
-            if (CurrentClientId is not int clientId) return Unauthorized();
+            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
             groupKey = groupKey.ToLowerInvariant();
             if (!Fields.ContainsKey(groupKey) &&
                 (!groupKey.StartsWith("custom:") || !int.TryParse(groupKey[7..], out var groupId) ||
