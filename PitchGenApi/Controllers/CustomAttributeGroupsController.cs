@@ -9,7 +9,6 @@ using PitchGenApi.Model;
 namespace PitchGenApi.Controllers
 {
     [ApiController]
-    [Authorize]
     [Route("api/crm/custom-attribute-groups")]
     public class CustomAttributeGroupsController : ControllerBase
     {
@@ -28,10 +27,17 @@ namespace PitchGenApi.Controllers
             if (!int.TryParse(selectedValue.ToString(), out var selectedId) || selectedId <= 0) return null;
             if (selectedId == callerId) return callerId;
 
-            var isAdmin = await _context.tbl_clientdetails.AsNoTracking()
-                .AnyAsync(client => client.ClientID == callerId && client.IsAdmin == true);
+            // The main app login issues UserId from ClientDetails; the legacy login
+            // issues it from tbl_clientdetails. Resolve admin status in the same table
+            // that issued this token so equal numeric IDs cannot cross-authorize.
+            var isMainAppToken = User.FindFirst("firstname") != null;
+            var isAdmin = isMainAppToken
+                ? await _context.ClientDetails.AsNoTracking()
+                    .AnyAsync(client => client.Id == callerId && client.IsAdmin)
+                : await _context.tbl_clientdetails.AsNoTracking()
+                    .AnyAsync(client => client.ClientID == callerId && client.IsAdmin == true);
             if (!isAdmin) return null;
-            return await _context.tbl_clientdetails.AsNoTracking().AnyAsync(client => client.ClientID == selectedId)
+            return await _context.ClientDetails.AsNoTracking().AnyAsync(client => client.Id == selectedId)
                 ? selectedId : null;
         }
 
