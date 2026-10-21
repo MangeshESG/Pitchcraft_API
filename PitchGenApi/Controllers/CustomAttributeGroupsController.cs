@@ -550,12 +550,12 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
                 await using var command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText = @"DECLARE @next int = (SELECT COALESCE(MAX(sort_order), @base - 1) + 1 FROM dbo.crm_system_field_order
-WHERE client_id = @clientId AND assigned_group_key = @destination);
-UPDATE dbo.crm_system_field_order SET assigned_group_key = @destination, sort_order = @next
-WHERE client_id = @clientId AND field_key = @fieldKey;
-IF @@ROWCOUNT = 0
-    INSERT INTO dbo.crm_system_field_order (client_id, group_key, assigned_group_key, field_key, sort_order)
-    VALUES (@clientId, @source, @destination, @fieldKey, @next);";
+                    WHERE client_id = @clientId AND assigned_group_key = @destination);
+                    UPDATE dbo.crm_system_field_order SET assigned_group_key = @destination, sort_order = @next
+                    WHERE client_id = @clientId AND field_key = @fieldKey;
+                    IF @@ROWCOUNT = 0
+                        INSERT INTO dbo.crm_system_field_order (client_id, group_key, assigned_group_key, field_key, sort_order)
+                        VALUES (@clientId, @source, @destination, @fieldKey, @next);";
                 foreach (var (name, value) in new (string, object)[] {
                     ("@clientId", clientId), ("@source", ""), ("@destination", destination),
                     ("@base", Fields.TryGetValue(destination, out var defaultFields) ? defaultFields.Length : 0),
@@ -601,7 +601,7 @@ IF @@ROWCOUNT = 0
                 {
                     current.Transaction = transaction;
                     current.CommandText = @"SELECT field_key FROM dbo.crm_system_field_order
-WHERE client_id = @clientId AND (assigned_group_key = @groupKey OR (assigned_group_key IS NULL AND group_key = @groupKey))";
+                            WHERE client_id = @clientId AND (assigned_group_key = @groupKey OR (assigned_group_key IS NULL AND group_key = @groupKey))";
                     foreach (var (name, value) in new (string, object)[] { ("@clientId", clientId), ("@groupKey", groupKey) })
                     {
                         var parameter = current.CreateParameter(); parameter.ParameterName = name; parameter.Value = value;
@@ -620,10 +620,10 @@ WHERE client_id = @clientId AND (assigned_group_key = @groupKey OR (assigned_gro
                 await using var command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText = @"UPDATE dbo.crm_system_field_order SET sort_order = @sortOrder
-WHERE client_id = @clientId AND field_key = @fieldKey;
-IF @@ROWCOUNT = 0
-    INSERT INTO dbo.crm_system_field_order (client_id, group_key, field_key, sort_order)
-    VALUES (@clientId, @source, @fieldKey, @sortOrder);";
+                        WHERE client_id = @clientId AND field_key = @fieldKey;
+                        IF @@ROWCOUNT = 0
+                            INSERT INTO dbo.crm_system_field_order (client_id, group_key, field_key, sort_order)
+                            VALUES (@clientId, @source, @fieldKey, @sortOrder);";
                 foreach (var (name, value) in new (string, object)[] {
                     ("@clientId", clientId), ("@groupKey", groupKey.ToLowerInvariant()),
                     ("@source", ""), ("@fieldKey", ""), ("@sortOrder", 0) })

@@ -1038,28 +1038,8 @@ namespace PitchGenApi.Controllers
                         var normalizedEmail = candidate.email?.Trim().ToLowerInvariant();
                         var hasEmail = !string.IsNullOrWhiteSpace(normalizedEmail);
 
-                        // A row with no address is imported rather than dropped:
-                        // Audience Assurance can discover one from a LinkedIn
-                        // profile or a company domain, so a row is only useless
-                        // when there is nothing at all to identify the person by.
-                        if (!hasEmail &&
-                            string.IsNullOrWhiteSpace(candidate.fullName) &&
-                            string.IsNullOrWhiteSpace(candidate.firstName) &&
-                            string.IsNullOrWhiteSpace(candidate.lastName) &&
-                            string.IsNullOrWhiteSpace(candidate.linkedInUrl))
-                        {
-                            skippedContacts.Add(new
-                            {
-                                rowNumber = candidate.sourceRowNumber ?? index + 2,
-                                email = candidate.email,
-                                fullName = candidate.fullName,
-                                reason = "The row has no email, name or LinkedIn URL"
-                            });
-                            continue;
-                        }
-
-                        // Duplicate detection keys on the address, so rows without
-                        // one skip it rather than all colliding on the empty string.
+                        // Duplicate detection only applies when an email is present.
+                        // Contacts may be imported without an email, name, or LinkedIn URL.
                         if (hasEmail && existingEmailSet.Contains(normalizedEmail!))
                         {
                             skippedContacts.Add(new
@@ -1092,7 +1072,7 @@ namespace PitchGenApi.Controllers
                         return Ok(new
                         {
                             success = true,
-                            message = "No contacts were imported because all rows were duplicates or invalid",
+                            message = "No contacts were imported because all email addresses were duplicates",
                             dataFileId = (int?)null,
                             contactCount = 0,
                             skippedCount = skippedContacts.Count,
