@@ -77,6 +77,9 @@ namespace PitchGenApi.Model
         [Column("is_sent")]
         public bool IsSent { get; set; }
 
+        [Column("is_pinned")]
+        public bool IsPinned { get; set; }
+
         /// <summary>
         /// UTC, when the message happened on LinkedIn. Outbound: stamped when
         /// the user ticks the Sent checkbox, cleared when they untick it.

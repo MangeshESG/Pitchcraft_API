@@ -27,15 +27,15 @@ namespace PitchGenApi.Controllers
             if (!int.TryParse(selectedValue.ToString(), out var selectedId) || selectedId <= 0) return null;
             if (selectedId == callerId) return callerId;
 
-            // The main app login issues UserId from ClientDetails; the legacy login
-            // issues it from tbl_clientdetails. Resolve admin status in the same table
-            // that issued this token so equal numeric IDs cannot cross-authorize.
-            var isMainAppToken = User.FindFirst("firstname") != null;
-            var isAdmin = isMainAppToken
-                ? await _context.ClientDetails.AsNoTracking()
-                    .AnyAsync(client => client.Id == callerId && client.IsAdmin)
-                : await _context.tbl_clientdetails.AsNoTracking()
-                    .AnyAsync(client => client.ClientID == callerId && client.IsAdmin == true);
+            // Match both the signed user ID and name. The two login flows use
+            // different client tables, and an optional firstname claim is not
+            // a reliable way to tell which table issued the token.
+            var username = User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(username)) return null;
+            var isAdmin = await _context.ClientDetails.AsNoTracking()
+                .AnyAsync(client => client.Id == callerId && client.Username == username && client.IsAdmin)
+                || await _context.tbl_clientdetails.AsNoTracking()
+                    .AnyAsync(client => client.ClientID == callerId && client.UserName == username && client.IsAdmin == true);
             if (!isAdmin) return null;
             return await _context.ClientDetails.AsNoTracking().AnyAsync(client => client.Id == selectedId)
                 ? selectedId : null;

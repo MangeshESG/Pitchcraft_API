@@ -28,6 +28,30 @@ namespace PitchGenApi.Controllers
     [Route("api/[controller]")]
     public class CrmController : ControllerBase
     {
+        public sealed class SetLinkedInMessagePinRequest
+        {
+            public int ClientId { get; set; }
+            public int ContactId { get; set; }
+            public long MessageId { get; set; }
+            public bool IsPinned { get; set; }
+        }
+
+        [HttpPost("linkedin-messages/set-pin")]
+        public async Task<IActionResult> SetLinkedInMessagePin([FromBody] SetLinkedInMessagePinRequest request)
+        {
+            if (request == null || request.ClientId <= 0 || request.ContactId <= 0 || request.MessageId <= 0)
+                return BadRequest(new { success = false, message = "Valid client, contact and message are required." });
+
+            var message = await _context.LinkedInMessages.FirstOrDefaultAsync(m =>
+                m.ClientId == request.ClientId && m.ContactId == request.ContactId &&
+                m.Id == request.MessageId && m.IsSent);
+            if (message == null)
+                return NotFound(new { success = false, message = "LinkedIn message not found for this contact." });
+
+            message.IsPinned = request.IsPinned;
+            await _context.SaveChangesAsync();
+            return Ok(new { success = true, message.IsPinned });
+        }
 
         // Order the matching query before Skip/Take. Property names are resolved
         // against mapped model properties, never interpolated into SQL.
