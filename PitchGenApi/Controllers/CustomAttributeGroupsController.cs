@@ -27,15 +27,15 @@ namespace PitchGenApi.Controllers
             if (!int.TryParse(selectedValue.ToString(), out var selectedId) || selectedId <= 0) return null;
             if (selectedId == callerId) return callerId;
 
-            // The main app login issues UserId from ClientDetails; the legacy login
-            // issues it from tbl_clientdetails. Resolve admin status in the same table
-            // that issued this token so equal numeric IDs cannot cross-authorize.
-            var isMainAppToken = User.FindFirst("firstname") != null;
-            var isAdmin = isMainAppToken
-                ? await _context.ClientDetails.AsNoTracking()
-                    .AnyAsync(client => client.Id == callerId && client.IsAdmin)
-                : await _context.tbl_clientdetails.AsNoTracking()
-                    .AnyAsync(client => client.ClientID == callerId && client.IsAdmin == true);
+            // Match both the signed user ID and name. The two login flows use
+            // different client tables, and an optional firstname claim is not
+            // a reliable way to tell which table issued the token.
+            var username = User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(username)) return null;
+            var isAdmin = await _context.ClientDetails.AsNoTracking()
+                .AnyAsync(client => client.Id == callerId && client.Username == username && client.IsAdmin)
+                || await _context.tbl_clientdetails.AsNoTracking()
+                    .AnyAsync(client => client.ClientID == callerId && client.UserName == username && client.IsAdmin == true);
             if (!isAdmin) return null;
             return await _context.ClientDetails.AsNoTracking().AnyAsync(client => client.Id == selectedId)
                 ? selectedId : null;
@@ -550,12 +550,12 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
                 await using var command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText = @"DECLARE @next int = (SELECT COALESCE(MAX(sort_order), @base - 1) + 1 FROM dbo.crm_system_field_order
-WHERE client_id = @clientId AND assigned_group_key = @destination);
-UPDATE dbo.crm_system_field_order SET assigned_group_key = @destination, sort_order = @next
-WHERE client_id = @clientId AND field_key = @fieldKey;
-IF @@ROWCOUNT = 0
-    INSERT INTO dbo.crm_system_field_order (client_id, group_key, assigned_group_key, field_key, sort_order)
-    VALUES (@clientId, @source, @destination, @fieldKey, @next);";
+                    WHERE client_id = @clientId AND assigned_group_key = @destination);
+                    UPDATE dbo.crm_system_field_order SET assigned_group_key = @destination, sort_order = @next
+                    WHERE client_id = @clientId AND field_key = @fieldKey;
+                    IF @@ROWCOUNT = 0
+                        INSERT INTO dbo.crm_system_field_order (client_id, group_key, assigned_group_key, field_key, sort_order)
+                        VALUES (@clientId, @source, @destination, @fieldKey, @next);";
                 foreach (var (name, value) in new (string, object)[] {
                     ("@clientId", clientId), ("@source", ""), ("@destination", destination),
                     ("@base", Fields.TryGetValue(destination, out var defaultFields) ? defaultFields.Length : 0),
@@ -601,7 +601,7 @@ IF @@ROWCOUNT = 0
                 {
                     current.Transaction = transaction;
                     current.CommandText = @"SELECT field_key FROM dbo.crm_system_field_order
-WHERE client_id = @clientId AND (assigned_group_key = @groupKey OR (assigned_group_key IS NULL AND group_key = @groupKey))";
+                            WHERE client_id = @clientId AND (assigned_group_key = @groupKey OR (assigned_group_key IS NULL AND group_key = @groupKey))";
                     foreach (var (name, value) in new (string, object)[] { ("@clientId", clientId), ("@groupKey", groupKey) })
                     {
                         var parameter = current.CreateParameter(); parameter.ParameterName = name; parameter.Value = value;
@@ -620,10 +620,10 @@ WHERE client_id = @clientId AND (assigned_group_key = @groupKey OR (assigned_gro
                 await using var command = connection.CreateCommand();
                 command.Transaction = transaction;
                 command.CommandText = @"UPDATE dbo.crm_system_field_order SET sort_order = @sortOrder
-WHERE client_id = @clientId AND field_key = @fieldKey;
-IF @@ROWCOUNT = 0
-    INSERT INTO dbo.crm_system_field_order (client_id, group_key, field_key, sort_order)
-    VALUES (@clientId, @source, @fieldKey, @sortOrder);";
+                        WHERE client_id = @clientId AND field_key = @fieldKey;
+                        IF @@ROWCOUNT = 0
+                            INSERT INTO dbo.crm_system_field_order (client_id, group_key, field_key, sort_order)
+                            VALUES (@clientId, @source, @fieldKey, @sortOrder);";
                 foreach (var (name, value) in new (string, object)[] {
                     ("@clientId", clientId), ("@groupKey", groupKey.ToLowerInvariant()),
                     ("@source", ""), ("@fieldKey", ""), ("@sortOrder", 0) })

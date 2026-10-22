@@ -28,6 +28,30 @@ namespace PitchGenApi.Controllers
     [Route("api/[controller]")]
     public class CrmController : ControllerBase
     {
+        public sealed class SetLinkedInMessagePinRequest
+        {
+            public int ClientId { get; set; }
+            public int ContactId { get; set; }
+            public long MessageId { get; set; }
+            public bool IsPinned { get; set; }
+        }
+
+        [HttpPost("linkedin-messages/set-pin")]
+        public async Task<IActionResult> SetLinkedInMessagePin([FromBody] SetLinkedInMessagePinRequest request)
+        {
+            if (request == null || request.ClientId <= 0 || request.ContactId <= 0 || request.MessageId <= 0)
+                return BadRequest(new { success = false, message = "Valid client, contact and message are required." });
+
+            var message = await _context.LinkedInMessages.FirstOrDefaultAsync(m =>
+                m.ClientId == request.ClientId && m.ContactId == request.ContactId &&
+                m.Id == request.MessageId && m.IsSent);
+            if (message == null)
+                return NotFound(new { success = false, message = "LinkedIn message not found for this contact." });
+
+            message.IsPinned = request.IsPinned;
+            await _context.SaveChangesAsync();
+            return Ok(new { success = true, message.IsPinned });
+        }
 
         // Order the matching query before Skip/Take. Property names are resolved
         // against mapped model properties, never interpolated into SQL.
@@ -1038,28 +1062,8 @@ namespace PitchGenApi.Controllers
                         var normalizedEmail = candidate.email?.Trim().ToLowerInvariant();
                         var hasEmail = !string.IsNullOrWhiteSpace(normalizedEmail);
 
-                        // A row with no address is imported rather than dropped:
-                        // Audience Assurance can discover one from a LinkedIn
-                        // profile or a company domain, so a row is only useless
-                        // when there is nothing at all to identify the person by.
-                        if (!hasEmail &&
-                            string.IsNullOrWhiteSpace(candidate.fullName) &&
-                            string.IsNullOrWhiteSpace(candidate.firstName) &&
-                            string.IsNullOrWhiteSpace(candidate.lastName) &&
-                            string.IsNullOrWhiteSpace(candidate.linkedInUrl))
-                        {
-                            skippedContacts.Add(new
-                            {
-                                rowNumber = candidate.sourceRowNumber ?? index + 2,
-                                email = candidate.email,
-                                fullName = candidate.fullName,
-                                reason = "The row has no email, name or LinkedIn URL"
-                            });
-                            continue;
-                        }
-
-                        // Duplicate detection keys on the address, so rows without
-                        // one skip it rather than all colliding on the empty string.
+                        // Duplicate detection only applies when an email is present.
+                        // Contacts may be imported without an email, name, or LinkedIn URL.
                         if (hasEmail && existingEmailSet.Contains(normalizedEmail!))
                         {
                             skippedContacts.Add(new
@@ -1092,7 +1096,7 @@ namespace PitchGenApi.Controllers
                         return Ok(new
                         {
                             success = true,
-                            message = "No contacts were imported because all rows were duplicates or invalid",
+                            message = "No contacts were imported because all email addresses were duplicates",
                             dataFileId = (int?)null,
                             contactCount = 0,
                             skippedCount = skippedContacts.Count,

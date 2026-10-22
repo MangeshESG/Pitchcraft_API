@@ -1097,6 +1097,7 @@ namespace PitchGenApi.Controllers
             Body = includeBody ? m.Body : null,
             CharacterCount = m.Body?.Length ?? 0,
             m.IsSent,
+            m.IsPinned,
             m.SentAt,
             m.MarkedFrom,
             m.GeneratedAt
