@@ -282,6 +282,33 @@ namespace PitchGenApi.Controllers
             };
         }
 
+        /// <summary>
+        /// The account's time zone, as chosen in Settings. It decides the day a
+        /// Today / Yesterday / Tomorrow filter means, so a saved view filters on
+        /// the account's day rather than on the server's. UTC when the account
+        /// has never chosen one, or named a zone this machine does not know.
+        /// </summary>
+        private async Task<TimeZoneInfo> GetClientTimeZoneAsync(int clientId)
+        {
+            var timeZoneId = await _context.UserDateTimeSettings
+                .AsNoTracking()
+                .Where(settings => settings.ClientId == clientId)
+                .Select(settings => settings.TimeZone)
+                .FirstOrDefaultAsync();
+
+            if (string.IsNullOrWhiteSpace(timeZoneId))
+                return TimeZoneInfo.Utc;
+
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId.Trim());
+            }
+            catch (Exception)
+            {
+                return TimeZoneInfo.Utc;
+            }
+        }
+
         private static List<string> ViewFilterValues(string? raw)
         {
             if (string.IsNullOrWhiteSpace(raw)) return new List<string>();
@@ -379,6 +406,12 @@ namespace PitchGenApi.Controllers
                     selectedValues.Contains(v.value!)));
                 return true;
             }
+
+            // "Today" is not a value any column holds: a relative day has to be
+            // resolved against the account's time zone, which the in-memory path
+            // does.
+            if (RelativeDateFilterHelper.UsesRelativeDays(payload))
+                return false;
 
             var candidate = source;
             foreach (var condition in conditions)
@@ -627,7 +660,8 @@ namespace PitchGenApi.Controllers
             var trackingContext = await TrackingFilterHelper.BuildTrackingFilterContextAsync(
                 _context, clientId, payload, contactIds, contactEmails);
 
-            var matchedIds = TrackingFilterHelper.ApplyFilters(rows, payload, trackingContext)
+            var matchedIds = TrackingFilterHelper.ApplyFilters(
+                    rows, payload, trackingContext, await GetClientTimeZoneAsync(clientId))
                 .Select(row => row.id)
                 .ToList();
 
@@ -4895,7 +4929,8 @@ namespace PitchGenApi.Controllers
 
                 var trackingContext = await TrackingFilterHelper.BuildTrackingFilterContextAsync(
                     _context, dto.ClientId, payload, contactIds, contactEmails);
-                var filtered = TrackingFilterHelper.ApplyFilters(result, payload, trackingContext);
+                var filtered = TrackingFilterHelper.ApplyFilters(
+                    result, payload, trackingContext, await GetClientTimeZoneAsync(dto.ClientId));
                 Console.WriteLine($"[View Contacts Timing] Tracking and filters ({filtered.Count} matched): {queryTimer.ElapsedMilliseconds} ms");
                 queryTimer.Restart();
 

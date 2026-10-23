@@ -245,7 +245,11 @@ namespace PitchGenApi.Helpers
         public static List<T> ApplyFilters<T>(
             List<T> data,
             FiltersPayload? payload,
-            TrackingFilterContext trackingContext
+            TrackingFilterContext trackingContext,
+            // The account's time zone from Settings, which is what decides the
+            // day a Today / Yesterday / Tomorrow condition means. UTC when the
+            // caller has none to offer.
+            TimeZoneInfo? clientTimeZone = null
         )
         {
             var groups = NormalizeGroups(payload);
@@ -271,7 +275,7 @@ namespace PitchGenApi.Helpers
                     for (int i = 0; i < conditions.Count; i++)
                     {
                         var cond = conditions[i];
-                        bool eval = EvaluateCondition(row!, cond, trackingContext);
+                        bool eval = EvaluateCondition(row!, cond, trackingContext, clientTimeZone);
 
                         if (i == 0)
                         {
@@ -302,15 +306,25 @@ namespace PitchGenApi.Helpers
         private static bool EvaluateCondition(
             object row,
             FilterConditionDto cond,
-            TrackingFilterContext trackingContext
+            TrackingFilterContext trackingContext,
+            TimeZoneInfo? clientTimeZone = null
         )
         {
             if (IsTrackingField(cond.Field))
-                return EvaluateTrackingCondition(row, cond, trackingContext);
+                return EvaluateTrackingCondition(row, cond, trackingContext, clientTimeZone);
 
             var rawValue = GetFieldValue(row, cond.Field ?? "");
             var targets = GetConditionValues(cond.Value);
             var target = targets.FirstOrDefault() ?? "";
+
+            // A condition naming a calendar day - one the user picked, or the
+            // one Today / Yesterday / Tomorrow stands for right now - is
+            // compared by day rather than as an instant. Anything else falls
+            // through to the comparisons below.
+            var dayResult = RelativeDateFilterHelper.Evaluate(
+                cond.Operator, rawValue, cond.Value, clientTimeZone ?? TimeZoneInfo.Utc);
+            if (dayResult.HasValue)
+                return dayResult.Value;
 
             switch ((cond.Operator ?? "").Trim())
             {
@@ -385,7 +399,8 @@ namespace PitchGenApi.Helpers
         private static bool EvaluateTrackingCondition(
             object row,
             FilterConditionDto cond,
-            TrackingFilterContext trackingContext
+            TrackingFilterContext trackingContext,
+            TimeZoneInfo? clientTimeZone = null
         )
         {
             var contactId = ToIntSafe(GetFieldValue(row, "id"));
@@ -413,7 +428,7 @@ namespace PitchGenApi.Helpers
                 return false;
 
             if (string.Equals(cond.Field, "tracking_send_date", StringComparison.OrdinalIgnoreCase))
-                return EvaluateSendDateCondition(cond, buckets, contactId, email);
+                return EvaluateSendDateCondition(cond, buckets, contactId, email, clientTimeZone);
 
             var operatorValue = (cond.Operator ?? "").Trim();
             if (!operatorValue.Equals("equals", StringComparison.OrdinalIgnoreCase) &&
@@ -464,7 +479,8 @@ namespace PitchGenApi.Helpers
             FilterConditionDto cond,
             List<CampaignTrackingBucket> buckets,
             int? contactId,
-            string email
+            string email,
+            TimeZoneInfo? clientTimeZone = null
         )
         {
             var dates = new List<DateTime>();
@@ -492,6 +508,14 @@ namespace PitchGenApi.Helpers
                 return false;
 
             var latest = dates.Max();
+
+            // The send date is a timestamp and the condition names a day - its
+            // own, or the one a relative day resolves to as the view is run.
+            var dayResult = RelativeDateFilterHelper.EvaluateInstant(
+                op, latest, cond.Value, clientTimeZone ?? TimeZoneInfo.Utc);
+            if (dayResult.HasValue)
+                return dayResult.Value;
+
             var target = ToDateSafe(cond.Value ?? "");
             if (!target.HasValue)
                 return false;
