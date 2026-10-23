@@ -443,6 +443,197 @@ namespace PitchGenApi.Controllers
             return true;
         }
 
+        /// <summary>
+        /// The fields the filter panel can ask about, for the in-memory pass.
+        /// The properties are named after the field keys the panel sends,
+        /// because the shared filter engine resolves a condition by looking for
+        /// a property of that name on the row.
+        /// </summary>
+        private sealed class ContactFilterRow
+        {
+            public int id { get; set; }
+            public string? full_name { get; set; }
+            public string? first_name { get; set; }
+            public string? last_name { get; set; }
+            public string? email { get; set; }
+            public string? website { get; set; }
+            public string? company_name { get; set; }
+            public string? job_title { get; set; }
+            public string? linkedin_url { get; set; }
+            public string? country_or_address { get; set; }
+            public string? CompanyTelephone { get; set; }
+            public string? CompanyEmployeeCount { get; set; }
+            public string? CompanyIndustry { get; set; }
+            public string? CompanyLinkedInURL { get; set; }
+            public DateTime created_at { get; set; }
+            public DateTime? updated_at { get; set; }
+            public DateTime? email_sent_at { get; set; }
+            public bool hasLinkedInInfo { get; set; }
+            public bool hasWebSearchData { get; set; }
+            public bool hasNotes { get; set; }
+            public Dictionary<string, object?> customFields { get; set; } =
+                new(StringComparer.OrdinalIgnoreCase);
+            public int? contactFitConfidence { get; set; }
+            public int? dataIntegrityConfidence { get; set; }
+            public int? liveContactConfidence { get; set; }
+            public int? emailValidityConfidence { get; set; }
+            public bool? isVerified { get; set; }
+            public DateTime? lastChecked { get; set; }
+        }
+
+        /// <summary>
+        /// Narrows a contacts query by the filter panel's conditions, for the
+        /// list and segment screens.
+        ///
+        /// The panel used to match the rows the browser was already holding,
+        /// which is one page of the list - so a condition that matched contacts
+        /// further down the list looked like it matched nothing at all. The
+        /// conditions are matched here instead, over every contact the query
+        /// covers, by the same two paths a saved view uses: pushed into SQL
+        /// where they translate, and otherwise evaluated by the shared
+        /// in-memory engine (tracking, Audience Assurance, numeric and date
+        /// comparisons, mixed OR). Either way the result is a narrowed query,
+        /// so each endpoint keeps its own counting, sorting and paging.
+        /// </summary>
+        private async Task<(IQueryable<Contact> query, string? error)> ApplyContactPanelFiltersAsync(
+            IQueryable<Contact> query,
+            string? filtersJson,
+            int clientId)
+        {
+            if (string.IsNullOrWhiteSpace(filtersJson))
+                return (query, null);
+
+            FiltersPayload? payload;
+            try
+            {
+                payload = JsonSerializer.Deserialize<FiltersPayload>(
+                    filtersJson,
+                    new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        Converters = { new FlexibleStringConverter() }
+                    });
+            }
+            catch (Exception parseEx)
+            {
+                // Reported rather than ignored: a filter that quietly does not
+                // apply looks exactly like the bug this path exists to fix.
+                return (query, $"Invalid filtersJson sent with this request: {parseEx.Message}");
+            }
+
+            var trackingError = TrackingFilterHelper.ValidateTrackingFilters(payload);
+            if (!string.IsNullOrWhiteSpace(trackingError))
+                return (query, trackingError);
+
+            var hasConditions = TrackingFilterHelper.NormalizeGroups(payload)
+                .SelectMany(group => group.Conditions ?? new List<FilterConditionDto>())
+                .Any(TrackingFilterHelper.IsCompleteCondition);
+            if (!hasConditions)
+                return (query, null);
+
+            if (TryApplyViewFiltersInDatabase(query, payload, clientId, out var databaseFiltered))
+                return (databaseFiltered, null);
+
+            // Described as a query rather than as a list of ids: a list can hold
+            // tens of thousands of contacts, and the related rows below are
+            // joined against it in the database instead of being asked for by id.
+            var contactIdQuery = query.Select(c => c.id);
+
+            var rows = await query
+                .Select(c => new ContactFilterRow
+                {
+                    id = c.id,
+                    full_name = c.full_name,
+                    first_name = c.first_name,
+                    last_name = c.last_name,
+                    email = c.email,
+                    website = c.website,
+                    company_name = c.company_name,
+                    job_title = c.job_title,
+                    linkedin_url = c.linkedin_url,
+                    country_or_address = c.country_or_address,
+                    CompanyTelephone = c.CompanyTelephone,
+                    CompanyEmployeeCount = c.CompanyEmployeeCount,
+                    CompanyIndustry = c.CompanyIndustry,
+                    CompanyLinkedInURL = c.CompanyLinkedInURL,
+                    created_at = c.created_at,
+                    updated_at = c.updated_at,
+                    email_sent_at = c.email_sent_at,
+                    hasLinkedInInfo = c.linkedIninformation != null && c.linkedIninformation != "",
+                    hasWebSearchData = c.web_search_data != null && c.web_search_data != ""
+                })
+                .ToListAsync();
+
+            if (rows.Count == 0)
+                return (query, null);
+
+            var rowsById = rows.ToDictionary(row => row.id);
+
+            var notedIds = (await _context.Notes.AsNoTracking()
+                    .Where(note => note.ClientId == clientId && contactIdQuery.Contains(note.ContactId))
+                    .Select(note => note.ContactId)
+                    .Distinct()
+                    .ToListAsync())
+                .ToHashSet();
+
+            var customValues = await (
+                from value in _context.contact_custom_field_values.AsNoTracking()
+                join field in _context.crm_custom_fields.AsNoTracking() on value.field_id equals field.id
+                where field.client_id == clientId && contactIdQuery.Contains(value.contact_id)
+                select new { value.contact_id, field.field_name, value.value }).ToListAsync();
+
+            // The scores decide which contacts match, so they are needed for
+            // every contact the filter considers - only worth loading when a
+            // condition actually mentions one.
+            var validations = ValidationFilterHelper.UsesValidationFields(payload)
+                ? await LoadValidationsAsync(clientId, contactIdQuery)
+                : new Dictionary<int, ContactValidation>();
+
+            foreach (var row in rows)
+            {
+                row.hasNotes = notedIds.Contains(row.id);
+
+                if (!validations.TryGetValue(row.id, out var validation))
+                    continue;
+
+                row.contactFitConfidence = validation.ContactFitConfidence;
+                row.dataIntegrityConfidence = validation.DataIntegrityConfidence;
+                row.liveContactConfidence = validation.LiveContactConfidence;
+                row.emailValidityConfidence = validation.EmailValidityConfidence;
+                row.isVerified = validation.IsVerified;
+                row.lastChecked = new[]
+                {
+                    validation.ContactFitCheckedAt,
+                    validation.DataIntegrityCheckedAt,
+                    validation.LiveContactCheckedAt,
+                    validation.EmailCheckedAt
+                }.Where(date => date.HasValue).Max();
+            }
+
+            foreach (var value in customValues)
+            {
+                if (string.IsNullOrWhiteSpace(value.field_name)) continue;
+                if (rowsById.TryGetValue(value.contact_id, out var row))
+                    row.customFields[value.field_name.Trim()] = value.value;
+            }
+
+            var contactIds = rows.Select(row => row.id).ToList();
+            var contactEmails = rows
+                .Select(row => string.IsNullOrWhiteSpace(row.email) ? "" : row.email.Trim().ToLower())
+                .Where(email => email.Length > 0)
+                .Distinct()
+                .ToList();
+
+            var trackingContext = await TrackingFilterHelper.BuildTrackingFilterContextAsync(
+                _context, clientId, payload, contactIds, contactEmails);
+
+            var matchedIds = TrackingFilterHelper.ApplyFilters(rows, payload, trackingContext)
+                .Select(row => row.id)
+                .ToList();
+
+            return (query.Where(c => matchedIds.Contains(c.id)), null);
+        }
+
         [HttpPost("custom-field")]
         public async Task<IActionResult> CreateCustomField([FromBody] CreateCustomFieldDto dto)
         {
@@ -1695,7 +1886,10 @@ namespace PitchGenApi.Controllers
             [FromQuery] int pageSize = 0,
             [FromQuery] string? search = null,
             [FromQuery] string? sortBy = null,
-            [FromQuery] string? sortDirection = null)
+            [FromQuery] string? sortDirection = null,
+            // The filter panel's conditions, matched over the whole list here
+            // rather than over the page the browser is holding.
+            [FromQuery] string? filtersJson = null)
         {
             try
             {
@@ -1728,6 +1922,12 @@ namespace PitchGenApi.Controllers
                         (c.job_title != null && EF.Functions.Like(c.job_title, searchPattern)) ||
                         (c.country_or_address != null && EF.Functions.Like(c.country_or_address, searchPattern)));
                 }
+
+                var (filteredQuery, filterError) = await ApplyContactPanelFiltersAsync(
+                    contactsQuery, filtersJson, clientId);
+                if (filterError != null)
+                    return BadRequest(new { success = false, message = filterError });
+                contactsQuery = filteredQuery;
 
                 var contactCount = await contactsQuery.CountAsync();
                 if (contactCount == 0)
@@ -3133,7 +3333,10 @@ namespace PitchGenApi.Controllers
             [FromQuery] string? search = null,
             [FromQuery] bool includeEmailContent = false,
             [FromQuery] string? sortBy = null,
-            [FromQuery] string? sortDirection = null)
+            [FromQuery] string? sortDirection = null,
+            // The filter panel's conditions, matched over the whole list here
+            // rather than over the page the browser is holding.
+            [FromQuery] string? filtersJson = null)
         {
             try
             {
@@ -3170,6 +3373,12 @@ namespace PitchGenApi.Controllers
                         EF.Functions.Like(c.job_title ?? "", pattern) ||
                         EF.Functions.Like(c.country_or_address ?? "", pattern));
                 }
+
+                var (filteredQuery, filterError) = await ApplyContactPanelFiltersAsync(
+                    query, filtersJson, clientId);
+                if (filterError != null)
+                    return BadRequest(new { success = false, message = filterError });
+                query = filteredQuery;
 
                 var contactCount = await query.CountAsync();
                 Console.WriteLine($"[Segment Contacts Timing] Count ({contactCount}): {queryTimer.ElapsedMilliseconds} ms");
@@ -3581,7 +3790,10 @@ namespace PitchGenApi.Controllers
             [FromQuery] int pageSize = 0,
             [FromQuery] string? search = null,
             [FromQuery] string? sortBy = null,
-            [FromQuery] string? sortDirection = null)
+            [FromQuery] string? sortDirection = null,
+            // The filter panel's conditions, matched over the whole list here
+            // rather than over the page the browser is holding.
+            [FromQuery] string? filtersJson = null)
         {
             try
             {
@@ -3613,6 +3825,12 @@ namespace PitchGenApi.Controllers
                         (c.job_title != null && EF.Functions.Like(c.job_title, searchPattern)) ||
                         (c.country_or_address != null && EF.Functions.Like(c.country_or_address, searchPattern)));
                 }
+
+                var (filteredQuery, filterError) = await ApplyContactPanelFiltersAsync(
+                    contactsQuery, filtersJson, clientId);
+                if (filterError != null)
+                    return BadRequest(new { success = false, message = filterError });
+                contactsQuery = filteredQuery;
 
                 var contactCount = await contactsQuery.CountAsync();
 
@@ -4409,13 +4627,22 @@ namespace PitchGenApi.Controllers
                 if (view == null)
                     return NotFound(new { success = false, message = "View not found" });
 
+                // "Apply filters" in the view editor sends the filter the browser
+                // has built but not saved yet. It is filtered here, over every
+                // contact the view holds, because the browser only ever holds one
+                // page of them - filtering that page locally hid rows that the
+                // same filter matches elsewhere in the view.
+                var effectiveFiltersJson = string.IsNullOrWhiteSpace(dto.FiltersJson)
+                    ? view.filters_json
+                    : dto.FiltersJson;
+
                 FiltersPayload? payload = null;
-                if (!string.IsNullOrWhiteSpace(view.filters_json))
+                if (!string.IsNullOrWhiteSpace(effectiveFiltersJson))
                 {
                     try
                     {
                         payload = JsonSerializer.Deserialize<FiltersPayload>(
-                            view.filters_json,
+                            effectiveFiltersJson,
                             new JsonSerializerOptions
                             {
                                 PropertyNameCaseInsensitive = true,
@@ -4424,7 +4651,14 @@ namespace PitchGenApi.Controllers
                     }
                     catch (Exception parseEx)
                     {
-                        return BadRequest(new { success = false, message = "Invalid filters_json saved for this view", error = parseEx.Message });
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = string.IsNullOrWhiteSpace(dto.FiltersJson)
+                                ? "Invalid filters_json saved for this view"
+                                : "Invalid filtersJson sent with this request",
+                            error = parseEx.Message
+                        });
                     }
                 }
 

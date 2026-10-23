@@ -10,6 +10,14 @@
         public string? SortBy { get; set; }
         public string? SortDirection { get; set; }
 
+        /// <summary>
+        /// A filter the browser has built but not saved yet, sent by "Apply
+        /// filters" in the view editor. When set it stands in for the view's
+        /// saved filters_json, so the preview is filtered over the whole view
+        /// here rather than over the single page the browser is holding.
+        /// </summary>
+        public string? FiltersJson { get; set; }
+
         public bool IsFollowUp { get; set; }
         public bool NotKrafted { get; set; }
         public bool KraftedNotSent { get; set; }
