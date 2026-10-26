@@ -299,6 +299,126 @@ namespace PitchGenApi.Services
             });
         }
 
+        /// <summary>
+        /// Keeps a signature block exactly as its author formatted it.
+        ///
+        /// A signature is not an instruction. Every other campaign value tells
+        /// the model what to write and is stripped to its words, because the
+        /// markup only buries the instruction. The signature is the one value
+        /// the model is asked to reproduce character for character, so its
+        /// colours, weights, alignment, logo and link styling ARE the content -
+        /// strip them and the sign-off arrives as a flat run of text in a
+        /// different typeface from the mail it closes.
+        ///
+        /// Typeface and size are kept here, unlike in
+        /// <see cref="CleanEmailHtml"/>. There they are dropped because the
+        /// example email only happened to be typed in some font and the model
+        /// would copy it into half the mails it writes. A signature's font is
+        /// chosen, not incidental: it is usually the brand's.
+        ///
+        /// What goes is only what carries nothing: scripts and styles, comments,
+        /// Word's own markup, event handlers, class/id hooks for stylesheets no
+        /// mail client will load, embedded base64 images and invisible
+        /// characters. Blank-line paragraphs survive - in a signature the gap
+        /// between the sign-off and the logo is deliberate.
+        ///
+        /// Plain-text input comes back unchanged apart from trimming.
+        /// </summary>
+        // href/src values the signature is allowed to keep. An allowlist, not a
+        // list of blocked schemes: "javascript:" has too many spellings to chase
+        // ("java&#115;cript:", "java<TAB>script:", "JaVaScRiPt:"), and a scheme we
+        // have never heard of is not one an email needs.
+        //
+        // The editor's DOMPurify already refuses these, but the preview save
+        // path posts placeholder values to the API without sanitising them, so
+        // the API cannot assume anything filtered them first.
+        private static readonly HashSet<string> SafeUriSchemes =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                "http", "https", "mailto", "tel", "cid"
+            };
+
+        private static readonly Regex LinkAttr = new(
+            @"(\s+(?:href|src)\s*=\s*)(""[^""]*""|'[^']*'|[^\s>]+)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// Removes any href/src whose scheme is not one an email can need. The
+        /// attribute goes rather than the tag, so a styled &lt;a&gt; still
+        /// renders its text and a signature is never silently emptied.
+        /// </summary>
+        private static string DropUnsafeLinks(string html)
+            => LinkAttr.Replace(html, match =>
+            {
+                var raw = match.Groups[2].Value;
+
+                var quoted = raw.Length > 1 && (raw[0] == '"' || raw[0] == '\'');
+                var value = quoted ? raw[1..^1] : raw;
+
+                return IsSafeUri(value) ? match.Value : "";
+            });
+
+        private static bool IsSafeUri(string value)
+        {
+            // Entities and stray control characters are exactly how a blocked
+            // scheme gets past a check that reads the raw attribute.
+            var decoded = WebUtility.HtmlDecode(value);
+
+            var probe = new StringBuilder(decoded.Length);
+
+            foreach (var c in decoded)
+            {
+                if (!char.IsControl(c) && c != ' ')
+                    probe.Append(c);
+            }
+
+            var text = probe.ToString();
+            var colon = text.IndexOf(':');
+
+            // No scheme at all: a relative URL, an anchor, or an empty value
+            // left behind by the data-URI strip above.
+            if (colon < 0)
+                return true;
+
+            // A colon inside a path or query is not a scheme - "/a/b:c" and
+            // "?x=1:2" are both relative.
+            var pathStart = text.IndexOfAny(PathOrQueryStart);
+
+            if (pathStart >= 0 && pathStart < colon)
+                return true;
+
+            return SafeUriSchemes.Contains(text[..colon]);
+        }
+
+        private static readonly char[] PathOrQueryStart = { '/', '?', '#' };
+
+        public static string CleanSignatureHtml(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return "";
+
+            if (!LooksLikeHtml(input))
+                return HealSplitPlaceholders(input.Trim());
+
+            var html = NonContentBlocks.Replace(input, "");
+            html = HtmlComments.Replace(html, "");
+            html = OfficeXmlIslands.Replace(html, "");
+            html = OfficeNamespaceTags.Replace(html, "");
+            html = EventHandlerAttrs.Replace(html, "");
+            html = ClassIdAttrs.Replace(html, "");
+            html = DataUri.Replace(html, "");
+            html = InvisibleChars.Replace(html, "");
+            html = DropUnsafeLinks(html);
+
+            // mso- declarations only, so the colours, sizes and spacing the
+            // author set survive while Word's Outlook-only ones do not.
+            html = RewriteStyleAttributes(html, d => MsoDeclarations.Replace(d, ""));
+
+            // Deliberately no ">\s+<" collapse: the space between
+            // "<span>Jane</span> <span>Doe</span>" is the space in a name.
+            return HealSplitPlaceholders(html.Trim());
+        }
+
         public static string CleanEmailHtml(string? input)
         {
             if (string.IsNullOrWhiteSpace(input))

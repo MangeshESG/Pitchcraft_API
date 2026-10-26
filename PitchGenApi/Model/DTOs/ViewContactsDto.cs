@@ -24,6 +24,20 @@
         public bool IncludeEmailContent { get; set; } = true;
     }
 
+    /// <summary>
+    /// The filter panel's conditions for a list or segment, carried in the
+    /// request body.
+    ///
+    /// They used to ride in the query string, which the live server's firewall
+    /// rejects outright (403) once the URL carries JSON. A saved view already
+    /// posts the same payload to view-contacts and passes, so these endpoints
+    /// accept a POST with the filter in the body and are otherwise unchanged.
+    /// </summary>
+    public class ContactFilterBody
+    {
+        public string? FiltersJson { get; set; }
+    }
+
     public class FiltersPayload
     {
         public string? Logic { get; set; }

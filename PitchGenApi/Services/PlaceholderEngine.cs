@@ -165,6 +165,23 @@ namespace PitchGenApi.Services
                 "example_output"
             };
 
+        /// <summary>
+        /// Is this the campaign's signature block?
+        ///
+        /// Matched on the key containing "signature" rather than on an exact
+        /// name, because the key is whatever the blueprint's author typed:
+        /// "signature", "email_signature" and "signature_block" are all in use.
+        ///
+        /// It matters because the signature is the one campaign value a channel
+        /// may want to keep as markup. The email generator fills it with
+        /// <see cref="PromptTextCleaner.CleanSignatureHtml"/> so the sign-off
+        /// arrives formatted; LinkedIn, which has no formatting to arrive in,
+        /// keeps the plain-text path below.
+        /// </summary>
+        public static bool IsSignatureKey(string? key)
+            => !string.IsNullOrWhiteSpace(key)
+               && key.Contains("signature", StringComparison.OrdinalIgnoreCase);
+
         public static string CleanValue(string key, string? value)
         {
             if (string.IsNullOrWhiteSpace(value))

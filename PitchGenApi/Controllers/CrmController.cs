@@ -1,4 +1,5 @@
 ﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.DTOs;
@@ -1913,6 +1914,8 @@ namespace PitchGenApi.Controllers
 
         [HttpGet("contacts/List-by-CleinteId")]
         [HttpGet("contacts/List-by-ClientId")]
+        [HttpPost("contacts/List-by-CleinteId")]
+        [HttpPost("contacts/List-by-ClientId")]
         public async Task<IActionResult> GetContactsByClientAndDataFileIdList(
             [FromQuery] int clientId,
             [FromQuery] int dataFileId,
@@ -1923,10 +1926,15 @@ namespace PitchGenApi.Controllers
             [FromQuery] string? sortDirection = null,
             // The filter panel's conditions, matched over the whole list here
             // rather than over the page the browser is holding.
-            [FromQuery] string? filtersJson = null)
+            [FromQuery] string? filtersJson = null,
+            // Sent in the body by the filter panel; see ContactFilterBody.
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ContactFilterBody? filterBody = null)
         {
             try
             {
+                if (string.IsNullOrWhiteSpace(filtersJson))
+                    filtersJson = filterBody?.FiltersJson;
+
                 if (clientId <= 0 || dataFileId <= 0)
                     return BadRequest(new
                     {
@@ -3359,6 +3367,7 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("segment-contacts")]
+        [HttpPost("segment-contacts")]
         public async Task<IActionResult> GetContactsBySegmentId(
             [FromQuery] int clientId,
             [FromQuery] int segmentId,
@@ -3370,10 +3379,15 @@ namespace PitchGenApi.Controllers
             [FromQuery] string? sortDirection = null,
             // The filter panel's conditions, matched over the whole list here
             // rather than over the page the browser is holding.
-            [FromQuery] string? filtersJson = null)
+            [FromQuery] string? filtersJson = null,
+            // Sent in the body by the filter panel; see ContactFilterBody.
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ContactFilterBody? filterBody = null)
         {
             try
             {
+                if (string.IsNullOrWhiteSpace(filtersJson))
+                    filtersJson = filterBody?.FiltersJson;
+
                 var totalTimer = System.Diagnostics.Stopwatch.StartNew();
                 var queryTimer = System.Diagnostics.Stopwatch.StartNew();
 
@@ -3818,6 +3832,7 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("allcontacts/list-by-clientId")]
+        [HttpPost("allcontacts/list-by-clientId")]
         public async Task<IActionResult> GetContactsByClientId(
             [FromQuery] int clientId,
             [FromQuery] int pageNumber = 1,
@@ -3827,10 +3842,15 @@ namespace PitchGenApi.Controllers
             [FromQuery] string? sortDirection = null,
             // The filter panel's conditions, matched over the whole list here
             // rather than over the page the browser is holding.
-            [FromQuery] string? filtersJson = null)
+            [FromQuery] string? filtersJson = null,
+            // Sent in the body by the filter panel; see ContactFilterBody.
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] ContactFilterBody? filterBody = null)
         {
             try
             {
+                if (string.IsNullOrWhiteSpace(filtersJson))
+                    filtersJson = filterBody?.FiltersJson;
+
                 if (clientId <= 0)
                     return BadRequest(new
                     {

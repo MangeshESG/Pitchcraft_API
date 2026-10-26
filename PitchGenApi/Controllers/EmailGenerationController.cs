@@ -1048,6 +1048,15 @@ namespace PitchGenApi.Controllers
             if (ExampleOutputKeys.Contains(key))
                 return PromptTextCleaner.CleanEmailHtml(value);
 
+            // The signature is the other exception, and for the opposite
+            // reason. The example only teaches a shape; the signature is
+            // copied into the mail as it stands, so its formatting is the
+            // value. Stripped to text it reached the model as a flat run of
+            // words and came back as one - the wrong font, no spacing, the
+            // logo and the linked site gone.
+            if (PlaceholderEngine.IsSignatureKey(key))
+                return PromptTextCleaner.CleanSignatureHtml(value);
+
             return PromptTextCleaner.LooksLikeHtml(value)
                 ? PromptTextCleaner.StripHtml(value)
                 : value;
