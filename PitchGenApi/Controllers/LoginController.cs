@@ -88,10 +88,24 @@ namespace PitchGenApi.Controllers
             public bool Success { get; set; }
         }
 
+        private bool IsAllowedExtensionLogin()
+        {
+            var extensionId = Request.Headers["X-Pitchkraft-Extension-Id"].ToString();
+            if (extensionId.Length != 32 || extensionId.Any(character => character < 'a' || character > 'p'))
+                return false;
+
+            if (!string.Equals(Request.Headers["Origin"].ToString(),
+                    $"chrome-extension://{extensionId}", StringComparison.Ordinal))
+                return false;
+
+            return string.Equals(extensionId, "ikelaephojkjglbknldgiopbpdaklkbl",
+                StringComparison.Ordinal);
+        }
+
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginRequestDTO dto)
         {
-            if (dto == null || !await IsCaptchaValidAsync(dto.CaptchaToken))
+            if (dto == null || (!IsAllowedExtensionLogin() && !await IsCaptchaValidAsync(dto.CaptchaToken)))
             {
                 return BadRequest(new { Message = "Please complete the I’m not a robot check and try again." });
             }
