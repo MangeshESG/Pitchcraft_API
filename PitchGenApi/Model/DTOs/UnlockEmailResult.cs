@@ -39,6 +39,25 @@
         public UnlockCompanyDetails? Company { get; set; }
 
         /// <summary>
+        /// What the AI stage of this unlock cost, in tokens and in dollars.
+        ///
+        /// Goes to every caller, unlike <see cref="Diagnostics"/>: it is a
+        /// bill, not a trace, and it carries no prompt and no model output. A
+        /// bulk run has to add it to the job it is running or the AI half of
+        /// the chain is spent and never reported - the email check logged
+        /// $0.0000 for runs that had each made a web search per contact.
+        ///
+        /// Null when no model was asked: a cache hit, or a Prospeo hit, answers
+        /// before the AI stage is reached and costs nothing in tokens.
+        ///
+        /// Not serialised. In-process callers need it; an extension unlock over
+        /// HTTP has no business being told what the lookup cost us, which is why
+        /// the figure is admin-only everywhere it is shown.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public UnlockAiUsage? AiUsage { get; set; }
+
+        /// <summary>
         /// How sure the search is of <see cref="Email"/>, 0-100, or null when the
         /// answer came from somewhere that does not score itself: a verified
         /// Prospeo lookup or the unlock cache.

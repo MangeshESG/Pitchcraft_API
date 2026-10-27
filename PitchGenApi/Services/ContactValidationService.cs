@@ -2340,9 +2340,10 @@
         /// Confirms each address through Prospeo, falling back to Hunter.
         ///
         /// Per contact rather than per batch, because both providers answer
-        /// about one person at a time. No model is involved, so this check has
-        /// no token cost at all — its cost is the providers' own per-lookup
-        /// charge, which they bill directly.
+        /// about one person at a time. Prospeo and Hunter bill their own
+        /// per-lookup charge directly and nothing here can see it — but the
+        /// stage between them is an AI web search, and what that costs in
+        /// tokens is added to the run like any other model call.
         /// </summary>
         private async Task RunEmailVerificationAsync(
             ContactValidationJob job,
@@ -2564,6 +2565,27 @@
             }
 
             var unlock = result.Unlock;
+
+            // Before the branches below, all of which return: the AI stage of
+            // the chain is a billed model call, and it is billed whether it
+            // found an address, found nothing, or was overruled by Hunter.
+            // Counted here, the email check reports its model spend in the run
+            // log next to the checks that always use one. Null whenever the
+            // cache or Prospeo answered first, which is the cheap path and has
+            // no tokens to report.
+            //
+            // A lookup that threw or timed out is handled above and has no
+            // usage to read: the result never came back, so anything the search
+            // had already spent is lost to the run's figures.
+            if (unlock.AiUsage is { } aiUsage)
+            {
+                job.InputTokens += aiUsage.PromptTokens;
+                job.CachedTokens += aiUsage.CachedTokens;
+                job.OutputTokens += aiUsage.CompletionTokens;
+                job.TotalTokens += aiUsage.PromptTokens + aiUsage.CompletionTokens;
+                job.WebSearchCalls += aiUsage.WebSearchCalls;
+                job.CalculatedCost += aiUsage.CurrentCost;
+            }
 
             // Running out of credit part-way is a failure, not a verdict. The
             // contact was never looked at, so recording it as checked-and-found-

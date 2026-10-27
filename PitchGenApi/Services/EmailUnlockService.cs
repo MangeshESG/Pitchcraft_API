@@ -110,6 +110,12 @@
 
                 diagnostics.ElapsedMs = (int)totalTimer.ElapsedMilliseconds;
                 result.Diagnostics = isAdmin ? diagnostics : null;
+
+                // Out of the trace and onto the result, because this one figure
+                // is needed by callers who must never see the trace. Every exit
+                // from the chain goes through here, so a failed or found-nothing
+                // search reports its cost too - it was billed either way.
+                result.AiUsage = diagnostics.Ai?.Usage;
                 result.PreviousEmail = rejectedEmail;
                 return result;
             }
@@ -429,7 +435,9 @@
                     CompletionTokens = aiSearch.SearchResult.CompletionTokens,
                     SearchTokens = aiSearch.SearchResult.SearchTokens,
                     TotalTokens = aiSearch.SearchResult.TotalTokens,
-                    CurrentCost = aiSearch.SearchResult.CurrentCost
+                    CurrentCost = aiSearch.SearchResult.CurrentCost,
+                    CachedTokens = aiSearch.SearchResult.CachedTokens,
+                    WebSearchCalls = aiSearch.SearchResult.WebSearchCalls
                 }
             };
             diagnostics.Ai = ai;

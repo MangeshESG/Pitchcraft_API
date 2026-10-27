@@ -170,5 +170,19 @@ namespace PitchGenApi.Model.DTOs
         public int SearchTokens { get; set; }
         public int TotalTokens { get; set; }
         public decimal CurrentCost { get; set; }
+
+        /// <summary>
+        /// Prompt tokens served from the provider's cache. Reported for the
+        /// same reason the pitch services report it: the unlock sends one long
+        /// instruction per contact, so a bulk run lives on the cache hit rate.
+        /// </summary>
+        public int CachedTokens { get; set; }
+
+        /// <summary>
+        /// Server-side searches the model actually performed. Zero when it
+        /// answered from memory, which is the only thing that tells that apart
+        /// from a researched answer.
+        /// </summary>
+        public int WebSearchCalls { get; set; }
     }
 }
