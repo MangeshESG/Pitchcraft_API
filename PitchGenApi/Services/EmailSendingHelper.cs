@@ -295,43 +295,31 @@ public class EmailSendingHelper
             // Remove source-highlight markup before the prospect sees it
             finalEmailBody = StripSourceHighlights(finalEmailBody);
 
-            string untrackedEmailBody = finalEmailBody;
+            bool hasCopyRecipients = NormalizeEmailList(CcEmail).Count > 0
+                || NormalizeEmailList(BccEmail).Count > 0;
 
 
             // ?? STEP 1: Hidden tracking inject (reply ke liye)
-            finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
+            if (!hasCopyRecipients)
+                finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
 
             // Send main email
             if (!string.IsNullOrWhiteSpace(EmailDetails.email))
             {
-                if (user.IsTracking)
+                if (user.IsTracking && !hasCopyRecipients)
                 {
                     finalEmailBody = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
                     finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
                 }
 
                 var toMessage = new MimeMessage();
-                var ccEmailList = NormalizeEmailList(CcEmail);
-                var bccEmailList = NormalizeEmailList(BccEmail);
-                var envelopeRecipients = new List<MailboxAddress>();
-
                 var primaryRecipient = MailboxAddress.Parse(EmailDetails.email);
-                envelopeRecipients.Add(primaryRecipient);
-
                 toMessage.From.Add(new MailboxAddress(senderName, fromEmailToUse));
                 toMessage.To.Add(primaryRecipient);
-                foreach (var cc in ccEmailList)
-                {
-                    var ccRecipient = MailboxAddress.Parse(cc);
-                    toMessage.Cc.Add(ccRecipient);
-                    envelopeRecipients.Add(ccRecipient);
-                }
-                foreach (var bcc in bccEmailList)
-                {
-                    var bccRecipient = MailboxAddress.Parse(bcc);
-                    toMessage.Bcc.Add(bccRecipient);
-                    envelopeRecipients.Add(bccRecipient);
-                }
+                foreach (var cc in NormalizeEmailList(CcEmail))
+                    toMessage.Cc.Add(MailboxAddress.Parse(cc));
+                foreach (var bcc in NormalizeEmailList(BccEmail))
+                    toMessage.Bcc.Add(MailboxAddress.Parse(bcc));
                 toMessage.Subject = EmailDetails.email_subject;
                 await AddOneClickUnsubscribeHeadersAsync(
                     toMessage, user, clientId, contactId, EmailDetails.email, isContactCompose);
@@ -348,7 +336,7 @@ public class EmailSendingHelper
 
                 try
                 {
-                    await smtpClient.SendAsync(toMessage, (MailboxAddress)toMessage.From.Mailboxes.First(), envelopeRecipients);
+                    await smtpClient.SendAsync(toMessage);
                 }
                 catch (MailKit.Net.Smtp.SmtpCommandException ex)
                 {
@@ -514,13 +502,15 @@ public class EmailSendingHelper
             // Remove source-highlight markup before the prospect sees it
             finalEmailBody = StripSourceHighlights(finalEmailBody);
 
-            string untrackedEmailBody = finalEmailBody;
+            bool hasCopyRecipients = NormalizeEmailList(CcEmail).Count > 0
+                || NormalizeEmailList(BccEmail).Count > 0;
 
             // ?? TRACKING
-            finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
+            if (!hasCopyRecipients)
+                finalEmailBody = EmailTrackingHelper.InjectinboxTracking(finalEmailBody, trackingId);
 
 
-            if (user.IsTracking)
+            if (user.IsTracking && !hasCopyRecipients)
             {
                 finalEmailBody = EmailTrackingHelper.InjectClickTracking(finalEmailBody, trackingId);
                 finalEmailBody += EmailTrackingHelper.GetPixelTag(trackingId);
@@ -534,19 +524,16 @@ public class EmailSendingHelper
             mimeMessage.From.Add(new MailboxAddress(tokenData.SenderName, tokenData.Email));
             mimeMessage.To.Add(new MailboxAddress("", EmailDetails.email));
             foreach (var cc in NormalizeEmailList(CcEmail))
-            {
-                mimeMessage.Cc.Add(new MailboxAddress("", cc));
-            }
+                mimeMessage.Cc.Add(MailboxAddress.Parse(cc));
             foreach (var bcc in NormalizeEmailList(BccEmail))
-            {
-                mimeMessage.Bcc.Add(new MailboxAddress("", bcc));
-            }
+                mimeMessage.Bcc.Add(MailboxAddress.Parse(bcc));
             mimeMessage.Subject = EmailDetails.email_subject;
             await AddOneClickUnsubscribeHeadersAsync(
                 mimeMessage, user, clientId, contactId, EmailDetails.email, isContactCompose);
 
             mimeMessage.Headers.Add("Message-ID", customMessageId);
-            mimeMessage.Headers.Add("X-Tracking-Id", trackingId);
+            if (!hasCopyRecipients)
+                mimeMessage.Headers.Add("X-Tracking-Id", trackingId);
 
             var bodyBuilder = new BodyBuilder { HtmlBody = finalEmailBody };
             mimeMessage.Body = bodyBuilder.ToMessageBody();
@@ -571,7 +558,6 @@ public class EmailSendingHelper
                 payload);
 
             var resultJson = await response.Content.ReadAsStringAsync();
-
             if (!response.IsSuccessStatusCode)
                 throw new Exception(resultJson);
 
@@ -727,14 +713,16 @@ public class EmailSendingHelper
             // Remove source-highlight markup before the prospect sees it
             finalEmailBody = StripSourceHighlights(finalEmailBody);
 
-            string untrackedEmailBody = finalEmailBody;
+            bool hasCopyRecipients = NormalizeEmailList(CcEmail).Count > 0
+                || NormalizeEmailList(BccEmail).Count > 0;
 
-            finalEmailBody = EmailTrackingHelper.InjectinboxTracking(
-                finalEmailBody,
-                trackingId);
+            if (!hasCopyRecipients)
+                finalEmailBody = EmailTrackingHelper.InjectinboxTracking(
+                    finalEmailBody,
+                    trackingId);
 
 
-            if (user?.IsTracking == true)
+            if (user?.IsTracking == true && !hasCopyRecipients)
             {
                 finalEmailBody = EmailTrackingHelper.InjectClickTracking(
                     finalEmailBody,
@@ -749,20 +737,15 @@ public class EmailSendingHelper
             var mimeMessage = new MimeMessage();
             mimeMessage.From.Add(new MailboxAddress(tokenData.SenderName, tokenData.Email));
             mimeMessage.To.Add(new MailboxAddress("", EmailDetails.email));
-
             foreach (var cc in NormalizeEmailList(CcEmail))
-            {
-                mimeMessage.Cc.Add(new MailboxAddress("", cc));
-            }
-
+                mimeMessage.Cc.Add(MailboxAddress.Parse(cc));
             foreach (var bcc in NormalizeEmailList(BccEmail))
-            {
-                mimeMessage.Bcc.Add(new MailboxAddress("", bcc));
-            }
+                mimeMessage.Bcc.Add(MailboxAddress.Parse(bcc));
 
             mimeMessage.Subject = EmailDetails.email_subject;
             mimeMessage.MessageId = MimeUtils.GenerateMessageId();
-            mimeMessage.Headers.Add("X-Tracking-Id", trackingId);
+            if (!hasCopyRecipients)
+                mimeMessage.Headers.Add("X-Tracking-Id", trackingId);
 
             await AddOneClickUnsubscribeHeadersAsync(
                 mimeMessage,
