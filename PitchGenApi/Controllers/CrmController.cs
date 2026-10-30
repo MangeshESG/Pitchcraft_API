@@ -452,6 +452,19 @@ namespace PitchGenApi.Controllers
                     continue;
                 }
 
+                if (string.Equals(field, "unsubscribe", StringComparison.OrdinalIgnoreCase))
+                {
+                    var values = ViewFilterValues(condition.Value);
+                    if (op != "equals" && op != "notEquals") return false;
+                    var includesYes = values.Contains("Yes", StringComparer.OrdinalIgnoreCase);
+                    var includesNo = values.Contains("No", StringComparer.OrdinalIgnoreCase);
+                    var negate = op == "notEquals";
+                    candidate = candidate.Where(c =>
+                        ((_context.UnsubscribedContacts.Any(u => u.ClientId == clientId && u.Email == c.email) && includesYes) ||
+                         (!_context.UnsubscribedContacts.Any(u => u.ClientId == clientId && u.Email == c.email) && includesNo)) != negate);
+                    continue;
+                }
+
                 candidate = field.ToLowerInvariant() switch
                 {
                     "full_name" => ApplyViewStringFilter(candidate, c => c.full_name, condition),
@@ -970,12 +983,14 @@ namespace PitchGenApi.Controllers
 
         private static bool IsValidColumnScope(string? scopeType, int scopeId) =>
             (scopeType == "list" && (scopeId > 0 || scopeId == -1)) ||
+            (scopeType == "view" && scopeId == UnsubscribeSystemViewId) ||
             ((scopeType == "segment" || scopeType == "view") && scopeId > 0);
 
         private async Task<bool> OwnsColumnScope(int clientId, string scopeType, int scopeId) =>
             scopeType switch
             {
                 "list" when scopeId == -1 => true, // All contacts is a virtual list.
+                "view" when scopeId == UnsubscribeSystemViewId => true,
                 "list" => await _context.data_files.AnyAsync(x => x.id == scopeId && x.client_id == clientId),
                 "segment" => await _context.segments.AnyAsync(x => x.Id == scopeId && x.ClientId == clientId),
                 "view" => await _context.crm_views.AnyAsync(x => x.id == scopeId && x.client_id == clientId),
@@ -4384,9 +4399,33 @@ namespace PitchGenApi.Controllers
         }
 
 
+        private const int UnsubscribeSystemViewId = -2;
+        private static CrmView UnsubscribeSystemView(int clientId) => new CrmView
+        {
+            id = UnsubscribeSystemViewId,
+            client_id = clientId,
+            name = "Unsubscribe",
+            description = "System view · All unsubscribed contacts. Updates automatically.",
+            created_at = DateTime.UnixEpoch,
+            use_all_datafiles = true,
+            filters_json = "{\"logic\":\"AND\",\"conditions\":[{\"field\":\"unsubscribe\",\"operator\":\"equals\",\"value\":\"Yes\"}]}"
+        };
+
+        private IQueryable<Contact> UnsubscribeSystemContacts(int clientId) =>
+            _context.contacts.AsNoTracking().Where(c =>
+                _context.UnsubscribedContacts.Any(u => u.ClientId == clientId &&
+                    (u.ContactId == c.id || (c.email != null && u.Email == c.email &&
+                        _context.data_files.Any(df => df.id == c.DataFileId && df.client_id == clientId)))));
+
         [HttpGet("view-by-id")]
         public async Task<IActionResult> GetViewById([FromQuery] int clientId, [FromQuery] int viewId)
         {
+            if (viewId == UnsubscribeSystemViewId)
+                return Ok(new { id = viewId, name = "Unsubscribe", isSystem = true,
+                    description = UnsubscribeSystemView(clientId).description,
+                    filters_json = UnsubscribeSystemView(clientId).filters_json,
+                    use_all_datafiles = true, dataFileIds = Array.Empty<int>(),
+                    segmentIds = Array.Empty<int>(), excludedDataFileIds = Array.Empty<int>() });
             var view = await _context.crm_views
                 .Where(v => v.id == viewId && v.client_id == clientId)
                 .Select(v => new
@@ -4506,12 +4545,19 @@ namespace PitchGenApi.Controllers
                 })
                 .ToListAsync();
 
-            return Ok(views);
+            var systemView = UnsubscribeSystemView(clientId);
+            var response = views.Select(v => (object)v).ToList();
+            response.Insert(0, new { systemView.id, systemView.name, systemView.description,
+                isSystem = true, use_all_datafiles = true, systemView.filters_json,
+                contactCount = await UnsubscribeSystemContacts(clientId).CountAsync() });
+            return Ok(response);
         }
 
         [HttpPost("delete-view")]
         public async Task<IActionResult> DeleteView(int viewId)
         {
+            if (viewId == UnsubscribeSystemViewId)
+                return BadRequest("System views cannot be deleted.");
             try
             {
                 var view = await _context.crm_views
@@ -4543,6 +4589,8 @@ namespace PitchGenApi.Controllers
         [HttpPost("update-view")]
         public async Task<IActionResult> UpdateView([FromBody] UpdateViewDto dto)
         {
+            if (dto.ViewId == UnsubscribeSystemViewId)
+                return BadRequest("System views cannot be edited.");
             try
             {
                 var view = await _context.crm_views
@@ -4674,7 +4722,8 @@ namespace PitchGenApi.Controllers
                 var queryTimer = System.Diagnostics.Stopwatch.StartNew();
                 _context.Database.SetCommandTimeout(120);
 
-                var view = await _context.crm_views.AsNoTracking()
+                var isSystemView = dto.ViewId == UnsubscribeSystemViewId;
+                var view = isSystemView ? UnsubscribeSystemView(dto.ClientId) : await _context.crm_views.AsNoTracking()
                     .FirstOrDefaultAsync(v => v.id == dto.ViewId && v.client_id == dto.ClientId);
                 Console.WriteLine($"[View Contacts Timing] View: {queryTimer.ElapsedMilliseconds} ms");
                 queryTimer.Restart();
@@ -4740,11 +4789,15 @@ namespace PitchGenApi.Controllers
                 Console.WriteLine($"[View Contacts Timing] Sources ({dataFileIds.Count} files, {segmentIds.Count} segments): {queryTimer.ElapsedMilliseconds} ms");
                 queryTimer.Restart();
 
-                if (!dataFileIds.Any() && !segmentIds.Any())
+                if (!isSystemView && !dataFileIds.Any() && !segmentIds.Any())
                     return Ok(new { total = 0, page = dto.Page <= 0 ? 1 : dto.Page, pageSize = dto.PageSize <= 0 ? 0 : dto.PageSize, contacts = new List<object>() });
 
                 var query = _context.contacts.AsNoTracking();
-                if (dataFileIds.Any() && segmentIds.Any())
+                if (isSystemView)
+                {
+                    query = UnsubscribeSystemContacts(dto.ClientId);
+                }
+                else if (dataFileIds.Any() && segmentIds.Any())
                 {
                     var segIds = _context.segmentContacts.AsNoTracking()
                         .Where(x => segmentIds.Contains(x.SegmentId)).Select(x => x.ContactId);
@@ -4774,14 +4827,19 @@ namespace PitchGenApi.Controllers
                         EF.Functions.Like(c.job_title ?? "", $"%{s}%"));
                 }
 
-                query = query.Where(c => string.IsNullOrEmpty(c.email) ||
-                    !_context.UnsubscribedContacts.Any(u =>
-                        u.ClientId == dto.ClientId && u.Email == c.email));
+                var hasUnsubscribeFilter = isSystemView || TrackingFilterHelper.NormalizeGroups(payload)
+                    .SelectMany(g => g.Conditions ?? new List<FilterConditionDto>())
+                    .Any(c => TrackingFilterHelper.IsCompleteCondition(c) &&
+                        string.Equals(c.Field?.Trim(), "unsubscribe", StringComparison.OrdinalIgnoreCase));
+                if (!hasUnsubscribeFilter)
+                    query = query.Where(c => string.IsNullOrEmpty(c.email) ||
+                        !_context.UnsubscribedContacts.Any(u =>
+                            u.ClientId == dto.ClientId && u.Email == c.email));
 
                 var safePage = dto.Page <= 0 ? 1 : dto.Page;
                 var requestedPageSize = dto.PageSize <= 0 ? 0 : Math.Min(dto.PageSize, 200);
                 var filtersAppliedInDatabase = TryApplyViewFiltersInDatabase(
-                    query, payload, dto.ClientId, out var databaseFilteredQuery);
+                    query, isSystemView ? null : payload, dto.ClientId, out var databaseFilteredQuery);
                 int? databaseFilteredTotal = null;
                 if (filtersAppliedInDatabase)
                 {
@@ -4829,6 +4887,7 @@ namespace PitchGenApi.Controllers
                     c.CompanyEmployeeCount,
                     c.CompanyIndustry,
                     c.CompanyLinkedInURL,
+                    unsubscribe = isSystemView || _context.UnsubscribedContacts.Any(u => u.ClientId == dto.ClientId && u.Email == c.email) ? "Yes" : "No",
                     hasLinkedInInfo = c.linkedIninformation != null && c.linkedIninformation != "",
                     hasWebSearchData = c.web_search_data != null && c.web_search_data != ""
                 }).ToListAsync();
@@ -4935,6 +4994,7 @@ namespace PitchGenApi.Controllers
                         c.CompanyIndustry,
                         c.CompanyLinkedInURL,
                         hasNotes = notesSet.Contains(c.id),
+                        c.unsubscribe,
                         c.hasLinkedInInfo,
                         c.hasWebSearchData,
                         customFields,
@@ -5052,6 +5112,7 @@ namespace PitchGenApi.Controllers
                         CompanyIndustry = d.CompanyIndustry,
                         CompanyLinkedInURL = d.CompanyLinkedInURL,
                         hasNotes = d.hasNotes,
+                        unsubscribe = d.unsubscribe,
                         hasLinkedInInfo = d.hasLinkedInInfo,
                         hasWebSearchData = d.hasWebSearchData,
                         customFields = d.customFields,
