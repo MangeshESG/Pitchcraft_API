@@ -248,19 +248,77 @@ namespace PitchGenApi.Controllers
                         "Professional summary (LinkedIn) for this contact:",
                         insights.ProfessionalSummary);
 
-                // No live web search on this path: LinkedIn generation is one
-                // model call and one credit. The research already stored on the
-                // contact (from a kraft or the Insights panel) is reused, and the
-                // slot is always cleared so a literal token never reaches the model.
+                // ---- web / personalization search (every model) ----
+                //
+                // This step used to be skipped here, with the research already
+                // stored on the contact reused instead. It now runs for real, so
+                // a LinkedIn message is researched exactly like an email: one
+                // search call, then one writing call. That is the slower path by
+                // design — the blueprint turns it off with
+                // use_personalization_search = no, and a blueprint with no search
+                // instructions skips it without spending a call.
+                PitchResult? searchResult = null;
                 var storedResearch = PromptTextCleaner.StripHtml(contact.web_search_data);
-                finalPrompt = finalPrompt.Contains("{web_searched_data}")
-                    ? finalPrompt.Replace("{web_searched_data}", storedResearch)
-                    : finalPrompt;
-                runtimeReplacements["search_output_summary"] = storedResearch;
+                var webSearchData = "";
+                var filledSearchInstructions = "";
 
-                // Nothing is appended here at all: the blueprint is the only
-                // instruction the model gets, and how long the message should run
-                // is part of what the blueprint itself says.
+                var personalization = campaignPlaceholderValues.TryGetValue("use_personalization_search", out var ps)
+                    ? (ps ?? "").Trim().ToLower()
+                    : "";
+
+                if (personalization != "no")
+                {
+                    var instructionTemplate = !string.IsNullOrWhiteSpace(template.TemplateDefinition.WebSearchInstructions)
+                        ? template.TemplateDefinition.WebSearchInstructions
+                        : (campaignPlaceholderValues.TryGetValue("search_objective", out var so) ? so ?? "" : "");
+
+                    var webSearchReplacements =
+                        new Dictionary<string, string>(campaignPlaceholderValues, StringComparer.OrdinalIgnoreCase);
+
+                    webSearchReplacements["hook"] =
+                        (campaignPlaceholderValues.TryGetValue("hook", out var hk) && !string.IsNullOrWhiteSpace(hk))
+                            ? hk
+                            : (campaignPlaceholderValues.TryGetValue("hook_search_terms", out var hst) ? hst ?? "" : "");
+
+                    foreach (var kv in runtimeReplacements)
+                        webSearchReplacements[kv.Key] = kv.Value;
+
+                    filledSearchInstructions = PlaceholderEngine.Apply(instructionTemplate, webSearchReplacements);
+
+                    if (!string.IsNullOrWhiteSpace(filledSearchInstructions))
+                    {
+                        searchResult = await GenerateWebSearchByProviderAsync(new EnquiryRequest
+                        {
+                            Prompt = filledSearchInstructions,
+                            ScrappedData = "",
+                            ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
+                        }, request.ClientId);
+
+                        if (searchResult != null && searchResult.IsSuccess)
+                            webSearchData = searchResult.Content ?? "";
+                    }
+                }
+
+                // A search that was switched off, had nothing to search for, or
+                // came back empty falls back to the research already on the
+                // contact — which is all this path ever had before.
+                var research = !string.IsNullOrWhiteSpace(webSearchData) ? webSearchData : storedResearch;
+
+                // Same two outcomes as email generation: fill the slot, or append
+                // the research as its own block so a blueprint without the
+                // placeholder does not silently throw the search away.
+                finalPrompt = finalPrompt.Contains("{web_searched_data}")
+                    ? finalPrompt.Replace("{web_searched_data}", research)
+                    : (string.IsNullOrWhiteSpace(research)
+                        ? finalPrompt
+                        : PlaceholderEngine.AppendContextSection(
+                            finalPrompt, "Researched information about this contact:", research));
+
+                runtimeReplacements["search_output_summary"] = research;
+
+                // Nothing else is appended: the blueprint is the only instruction
+                // the model gets, and how long the message should run is part of
+                // what the blueprint itself says.
 
                 var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.EmailGeneration);
 
@@ -273,13 +331,49 @@ namespace PitchGenApi.Controllers
                             : AiModelDefaults.EmailGenerationModel);
                 }
 
+                // Does this blueprint describe the JSON contract?
+                //
+                // It has to be asked, because JSON object mode forces an object
+                // out of a blueprint that never asked for one — the model would
+                // answer {"message": "..."}, the parser would find no body in it,
+                // and the kraft would fail. So the contract is required only of a
+                // blueprint that actually describes it. One that does not keeps
+                // answering in plain text exactly as before and simply returns no
+                // highlights, which is the same bargain the email parser strikes
+                // with un-migrated blueprints.
+                //
+                // Read off the filled prompt rather than the raw template: the
+                // worked example that defines the shape is often a campaign
+                // placeholder value, so it only appears once those are resolved.
+                var wantsStructuredReply =
+                    finalPrompt.Contains("body_html", StringComparison.OrdinalIgnoreCase) ||
+                    finalPrompt.Contains("highlights", StringComparison.OrdinalIgnoreCase);
+
+                // JSON mode is refused by every provider unless the word "json"
+                // is in the prompt. Doing it here rather than in the services
+                // keeps what the response reports as the final prompt identical
+                // to what the model received.
+                if (wantsStructuredReply)
+                    finalPrompt = JsonObjectMode.EnsureJsonMentioned(finalPrompt);
+
+                // From here on the prompt is frozen.
                 var promptSentToAi = finalPrompt;
 
                 var result = await GeneratePitchByProviderAsync(new EnquiryRequest
                 {
                     Prompt = promptSentToAi,
                     ScrappedData = "",
-                    ModelName = selectedModel
+                    ModelName = selectedModel,
+
+                    // The dedicated search above already supplied the research,
+                    // so the writing call must not search again on any provider.
+                    DisableWebSearchTool = true,
+
+                    // Same contract as email generation: one parseable object
+                    // carrying the body and the highlight records. The blueprint's
+                    // worked example still defines the fields, so the shape stays
+                    // editable in the admin UI.
+                    RequireJsonObject = wantsStructuredReply
                 });
 
                 if (!result.IsSuccess || string.IsNullOrWhiteSpace(result.Content))
@@ -289,13 +383,78 @@ namespace PitchGenApi.Controllers
                         Success = false,
                         Message = "Failed to generate LinkedIn message.",
                         Error = result.Content,
-                        FinalPrompt = promptSentToAi
+                        FinalPrompt = promptSentToAi,
+                        WebSearchData = research
                     });
                 }
 
+                // ---- read the reply ----
+                // Same parser the email generator uses, so both channels read one
+                // JSON object: the body and the source highlights as records. A
+                // reply that does not parse is taken as the message itself, which
+                // is what a blueprint that has not been migrated to the contract
+                // still returns — those keep working exactly as before, just
+                // without highlights.
+                var generated = GeneratedEmailParser.Parse(result.Content);
+
+                // A reply that set out to be the JSON object and did not finish is
+                // not a message. Handing it over would put visible JSON in the
+                // user's clipboard and charge a credit for it.
+                if (generated.LooksTruncated)
+                {
+                    Log.Error(
+                        "LinkedIn generation returned unreadable JSON — most likely truncated by the model's "
+                        + "output budget. ContactId={ContactId}, BlueprintId={BlueprintId}, ReplyLength={Length}",
+                        request.ContactId, request.BlueprintId, (result.Content ?? "").Length);
+
+                    return StatusCode(500, new
+                    {
+                        Success = false,
+                        Message = "The krafted message came back as unreadable JSON, which usually means the "
+                                + "model's output limit was reached. Raise MaxTokens for this model in Model "
+                                + "rates, or shorten the blueprint, then kraft again.",
+                        Error = result.Content,
+                        FinalPrompt = promptSentToAi,
+                        WebSearchData = research
+                    });
+                }
+
+                // A complete reply carrying an empty body. Nothing was cut short,
+                // so this is not a truncation and raising MaxTokens changes
+                // nothing — the model declined to write.
+                if (generated.IsEmptyBody)
+                {
+                    Log.Error(
+                        "LinkedIn generation returned a complete reply with an empty body. "
+                        + "ContactId={ContactId}, BlueprintId={BlueprintId}, Model={Model}, Reply={Reply}",
+                        request.ContactId, request.BlueprintId, selectedModel, result.Content);
+
+                    return StatusCode(500, new
+                    {
+                        Success = false,
+                        Message = "The model returned an empty message. The reply arrived complete, so this is "
+                                + "not an output-limit problem. The writing step is sampled, so krafting again "
+                                + "often succeeds; if it keeps happening, check the final prompt below.",
+                        Error = result.Content,
+                        FinalPrompt = promptSentToAi,
+                        WebSearchData = research
+                    });
+                }
+
+                if (!generated.IsStructured)
+                {
+                    Log.Information(
+                        "LinkedIn generation reply was not structured JSON; falling back to raw text. "
+                        + "ContactId={ContactId}, BlueprintId={BlueprintId}",
+                        request.ContactId, request.BlueprintId);
+                }
+
                 // LinkedIn's composer is plain text — markup pasted into it shows
-                // up as literal tags.
-                var body = PromptTextCleaner.StripHtml(result.Content).Trim();
+                // up as literal tags. The highlight records are matched against
+                // this same visible text, so stripping the markup leaves them
+                // findable: the parser already checked each one against the
+                // body's text rather than against its HTML.
+                var body = PromptTextCleaner.StripHtml(generated.BodyHtml).Trim();
 
                 // Generation stores nothing. A krafted message is a draft in the
                 // user's hands until they tick "sent", and only that tick writes
@@ -309,6 +468,21 @@ namespace PitchGenApi.Controllers
 
                 if (!request.Preview)
                 {
+                    // The research is persisted the same way email generation
+                    // persists it, so the profile Insights panel shows the latest
+                    // data whichever channel produced it. Only a successful search
+                    // overwrites: a skipped or failed one must not wipe what is
+                    // already stored. The contact is loaded untracked here, hence
+                    // the targeted update rather than SaveChanges.
+                    if (!string.IsNullOrWhiteSpace(webSearchData))
+                    {
+                        await _dbContext.contacts
+                            .Where(c => c.id == request.ContactId)
+                            .ExecuteUpdateAsync(s => s
+                                .SetProperty(c => c.web_search_data, webSearchData)
+                                .SetProperty(c => c.updated_at, DateTime.UtcNow));
+                    }
+
                     // The AI call happened and is billable whether or not the
                     // message is ever sent.
                     await _contactRepository.CreditDeduction(request.ClientId);
@@ -334,13 +508,20 @@ namespace PitchGenApi.Controllers
                     SentAt = (DateTime?)null,
                     GeneratedAt = generatedAt,
 
+                    // Source highlights, kept out of the body: the message stays
+                    // the plain text that goes into LinkedIn's composer, and the
+                    // UI matches each Text against it to paint it. Named exactly
+                    // as email generation names it so one client-side renderer
+                    // serves both channels.
+                    EmailHighlights = generated.Highlights,
+
                     // Same transparency payload the email generator returns, so
                     // the Insights tabs work unchanged on this channel.
                     Notes = insights.Notes,
                     Emails = insights.EmailContext,
                     ProfessionalSummary = insights.ProfessionalSummary,
                     EmailCount = insights.EmailCount,
-                    WebSearchData = storedResearch,
+                    WebSearchData = research,
                     LinkedInMessages = linkedInHistory.Text,
                     LinkedInMessageCount = linkedInHistory.Count,
                     LinkedInMessagesSentTotal = linkedInHistory.TotalSent,
@@ -356,7 +537,8 @@ namespace PitchGenApi.Controllers
                                  PlaceholderEngine.PromptContains(promptSentToAi, insights.EmailContext),
                         ProfessionalSummary =
                                  PlaceholderEngine.PromptContains(promptSentToAi, insights.ProfessionalSummary),
-                        WebSearch = PlaceholderEngine.PromptContains(promptSentToAi, storedResearch),
+                        WebSearch = !string.IsNullOrWhiteSpace(research) &&
+                                 PlaceholderEngine.PromptContains(promptSentToAi, research),
                         LinkedInMessages = PlaceholderEngine.PromptContains(promptSentToAi, linkedInHistory.Text),
                         LinkedInConversation =
                                  PlaceholderEngine.PromptContains(promptSentToAi, linkedInConversation.Text)
@@ -373,6 +555,22 @@ namespace PitchGenApi.Controllers
                         LinkedInHistoryEnabled = linkedInHistoryEnabled,
                         LinkedInConversationPlaceholderFound = hasLinkedInConversationPlaceholder,
                         LinkedInConversationEnabled = linkedInConversationEnabled,
+                        PersonalizationSearchEnabled = personalization != "no",
+                        FilledSearchInstructions = filledSearchInstructions,
+                        WebSearchRan = searchResult != null,
+                        ResearchSource = !string.IsNullOrWhiteSpace(webSearchData)
+                            ? "live-search"
+                            : string.IsNullOrWhiteSpace(storedResearch) ? "none" : "stored",
+
+                        // Did the model answer with the JSON contract, and did
+                        // every highlight it returned actually land in the body?
+                        // Both are the signals to watch after a blueprint edit — a
+                        // drop to false, or a non-zero unmatched count, means the
+                        // blueprint and the parser have drifted apart.
+                        StructuredReplyRequested = wantsStructuredReply,
+                        StructuredReply = generated.IsStructured,
+                        HighlightCount = generated.Highlights.Count,
+                        UnmatchedHighlightCount = generated.UnmatchedHighlights,
                         UnresolvedPlaceholders = PlaceholderEngine.FindUnresolved(promptSentToAi),
                         RuntimeReplacements = runtimeReplacements,
                         CampaignPlaceholderValues = campaignPlaceholderValues
@@ -380,8 +578,12 @@ namespace PitchGenApi.Controllers
 
                     Usage = new
                     {
-                        TotalTokens = result.TotalTokens,
-                        TotalCost = result.CurrentCost
+                        WebSearchTokens = searchResult?.TotalTokens ?? 0,
+                        WebSearchCost = searchResult?.CurrentCost ?? 0,
+                        BodyTokens = result.TotalTokens,
+                        BodyCost = result.CurrentCost,
+                        TotalTokens = (searchResult?.TotalTokens ?? 0) + result.TotalTokens,
+                        TotalCost = (searchResult?.CurrentCost ?? 0) + result.CurrentCost
                     }
                 });
             }
@@ -1115,5 +1317,12 @@ namespace PitchGenApi.Controllers
                 : IsQwenModel(request.ModelName)
                     ? _qwenService.GeneratePitchAsync(request)
                     : _pitchService.GeneratePitchAsync(request);
+
+        private Task<PitchResult> GenerateWebSearchByProviderAsync(EnquiryRequest request, int clientId)
+            => IsDeepSeekModel(request.ModelName)
+                ? _deepSeekService.GenerateWebSearchAsync(request, clientId)
+                : IsQwenModel(request.ModelName)
+                    ? _qwenService.GenerateWebSearchAsync(request, clientId)
+                    : _pitchService.GenerateWebSearchAsync(request, clientId);
     }
 }
