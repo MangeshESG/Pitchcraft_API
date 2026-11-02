@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -363,6 +363,12 @@ builder.Services.AddControllers();
 // 🚀 Build App
 // ===============================
 var app = builder.Build();
+
+using (var notificationScope = app.Services.CreateScope())
+{
+    var notificationContext = notificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await NotificationSchema.EnsureAsync(notificationContext);
+}
 
 // ===============================
 // Unhandled exceptions

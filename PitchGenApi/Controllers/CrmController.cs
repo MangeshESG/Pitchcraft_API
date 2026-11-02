@@ -1,4 +1,4 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
@@ -4404,7 +4404,7 @@ namespace PitchGenApi.Controllers
         {
             id = UnsubscribeSystemViewId,
             client_id = clientId,
-            name = "Unsubscribe",
+            name = "Unsubscribed",
             description = "System view · All unsubscribed contacts. Updates automatically.",
             created_at = DateTime.UnixEpoch,
             use_all_datafiles = true,
@@ -4421,7 +4421,7 @@ namespace PitchGenApi.Controllers
         public async Task<IActionResult> GetViewById([FromQuery] int clientId, [FromQuery] int viewId)
         {
             if (viewId == UnsubscribeSystemViewId)
-                return Ok(new { id = viewId, name = "Unsubscribe", isSystem = true,
+                return Ok(new { id = viewId, name = "Unsubscribed", isSystem = true,
                     description = UnsubscribeSystemView(clientId).description,
                     filters_json = UnsubscribeSystemView(clientId).filters_json,
                     use_all_datafiles = true, dataFileIds = Array.Empty<int>(),
@@ -5461,7 +5461,7 @@ namespace PitchGenApi.Controllers
             try
             {
                 var link = await _unsubscribeRepository
-                        .GenerateOneClickUnsubscribeLinkAsync(
+                        .GenerateUnsubscribeLinkAsync(
                             companyName,
                             clientId,
                             contactId,
@@ -5521,7 +5521,8 @@ namespace PitchGenApi.Controllers
                 });
             }
 
-            var result = await _contactRepository.UnsubscribeAsync(token: token);
+            var result = await _contactRepository.UnsubscribeAsync(token: token,
+                notificationSource: NotificationSource.UnsubscribeByToken);
 
             if (!result)
             {
@@ -5552,7 +5553,7 @@ namespace PitchGenApi.Controllers
             }
 
             var response = await _contactRepository
-                .UnsubscribeAsync(token: token);
+                .UnsubscribeAsync(token: token, notificationSource: NotificationSource.OneClick);
 
             if (!response)
             {

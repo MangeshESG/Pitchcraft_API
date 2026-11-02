@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
 using PitchGenApi.Model.DTOs;
@@ -236,7 +236,8 @@ public class ContactRepository
     }
 
 
-    public async Task<bool> UnsubscribeAsync(string? token = null, int? clientId = null, int? contactId = null, string? email = null)
+    public async Task<bool> UnsubscribeAsync(string? token = null, int? clientId = null, int? contactId = null, string? email = null,
+        NotificationSource? notificationSource = null)
     {
         // NEW FLOW: Token based
         if (!string.IsNullOrWhiteSpace(token))
@@ -275,14 +276,14 @@ public class ContactRepository
             alreadyUnsubscribed = await _context.UnsubscribedContacts
                 .AnyAsync(x =>
                     x.ClientId == clientId.Value &&
-                    x.ContactId == contactId.Value);
+                    (x.ContactId == contactId.Value || (!string.IsNullOrEmpty(email) && x.Email == email)));
         }
         // Agar IDs nahi hain lekin email hai
         else if (!string.IsNullOrWhiteSpace(email))
         {
             alreadyUnsubscribed = await _context.UnsubscribedContacts
                 .AnyAsync(x =>
-                    x.Email == email); 
+                    x.ClientId == clientId && x.Email == email);
         }
 
         if (!alreadyUnsubscribed)
@@ -297,6 +298,21 @@ public class ContactRepository
 
             await _context.UnsubscribedContacts
                 .AddAsync(unsubscribe);
+
+            // Both the unsubscribe and its notification commit in the same SaveChanges.
+            // Existing rows never produce an event, and manual calls omit the source.
+            if (notificationSource.HasValue && !string.IsNullOrWhiteSpace(token) && clientId > 0)
+            {
+                _context.Notifications.Add(new Notification
+                {
+                    ClientId = clientId.Value,
+                    ContactId = contactId,
+                    Email = email ?? "",
+                    Source = notificationSource.Value.ToString(),
+                    CreatedAt = unsubscribe.CreatedAt,
+                    UnsubscribedContact = unsubscribe
+                });
+            }
         }
 
         await _context.SaveChangesAsync();
