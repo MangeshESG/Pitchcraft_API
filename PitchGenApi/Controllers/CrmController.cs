@@ -18,6 +18,7 @@ using Serilog;
 using System.Globalization;
 using System.Text.Json.Serialization;
 using System.Linq.Expressions;
+using System.Security.Cryptography;
 using PitchGenApi.Interfaces;
 
 
@@ -29,6 +30,220 @@ namespace PitchGenApi.Controllers
     [Route("api/[controller]")]
     public class CrmController : ControllerBase
     {
+        // shortcut: These management routes trust clientId; add authentication before public exposure.
+        [HttpGet("website-contact-integrations")]
+        public async Task<IActionResult> GetWebsiteContactIntegrations([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+                return BadRequest(new { message = "Client ID is required." });
+
+            var integrations = await _context.website_api_keys.AsNoTracking()
+                .Where(item => item.client_id == clientId)
+                .OrderByDescending(item => item.created_at)
+                .Select(item => new { item.id, item.website_name, item.data_file_id, item.created_at })
+                .ToListAsync();
+
+            return Ok(integrations);
+        }
+
+        [HttpPost("website-contact-integrations")]
+        public async Task<IActionResult> CreateWebsiteContactIntegration([FromBody] CreateWebsiteIntegrationRequest request)
+        {
+            if (request == null || request.ClientId <= 0 || string.IsNullOrWhiteSpace(request.WebsiteName))
+                return BadRequest(new { message = "Client and website name are required." });
+
+            if (!await _context.ClientDetails.AnyAsync(client => client.Id == request.ClientId))
+                return BadRequest(new { message = "Client not found." });
+
+            var name = request.WebsiteName.Trim();
+            if (name.Length > 120)
+                return BadRequest(new { message = "Website name must be at most 120 characters." });
+
+            if (await _context.website_api_keys.AnyAsync(item =>
+                item.client_id == request.ClientId && item.website_name == name))
+                return Conflict(new { message = "This website already has a contact integration." });
+
+            var key = "pk_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+
+            var strategy = _context.Database.CreateExecutionStrategy();
+            var created = await strategy.ExecuteAsync(async () =>
+            {
+                _context.ChangeTracker.Clear();
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+
+                var list = new DataFile
+                {
+                    client_id = request.ClientId,
+                    name = name,
+                    data_file_name = name,
+                    description = "Website contact form",
+                    created_at = DateTime.UtcNow
+                };
+                _context.data_files.Add(list);
+                await _context.SaveChangesAsync();
+
+                var integration = new WebsiteContactIntegration
+                {
+                    client_id = request.ClientId,
+                    data_file_id = list.id,
+                    website_name = name,
+                    key_hash = hash,
+                    created_at = DateTime.UtcNow
+                };
+                _context.website_api_keys.Add(integration);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return new { integration.id, DataFileId = list.id };
+            });
+
+            return Ok(new { created.id, websiteName = name, created.DataFileId, apiKey = key });
+        }
+
+        [HttpPost("website-contact-integrations/regenerate")]
+        public async Task<IActionResult> RegenerateWebsiteContactKey([FromBody] RegenerateWebsiteKeyRequest request)
+        {
+            if (request == null || request.ClientId <= 0 || request.IntegrationId <= 0)
+                return BadRequest(new { message = "Client and website integration are required." });
+
+            var integration = await _context.website_api_keys.FirstOrDefaultAsync(item =>
+                item.id == request.IntegrationId && item.client_id == request.ClientId);
+            if (integration == null)
+                return NotFound(new { message = "Website integration not found." });
+
+            var key = "pk_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+            integration.key_hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+            await _context.SaveChangesAsync();
+
+            return Ok(new { websiteName = integration.website_name, apiKey = key });
+        }
+
+        [HttpPost("website-contact")]
+        public async Task<IActionResult> ReceiveWebsiteContact([FromBody] WebsiteContactRequest request)
+        {
+            var key = Request.Headers["X-Pitchkraft-Api-Key"].ToString();
+
+            if (!key.StartsWith("pk_", StringComparison.Ordinal) ||
+                key.Length != 67)
+            {
+                return Unauthorized(new { message = "Invalid API key." });
+            }
+
+            var hash = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+
+            var integration = await _context.website_api_keys
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.key_hash == hash);
+
+            if (integration == null)
+                return Unauthorized(new { message = "Invalid API key." });
+
+            if (request == null ||
+                (string.IsNullOrWhiteSpace(request.FullName) &&
+                 (string.IsNullOrWhiteSpace(request.FirstName) || string.IsNullOrWhiteSpace(request.LastName))) ||
+                string.IsNullOrWhiteSpace(request.Email))
+            {
+                return BadRequest(new
+                {
+                    message = "Full name or first and last name, and email are required."
+                });
+            }
+
+            var hasFirstAndLastName = !string.IsNullOrWhiteSpace(request.FirstName) &&
+                                      !string.IsNullOrWhiteSpace(request.LastName);
+            var name = hasFirstAndLastName
+                ? $"{request.FirstName.Trim()} {request.LastName.Trim()}"
+                : request.FullName.Trim();
+            var email = request.Email.Trim();
+            var company = request.CompanyName?.Trim();
+            var phone = request.PhoneNumber?.Trim();
+            var message = request.Message?.Trim();
+
+            if (name.Length > 300 ||
+                email.Length > 320 ||
+                !System.Net.Mail.MailAddress.TryCreate(email, out var parsedEmail) ||
+                !parsedEmail.Address.Equals(
+                    email, StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest(new
+                {
+                    message = "Invalid full name or email."
+                });
+            }
+
+            if (company?.Length > 300)
+                return BadRequest(new { message = "Company name is too long." });
+
+            if (phone?.Length > 50)
+                return BadRequest(new { message = "Phone number is too long." });
+
+            if (message?.Length > 10000)
+                return BadRequest(new { message = "Message is too long." });
+
+            var emailExists = await _context.contacts
+                .AnyAsync(x =>
+                    x.DataFileId == integration.data_file_id &&
+                    x.email == email);
+
+            if (emailExists)
+            {
+                return Conflict(new
+                {
+                    message = "This email already exists in the website list."
+                });
+            }
+
+            var parts = hasFirstAndLastName
+                ? new[] { request.FirstName.Trim(), request.LastName.Trim() }
+                : name.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
+
+            var now = DateTime.UtcNow;
+
+            var contact = new Contact
+            {
+                DataFileId = integration.data_file_id,
+                full_name = name,
+                first_name = parts[0],
+                last_name = parts.Length > 1 ? parts[1] : "",
+                email = email,
+                CompanyTelephone = phone,
+                company_name = company,
+                created_at = now
+            };
+
+            await using var transaction =
+                await _context.Database.BeginTransactionAsync();
+
+            _context.contacts.Add(contact);
+            await _context.SaveChangesAsync();
+
+            // Contact ID is now generated by the database.
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                var note = new Notes
+                {
+                    ClientId = integration.client_id,
+                    ContactId = contact.id,
+                    Note = message,
+                    CreatedAt = now
+                };
+
+                _context.Set<Notes>().Add(note);
+                await _context.SaveChangesAsync();
+            }
+
+            await transaction.CommitAsync();
+
+            return Ok(new
+            {
+                message = "Contact created successfully.",
+                contactId = contact.id
+            });
+        }
+
+
         public sealed class SetLinkedInMessagePinRequest
         {
             public int ClientId { get; set; }
@@ -1805,6 +2020,9 @@ namespace PitchGenApi.Controllers
                     return NotFound("Data file not found for the given client.");
                 }
 
+                if (await _context.website_api_keys.AnyAsync(item => item.data_file_id == dataFileId))
+                    return Conflict(new { message = "Website contact lists cannot be deleted." });
+
                 // 1️⃣ Delete custom field values first
                 await _context.Database.ExecuteSqlInterpolatedAsync($@"
             DELETE ccfv
@@ -2151,6 +2369,9 @@ namespace PitchGenApi.Controllers
             if (dataFile == null)
                 return NotFound("Data file not found");
 
+            if (await _context.website_api_keys.AnyAsync(item => item.data_file_id == id))
+                return Conflict(new { message = "Website contact lists cannot be edited." });
+
             dataFile.name = name;
             dataFile.description = description;
             dataFile.data_file_name = dataFileName;
@@ -2219,6 +2440,8 @@ namespace PitchGenApi.Controllers
                         x.description,
                         x.created_at,
                         x.updated_at,
+                        isWebsiteContactList = _context.website_api_keys
+                            .Any(item => item.data_file_id == x.id),
 
                         // 👇 Only contact count
                         contactCount = _context.contacts
