@@ -63,6 +63,10 @@ namespace PitchGenApi.Controllers
             _aiModelSettings = aiModelSettings;
         }
 
+        // Subject rules. There is no subject on this channel; the key exists so
+        // the token can be cleared out of a blueprint that still carries it.
+        private const string SubjectInstructionsKey = "subject_instructions";
+
         // How far back an offline-queued checkbox is still believed.
         private static readonly TimeSpan MaxBackdate = TimeSpan.FromDays(7);
 
@@ -154,6 +158,18 @@ namespace PitchGenApi.Controllers
                 // literal when the switch is off. Filled below if it is on.
                 runtimeReplacements[PlaceholderEngine.LinkedInHistoryKey] = "";
                 runtimeReplacements[PlaceholderEngine.LinkedInConversationKey] = "";
+
+                // {unsubscribe_url} and {subject_instructions}. Neither means
+                // anything on this channel — a LinkedIn message has no
+                // unsubscribe link and no subject line — but both are registered
+                // empty for exactly the reason the two keys above are: a
+                // blueprint copied from an email one still carries them, and an
+                // unregistered key is not replaced at all, so the model would be
+                // handed the literal text "{unsubscribe_url}" to write around.
+                // Registering them clears the tokens instead, and stops the
+                // campaign-level pass claiming either key.
+                runtimeReplacements[PlaceholderEngine.UnsubscribeUrlKey] = "";
+                runtimeReplacements[SubjectInstructionsKey] = "";
 
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
@@ -249,64 +265,84 @@ namespace PitchGenApi.Controllers
                         insights.ProfessionalSummary);
 
                 // ---- web / personalization search (every model) ----
-                //
-                // This step used to be skipped here, with the research already
-                // stored on the contact reused instead. It now runs for real, so
-                // a LinkedIn message is researched exactly like an email: one
-                // search call, then one writing call. That is the slower path by
-                // design — the blueprint turns it off with
-                // use_personalization_search = no, and a blueprint with no search
-                // instructions skips it without spending a call.
+                // The same dedicated search step email generation runs, so both
+                // channels write from facts researched for this kraft rather than
+                // this one reusing whatever an earlier email kraft happened to
+                // leave behind on the contact.
                 PitchResult? searchResult = null;
-                var storedResearch = PromptTextCleaner.StripHtml(contact.web_search_data);
-                var webSearchData = "";
-                var filledSearchInstructions = "";
 
-                var personalization = campaignPlaceholderValues.TryGetValue("use_personalization_search", out var ps)
-                    ? (ps ?? "").Trim().ToLower()
-                    : "";
+                // Whatever is already stored on the contact. It is the fallback
+                // for a search that is switched off, has no instructions, or
+                // fails: throwing away research we already hold would leave this
+                // channel worse off than before the search step existed.
+                var storedResearch = PromptTextCleaner.StripHtml(contact.web_search_data);
+
+                var personalization =
+                    campaignPlaceholderValues.TryGetValue("use_personalization_search", out var ps)
+                        ? (ps ?? "").Trim().ToLower()
+                        : "";
+
+                var searchInstructions = "";
 
                 if (personalization != "no")
                 {
-                    var instructionTemplate = !string.IsNullOrWhiteSpace(template.TemplateDefinition.WebSearchInstructions)
-                        ? template.TemplateDefinition.WebSearchInstructions
-                        : (campaignPlaceholderValues.TryGetValue("search_objective", out var so) ? so ?? "" : "");
+                    var instructionTemplate =
+                        !string.IsNullOrWhiteSpace(template.TemplateDefinition.WebSearchInstructions)
+                            ? template.TemplateDefinition.WebSearchInstructions
+                            : (campaignPlaceholderValues.TryGetValue("search_objective", out var so)
+                                ? so ?? ""
+                                : "");
 
-                    var webSearchReplacements =
+                    // The instructions are a blueprint of their own - the
+                    // contact's name and company are what gets searched for.
+                    // Campaign values first, runtime values last so the runtime
+                    // set wins any key both define: the same precedence the
+                    // message prompt itself uses.
+                    var searchReplacements =
                         new Dictionary<string, string>(campaignPlaceholderValues, StringComparer.OrdinalIgnoreCase);
 
-                    webSearchReplacements["hook"] =
+                    // {hook} inside a search instruction means the terms to
+                    // search for, which is hook_search_terms when the campaign
+                    // sets one and the hook itself otherwise.
+                    searchReplacements["hook"] =
                         (campaignPlaceholderValues.TryGetValue("hook", out var hk) && !string.IsNullOrWhiteSpace(hk))
                             ? hk
                             : (campaignPlaceholderValues.TryGetValue("hook_search_terms", out var hst) ? hst ?? "" : "");
 
                     foreach (var kv in runtimeReplacements)
-                        webSearchReplacements[kv.Key] = kv.Value;
+                        searchReplacements[kv.Key] = kv.Value;
 
-                    filledSearchInstructions = PlaceholderEngine.Apply(instructionTemplate, webSearchReplacements);
-
-                    if (!string.IsNullOrWhiteSpace(filledSearchInstructions))
-                    {
-                        searchResult = await GenerateWebSearchByProviderAsync(new EnquiryRequest
-                        {
-                            Prompt = filledSearchInstructions,
-                            ScrappedData = "",
-                            ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
-                        }, request.ClientId);
-
-                        if (searchResult != null && searchResult.IsSuccess)
-                            webSearchData = searchResult.Content ?? "";
-                    }
+                    searchInstructions = PlaceholderEngine.Apply(instructionTemplate, searchReplacements);
                 }
 
-                // A search that was switched off, had nothing to search for, or
-                // came back empty falls back to the research already on the
-                // contact — which is all this path ever had before.
-                var research = !string.IsNullOrWhiteSpace(webSearchData) ? webSearchData : storedResearch;
+                var freshResearch = "";
+
+                if (!string.IsNullOrWhiteSpace(searchInstructions))
+                {
+                    searchResult = await GenerateWebSearchByProviderAsync(new EnquiryRequest
+                    {
+                        Prompt = searchInstructions,
+                        ScrappedData = "",
+                        ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
+                    }, request.ClientId);
+
+                    if (searchResult != null && searchResult.IsSuccess)
+                        freshResearch = searchResult.Content ?? "";
+                }
+
+                var researchIsFresh = !string.IsNullOrWhiteSpace(freshResearch);
+
+                // LinkedIn's composer is plain text, so the research goes into the
+                // prompt stripped. The raw reply is what gets stored, so the
+                // Insights panel keeps showing it the way an email kraft does.
+                var research = researchIsFresh
+                    ? PromptTextCleaner.StripHtml(freshResearch)
+                    : storedResearch;
 
                 // Same two outcomes as email generation: fill the slot, or append
-                // the research as its own block so a blueprint without the
-                // placeholder does not silently throw the search away.
+                // the research as its own labelled block so a blueprint without
+                // the placeholder does not silently throw it away. The slot is
+                // resolved either way, so a literal token never reaches the model.
                 finalPrompt = finalPrompt.Contains("{web_searched_data}")
                     ? finalPrompt.Replace("{web_searched_data}", research)
                     : (string.IsNullOrWhiteSpace(research)
@@ -456,10 +492,10 @@ namespace PitchGenApi.Controllers
                 // body's text rather than against its HTML.
                 var body = PromptTextCleaner.StripHtml(generated.BodyHtml).Trim();
 
-                // Generation stores nothing. A krafted message is a draft in the
-                // user's hands until they tick "sent", and only that tick writes
-                // a row (see mark-sent) - the table is a record of what actually
-                // went out, not of everything the model ever produced.
+                // No message row is written here. A krafted message is a draft
+                // in the user's hands until they tick "sent", and only that tick
+                // writes a row (see mark-sent) - the table is a record of what
+                // actually went out, not of everything the model ever produced.
                 //
                 // The uid is minted here so one identity carries from generation
                 // through editing to the tick that finally stores it.
@@ -468,22 +504,27 @@ namespace PitchGenApi.Controllers
 
                 if (!request.Preview)
                 {
-                    // The research is persisted the same way email generation
-                    // persists it, so the profile Insights panel shows the latest
-                    // data whichever channel produced it. Only a successful search
-                    // overwrites: a skipped or failed one must not wipe what is
-                    // already stored. The contact is loaded untracked here, hence
-                    // the targeted update rather than SaveChanges.
-                    if (!string.IsNullOrWhiteSpace(webSearchData))
+                    // Persist the research the same way email generation does, so
+                    // the profile Insights panel shows the latest data and the
+                    // next kraft on either channel starts from it. Only a
+                    // successful search overwrites: a skipped or failed one must
+                    // not wipe what is already stored. ExecuteUpdate because the
+                    // contact was loaded AsNoTracking, and this is the one column
+                    // this endpoint ever writes.
+                    if (researchIsFresh)
                     {
                         await _dbContext.contacts
                             .Where(c => c.id == request.ContactId)
                             .ExecuteUpdateAsync(s => s
-                                .SetProperty(c => c.web_search_data, webSearchData)
+                                .SetProperty(c => c.web_search_data, freshResearch)
                                 .SetProperty(c => c.updated_at, DateTime.UtcNow));
                     }
 
-                    // The AI call happened and is billable whether or not the
+                    // The message itself is still not stored: a krafted message is
+                    // a draft until the user ticks "sent", and only that tick
+                    // writes a row (see mark-sent).
+
+                    // The AI calls happened and are billable whether or not the
                     // message is ever sent.
                     await _contactRepository.CreditDeduction(request.ClientId);
                     await _contactRepository.SaveKraftHistoryAsync(
@@ -555,12 +596,15 @@ namespace PitchGenApi.Controllers
                         LinkedInHistoryEnabled = linkedInHistoryEnabled,
                         LinkedInConversationPlaceholderFound = hasLinkedInConversationPlaceholder,
                         LinkedInConversationEnabled = linkedInConversationEnabled,
-                        PersonalizationSearchEnabled = personalization != "no",
-                        FilledSearchInstructions = filledSearchInstructions,
-                        WebSearchRan = searchResult != null,
-                        ResearchSource = !string.IsNullOrWhiteSpace(webSearchData)
-                            ? "live-search"
-                            : string.IsNullOrWhiteSpace(storedResearch) ? "none" : "stored",
+
+                        // Where the research in the prompt came from: this
+                        // kraft's own search, the contact's stored research when
+                        // the search was off or came back empty, or nothing.
+                        ResearchSource = researchIsFresh
+                            ? "live"
+                            : (string.IsNullOrWhiteSpace(research) ? "none" : "stored"),
+                        WebSearchRequested = !string.IsNullOrWhiteSpace(searchInstructions),
+                        WebSearchInstructions = searchInstructions,
 
                         // Did the model answer with the JSON contract, and did
                         // every highlight it returned actually land in the body?
@@ -576,14 +620,17 @@ namespace PitchGenApi.Controllers
                         CampaignPlaceholderValues = campaignPlaceholderValues
                     },
 
+                    // Two calls now, split the same way email generation splits
+                    // them. A skipped search reports zero rather than dropping
+                    // the fields, so one client reads either channel's Usage.
                     Usage = new
                     {
                         WebSearchTokens = searchResult?.TotalTokens ?? 0,
-                        WebSearchCost = searchResult?.CurrentCost ?? 0,
+                        WebSearchCost = searchResult?.CurrentCost ?? 0m,
                         BodyTokens = result.TotalTokens,
                         BodyCost = result.CurrentCost,
                         TotalTokens = (searchResult?.TotalTokens ?? 0) + result.TotalTokens,
-                        TotalCost = (searchResult?.CurrentCost ?? 0) + result.CurrentCost
+                        TotalCost = (searchResult?.CurrentCost ?? 0m) + result.CurrentCost
                     }
                 });
             }
@@ -1311,18 +1358,18 @@ namespace PitchGenApi.Controllers
         private static bool IsQwenModel(string? modelName)
             => modelName?.StartsWith("qwen", StringComparison.OrdinalIgnoreCase) == true;
 
-        private Task<PitchResult> GeneratePitchByProviderAsync(EnquiryRequest request)
-            => IsDeepSeekModel(request.ModelName)
-                ? _deepSeekService.GeneratePitchAsync(request)
-                : IsQwenModel(request.ModelName)
-                    ? _qwenService.GeneratePitchAsync(request)
-                    : _pitchService.GeneratePitchAsync(request);
-
         private Task<PitchResult> GenerateWebSearchByProviderAsync(EnquiryRequest request, int clientId)
             => IsDeepSeekModel(request.ModelName)
                 ? _deepSeekService.GenerateWebSearchAsync(request, clientId)
                 : IsQwenModel(request.ModelName)
                     ? _qwenService.GenerateWebSearchAsync(request, clientId)
                     : _pitchService.GenerateWebSearchAsync(request, clientId);
+
+        private Task<PitchResult> GeneratePitchByProviderAsync(EnquiryRequest request)
+            => IsDeepSeekModel(request.ModelName)
+                ? _deepSeekService.GeneratePitchAsync(request)
+                : IsQwenModel(request.ModelName)
+                    ? _qwenService.GeneratePitchAsync(request)
+                    : _pitchService.GeneratePitchAsync(request);
     }
 }
