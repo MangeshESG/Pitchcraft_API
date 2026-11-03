@@ -6,7 +6,6 @@ using PitchGenApi.Database;
 namespace PitchGenApi.Controllers
 {
     [ApiController]
-    [Authorize]
     [Route("api/[controller]")]
     public class NotificationController : ControllerBase
     {
@@ -30,12 +29,14 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet]
+        [AllowAnonymous]
         public async Task<IActionResult> List([FromQuery] int? clientId, [FromQuery] int? beforeId)
         {
-            var account = await ResolveClientIdAsync(clientId);
-            if (!account.HasValue) return Forbid();
-            var query = _context.Notifications.AsNoTracking().Where(n => n.ClientId == account);
-            var unreadCount = await query.CountAsync(n => n.ReadAt == null);
+            if (clientId is not > 0) return BadRequest(new { message = "Client ID is required." });
+            var account = clientId.Value;
+            var query = _context.Notifications.AsNoTracking()
+                .Where(n => n.ClientId == account && n.ReadAt == null);
+            var unreadCount = await query.CountAsync();
             if (beforeId.HasValue) query = query.Where(n => n.Id < beforeId);
             var rows = await query.OrderByDescending(n => n.Id).Take(21)
                 .Select(n => new { n.Id, n.ContactId, n.Email, n.Source, n.CreatedAt,

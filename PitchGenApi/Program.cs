@@ -349,7 +349,7 @@ builder.Services.AddHttpClient<QwenPitchService>()
 builder.Services.AddSingleton<JwtService>();
 
 // ===============================
-// ✅ Background Jobs
+//  Background Jobs
 // ===============================
 // Singleton so the runner writes to the same instance the status endpoint
 // reads. Registered before the hosted service that depends on it.
@@ -360,7 +360,7 @@ builder.Services.AddScoped<IInboxRefreshJob, InboxRefreshJob>();
 builder.Services.AddControllers();
 
 // ===============================
-// 🚀 Build App
+//  Build App
 // ===============================
 var app = builder.Build();
 
@@ -379,7 +379,7 @@ using (var notificationScope = app.Services.CreateScope())
 app.UseMiddleware<GlobalExceptionMiddleware>();
 
 // ===============================
-// ✅ REQUIRED for production (reverse proxy)
+//  REQUIRED for production (reverse proxy)
 // ===============================
 app.UseForwardedHeaders(new ForwardedHeadersOptions
 {
@@ -390,7 +390,7 @@ app.UseForwardedHeaders(new ForwardedHeadersOptions
 });
 
 // ===============================
-// ✅ Ensure the static-file folders exist
+//  Ensure the static-file folders exist
 // ===============================
 // ContentRootPath rather than Directory.GetCurrentDirectory(): under IIS the
 // working directory is not reliably the app folder. And PhysicalFileProvider
@@ -407,7 +407,7 @@ Directory.CreateDirectory(uploadsPath);
 Directory.CreateDirectory(emailAttachmentsPath);
 
 // ===============================
-// ✅ Swagger
+//  Swagger
 // ===============================
 app.UseSwagger();
 app.UseSwaggerUI(c =>
@@ -417,7 +417,7 @@ app.UseSwaggerUI(c =>
 });
 
 // ===============================
-// ✅ Middleware pipeline
+//  Middleware pipeline
 // ===============================
 app.UseCors("MyCorsPolicy");
 app.UseHttpsRedirection();
@@ -429,7 +429,7 @@ app.UseStaticFiles(new StaticFileOptions
     RequestPath = "/uploads"
 });
 
-// ✅ Serve /email-attachments publicly
+//  Serve /email-attachments publicly
 app.UseStaticFiles(new StaticFileOptions
 {
     FileProvider = new PhysicalFileProvider(emailAttachmentsPath),

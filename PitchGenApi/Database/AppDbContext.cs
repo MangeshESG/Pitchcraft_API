@@ -25,6 +25,7 @@ namespace PitchGenApi.Database
         public DbSet<BccEmail> BccEmail { get; set; }
         public DbSet<Campaign> Campaigns { get; set; }
         public DbSet<DataFile> data_files { get; set; }
+        public DbSet<WebsiteContactIntegration> website_api_keys { get; set; }
         public DbSet<Contact> contacts { get; set; }
         public DbSet<Segment> segments { get; set; }
         public DbSet<SegmentContact> segmentContacts { get; set; }

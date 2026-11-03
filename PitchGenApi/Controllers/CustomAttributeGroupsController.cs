@@ -1,5 +1,4 @@
 using System.Data;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -18,6 +17,10 @@ namespace PitchGenApi.Controllers
 
         private int? CurrentClientId =>
             int.TryParse(User.FindFirst("UserId")?.Value, out var clientId) && clientId > 0
+                ? clientId : null;
+
+        private int? ReadClientId =>
+            int.TryParse(Request.Query["clientId"], out var clientId) && clientId > 0
                 ? clientId : null;
 
         private async Task<int?> ResolveClientIdAsync()
@@ -44,7 +47,7 @@ namespace PitchGenApi.Controllers
         [HttpGet]
         public async Task<IActionResult> List(int page = 1, int pageSize = 20, string? search = null)
         {
-            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
+            if (ReadClientId is not int clientId) return BadRequest(new { message = "Client ID is required." });
             page = Math.Max(page, 1);
             pageSize = Math.Clamp(pageSize, 1, 100);
             var query = _context.crm_custom_field_groups.AsNoTracking().Where(g => g.client_id == clientId);
@@ -73,7 +76,7 @@ namespace PitchGenApi.Controllers
         public async Task<IActionResult> ListAttributes(int page = 1, int pageSize = 20,
             string? search = null, int? groupId = null, bool ungroupedOnly = false, string? systemGroupKey = null)
         {
-            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
+            if (ReadClientId is not int clientId) return BadRequest(new { message = "Client ID is required." });
             page = Math.Max(page, 1);
             pageSize = Math.Clamp(pageSize, 1, 100);
             if (groupId.HasValue && !await _context.crm_custom_field_groups
@@ -120,7 +123,7 @@ namespace PitchGenApi.Controllers
         [HttpGet("layout")]
         public async Task<IActionResult> Layout()
         {
-            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
+            if (ReadClientId is not int clientId) return BadRequest(new { message = "Client ID is required." });
             var groups = await _context.crm_custom_field_groups.AsNoTracking()
                 .Where(g => g.client_id == clientId)
                 .OrderBy(g => g.sort_order).ThenBy(g => g.id)
@@ -227,8 +230,15 @@ namespace PitchGenApi.Controllers
                     read.Transaction = transaction.GetDbTransaction();
                     read.CommandText = @"SELECT field_key, sort_order FROM dbo.crm_system_field_order
 WHERE client_id = @clientId AND assigned_group_key = @groupKey";
-                    var client = read.CreateParameter(); client.ParameterName = "@clientId"; client.Value = clientId; read.Parameters.Add(client);
-                    var group = read.CreateParameter(); group.ParameterName = "@groupKey"; group.Value = groupKey; read.Parameters.Add(group);
+                    var client = read.CreateParameter();
+                    client.ParameterName = "@clientId";
+                    client.Value = clientId;
+                    read.Parameters.Add(client);
+
+                    var group = read.CreateParameter();
+                    group.ParameterName = "@groupKey";
+                    group.Value = groupKey;
+                    read.Parameters.Add(group);
                     await using var reader = await read.ExecuteReaderAsync();
                     while (await reader.ReadAsync()) systemRows.Add((reader.GetString(0), reader.GetInt32(1)));
                 }
@@ -248,16 +258,26 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
                 write.Transaction = transaction.GetDbTransaction();
                 write.CommandText = @"UPDATE dbo.crm_system_field_order SET sort_order = @position
 WHERE client_id = @clientId AND assigned_group_key = @groupKey AND field_key = @fieldKey";
-                foreach (var (name, value) in new (string, object)[] {
-                    ("@clientId", clientId), ("@groupKey", groupKey), ("@fieldKey", ""), ("@position", 0) })
+                foreach (var (name, value) in new (string, object)[]
                 {
-                    var parameter = write.CreateParameter(); parameter.ParameterName = name; parameter.Value = value;
+                    ("@clientId", clientId),
+                    ("@groupKey", groupKey),
+                    ("@fieldKey", ""),
+                    ("@position", 0)
+                })
+                {
+                    var parameter = write.CreateParameter();
+                    parameter.ParameterName = name;
+                    parameter.Value = value;
                     write.Parameters.Add(parameter);
                 }
                 for (var index = 0; index < ordered.Length; index++)
                 {
                     var position = (index + 1) * 1024;
-                    if (customByKey.TryGetValue(ordered[index], out var field)) field.sort_order = position;
+                    if (customByKey.TryGetValue(ordered[index], out var field))
+                    {
+                        field.sort_order = position;
+                    }
                     else
                     {
                         ((System.Data.Common.DbParameter)write.Parameters["@fieldKey"]!).Value = ordered[index][2..];
@@ -301,67 +321,67 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey AND field_key = @
                 await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                 try
                 {
-                CrmCustomFieldGroup group;
-                if (id.HasValue)
-                {
-                    group = await _context.crm_custom_field_groups.FirstOrDefaultAsync(
-                        g => g.id == id && g.client_id == clientId);
-                    if (group == null) return NotFound("Group not found.");
-                }
-                else
-                {
-                    var lastOrder = await _context.crm_custom_field_groups
-                        .Where(g => g.client_id == clientId)
-                        .MaxAsync(g => (long?)g.sort_order) ?? 0;
-                    group = new CrmCustomFieldGroup
+                    CrmCustomFieldGroup group;
+                    if (id.HasValue)
                     {
-                        client_id = clientId,
-                        created_at = DateTime.UtcNow,
-                        sort_order = lastOrder + 1024
-                    };
-                    _context.crm_custom_field_groups.Add(group);
-                }
-
-                if (await _context.crm_custom_field_groups.AnyAsync(g =>
-                    g.client_id == clientId && g.id != group.id && g.name == name))
-                    return Conflict("A group with this name already exists.");
-
-                group.name = name;
-                group.description = description;
-                group.updated_at = DateTime.UtcNow;
-                await _context.SaveChangesAsync();
-
-                if (removeIds.Length > 0)
-                {
-                    var removed = await _context.crm_custom_fields
-                        .Where(f => f.client_id == clientId && f.group_id == group.id &&
-                                    removeIds.Contains(f.id))
-                        .ExecuteUpdateAsync(s => s.SetProperty(f => f.group_id, (int?)null));
-                    if (removed != removeIds.Length)
-                        return Conflict("One or more attributes no longer belong to this group. Refresh and try again.");
-                }
-
-                if (addIds.Length > 0)
-                {
-                    var lastAttributeOrder = await _context.crm_custom_fields
-                        .Where(f => f.client_id == clientId && f.group_id == group.id)
-                        .MaxAsync(f => (long?)f.sort_order) ?? 0;
-                    var addedFields = await _context.crm_custom_fields
-                        .Where(f => f.client_id == clientId && addIds.Contains(f.id) &&
-                                    (f.group_id == null || f.group_id == group.id))
-                        .ToListAsync();
-                    if (addedFields.Count != addIds.Length)
-                        return Conflict("An attribute is already in another group. Refresh and try again.");
-                    var fieldsById = addedFields.ToDictionary(f => f.id);
-                    foreach (var attributeId in addIds)
-                    {
-                        var field = fieldsById[attributeId];
-                        if (field.group_id != null) continue;
-                        field.group_id = group.id;
-                        field.sort_order = (lastAttributeOrder += 1024);
+                        group = await _context.crm_custom_field_groups.FirstOrDefaultAsync(
+                            g => g.id == id && g.client_id == clientId);
+                        if (group == null) return NotFound("Group not found.");
                     }
+                    else
+                    {
+                        var lastOrder = await _context.crm_custom_field_groups
+                            .Where(g => g.client_id == clientId)
+                            .MaxAsync(g => (long?)g.sort_order) ?? 0;
+                        group = new CrmCustomFieldGroup
+                        {
+                            client_id = clientId,
+                            created_at = DateTime.UtcNow,
+                            sort_order = lastOrder + 1024
+                        };
+                        _context.crm_custom_field_groups.Add(group);
+                    }
+
+                    if (await _context.crm_custom_field_groups.AnyAsync(g =>
+                        g.client_id == clientId && g.id != group.id && g.name == name))
+                        return Conflict("A group with this name already exists.");
+
+                    group.name = name;
+                    group.description = description;
+                    group.updated_at = DateTime.UtcNow;
                     await _context.SaveChangesAsync();
-                }
+
+                    if (removeIds.Length > 0)
+                    {
+                        var removed = await _context.crm_custom_fields
+                            .Where(f => f.client_id == clientId && f.group_id == group.id &&
+                                        removeIds.Contains(f.id))
+                            .ExecuteUpdateAsync(s => s.SetProperty(f => f.group_id, (int?)null));
+                        if (removed != removeIds.Length)
+                            return Conflict("One or more attributes no longer belong to this group. Refresh and try again.");
+                    }
+
+                    if (addIds.Length > 0)
+                    {
+                        var lastAttributeOrder = await _context.crm_custom_fields
+                            .Where(f => f.client_id == clientId && f.group_id == group.id)
+                            .MaxAsync(f => (long?)f.sort_order) ?? 0;
+                        var addedFields = await _context.crm_custom_fields
+                            .Where(f => f.client_id == clientId && addIds.Contains(f.id) &&
+                                        (f.group_id == null || f.group_id == group.id))
+                            .ToListAsync();
+                        if (addedFields.Count != addIds.Length)
+                            return Conflict("An attribute is already in another group. Refresh and try again.");
+                        var fieldsById = addedFields.ToDictionary(f => f.id);
+                        foreach (var attributeId in addIds)
+                        {
+                            var field = fieldsById[attributeId];
+                            if (field.group_id != null) continue;
+                            field.group_id = group.id;
+                            field.sort_order = (lastAttributeOrder += 1024);
+                        }
+                        await _context.SaveChangesAsync();
+                    }
 
                     await transaction.CommitAsync();
                     return Ok(new { group.id, group.name });
@@ -421,32 +441,41 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey AND field_key = @
             var strategy = _context.Database.CreateExecutionStrategy();
             return await strategy.ExecuteAsync<IActionResult>(async () =>
             {
-            await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
-            var group = await _context.crm_custom_field_groups
-                .FirstOrDefaultAsync(g => g.id == id && g.client_id == clientId);
-            if (group == null) return NotFound("Group not found.");
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                var group = await _context.crm_custom_field_groups
+                    .FirstOrDefaultAsync(g => g.id == id && g.client_id == clientId);
+                if (group == null) return NotFound("Group not found.");
 
-            var connection = _context.Database.GetDbConnection();
-            await using (var check = connection.CreateCommand())
-            {
-                check.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
-                check.CommandText = @"SELECT COUNT(1) FROM dbo.crm_system_field_order
+                var connection = _context.Database.GetDbConnection();
+                await using (var check = connection.CreateCommand())
+                {
+                    check.Transaction = _context.Database.CurrentTransaction?.GetDbTransaction();
+                    check.CommandText = @"SELECT COUNT(1) FROM dbo.crm_system_field_order
 WHERE client_id = @clientId AND assigned_group_key = @groupKey";
-                var client = check.CreateParameter(); client.ParameterName = "@clientId"; client.Value = clientId; check.Parameters.Add(client);
-                var groupKey = check.CreateParameter(); groupKey.ParameterName = "@groupKey"; groupKey.Value = $"custom:{id}"; check.Parameters.Add(groupKey);
-                if (Convert.ToInt32(await check.ExecuteScalarAsync()) > 0)
-                    return Conflict(new { message = "This group contains system fields. Move all its system fields to another group from the Attributes list before deleting it." });
-            }
 
-            await _context.crm_custom_fields
-                .Where(f => f.client_id == clientId && f.group_id == id)
-                .ExecuteUpdateAsync(s => s.SetProperty(f => f.group_id, (int?)null));
-            _context.crm_custom_field_groups.Remove(group);
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-            return NoContent();
+                    var client = check.CreateParameter();
+                    client.ParameterName = "@clientId";
+                    client.Value = clientId;
+                    check.Parameters.Add(client);
+
+                    var groupKey = check.CreateParameter();
+                    groupKey.ParameterName = "@groupKey";
+                    groupKey.Value = $"custom:{id}";
+                    check.Parameters.Add(groupKey);
+                    if (Convert.ToInt32(await check.ExecuteScalarAsync()) > 0)
+                        return Conflict(new { message = "This group contains system fields. Move all its system fields to another group from the Attributes list before deleting it." });
+                }
+
+                await _context.crm_custom_fields
+                    .Where(f => f.client_id == clientId && f.group_id == id)
+                    .ExecuteUpdateAsync(s => s.SetProperty(f => f.group_id, (int?)null));
+                _context.crm_custom_field_groups.Remove(group);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+                return NoContent();
             });
         }
+
         private record SystemField(string Key, string Name, string Type);
         private static readonly IReadOnlyDictionary<string, SystemField[]> Fields =
             new Dictionary<string, SystemField[]>(StringComparer.OrdinalIgnoreCase)
@@ -473,7 +502,7 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
         [HttpGet("system")]
         public async Task<IActionResult> ListSystemFields()
         {
-            if (await ResolveClientIdAsync() is not int clientId) return Unauthorized();
+            if (ReadClientId is not int clientId) return BadRequest(new { message = "Client ID is required." });
             var saved = new Dictionary<string, (string groupKey, int order)>();
             var connection = _context.Database.GetDbConnection();
             await using var command = connection.CreateCommand();
@@ -486,12 +515,23 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
             await using (var reader = await command.ExecuteReaderAsync())
             {
                 while (await reader.ReadAsync())
-                    saved[reader.GetString(1)] = (reader.IsDBNull(3) ? reader.GetString(0).ToLowerInvariant() : reader.GetString(3).ToLowerInvariant(), reader.GetInt32(2));
+                {
+                    var groupKey = reader.IsDBNull(3) ? reader.GetString(0) : reader.GetString(3);
+                    saved[reader.GetString(1)] = (groupKey.ToLowerInvariant(), reader.GetInt32(2));
+                }
             }
-            var systemFields = Fields.SelectMany(group => group.Value.Select((field, index) => new {
-                key = field.Key, name = field.Name, type = field.Type,
-                groupKey = saved.GetValueOrDefault(field.Key, (group.Key, index)).Item1,
-                order = saved.GetValueOrDefault(field.Key, (group.Key, index)).Item2
+
+            var systemFields = Fields.SelectMany(group => group.Value.Select((field, index) =>
+            {
+                var placement = saved.GetValueOrDefault(field.Key, (group.Key, index));
+                return new
+                {
+                    key = field.Key,
+                    name = field.Name,
+                    type = field.Type,
+                    groupKey = placement.Item1,
+                    order = placement.Item2
+                };
             })).ToArray();
             var customGroups = await _context.crm_custom_field_groups.AsNoTracking()
                 .Where(group => group.client_id == clientId)
@@ -556,12 +596,18 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
                     IF @@ROWCOUNT = 0
                         INSERT INTO dbo.crm_system_field_order (client_id, group_key, assigned_group_key, field_key, sort_order)
                         VALUES (@clientId, @source, @destination, @fieldKey, @next);";
-                foreach (var (name, value) in new (string, object)[] {
-                    ("@clientId", clientId), ("@source", ""), ("@destination", destination),
-                    ("@base", Fields.TryGetValue(destination, out var defaultFields) ? defaultFields.Length : 0),
-                    ("@fieldKey", "") })
+                foreach (var (name, value) in new (string, object)[]
                 {
-                    var parameter = command.CreateParameter(); parameter.ParameterName = name; parameter.Value = value;
+                    ("@clientId", clientId),
+                    ("@source", ""),
+                    ("@destination", destination),
+                    ("@base", Fields.TryGetValue(destination, out var defaultFields) ? defaultFields.Length : 0),
+                    ("@fieldKey", "")
+                })
+                {
+                    var parameter = command.CreateParameter();
+                    parameter.ParameterName = name;
+                    parameter.Value = value;
                     command.Parameters.Add(parameter);
                 }
                 foreach (var fieldKey in request.FieldKeys)
@@ -602,18 +648,34 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
                     current.Transaction = transaction;
                     current.CommandText = @"SELECT field_key FROM dbo.crm_system_field_order
                             WHERE client_id = @clientId AND (assigned_group_key = @groupKey OR (assigned_group_key IS NULL AND group_key = @groupKey))";
-                    foreach (var (name, value) in new (string, object)[] { ("@clientId", clientId), ("@groupKey", groupKey) })
+                    foreach (var (name, value) in new (string, object)[]
                     {
-                        var parameter = current.CreateParameter(); parameter.ParameterName = name; parameter.Value = value;
+                        ("@clientId", clientId),
+                        ("@groupKey", groupKey)
+                    })
+                    {
+                        var parameter = current.CreateParameter();
+                        parameter.ParameterName = name;
+                        parameter.Value = value;
                         current.Parameters.Add(parameter);
                     }
                     var expected = new HashSet<string>(StringComparer.Ordinal);
                     await using (var reader = await current.ExecuteReaderAsync())
-                        while (await reader.ReadAsync()) expected.Add(reader.GetString(0));
+                    {
+                        while (await reader.ReadAsync())
+                            expected.Add(reader.GetString(0));
+                    }
                     foreach (var source in Fields)
+                    {
                         if (source.Key == groupKey)
+                        {
                             foreach (var field in source.Value)
-                                if (!await SystemFieldHasRow(connection, transaction, clientId, field.Key)) expected.Add(field.Key);
+                            {
+                                if (!await SystemFieldHasRow(connection, transaction, clientId, field.Key))
+                                    expected.Add(field.Key);
+                            }
+                        }
+                    }
                     if (!expected.SetEquals(request.OrderedKeys))
                         return Conflict(new { message = "System fields changed. Refresh and try again." });
                 }
@@ -624,9 +686,13 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
                         IF @@ROWCOUNT = 0
                             INSERT INTO dbo.crm_system_field_order (client_id, group_key, field_key, sort_order)
                             VALUES (@clientId, @source, @fieldKey, @sortOrder);";
-                foreach (var (name, value) in new (string, object)[] {
-                    ("@clientId", clientId), ("@groupKey", groupKey.ToLowerInvariant()),
-                    ("@source", ""), ("@fieldKey", ""), ("@sortOrder", 0) })
+                foreach (var (name, value) in new (string, object)[]
+                {
+                    ("@clientId", clientId),
+                    ("@source", ""),
+                    ("@fieldKey", ""),
+                    ("@sortOrder", 0)
+                })
                 {
                     var parameter = command.CreateParameter();
                     parameter.ParameterName = name;
@@ -656,9 +722,15 @@ WHERE client_id = @clientId AND assigned_group_key = @groupKey";
             await using var command = connection.CreateCommand();
             command.Transaction = transaction;
             command.CommandText = "SELECT COUNT(1) FROM dbo.crm_system_field_order WHERE client_id = @clientId AND field_key = @fieldKey";
-            foreach (var (name, value) in new (string, object)[] { ("@clientId", clientId), ("@fieldKey", fieldKey) })
+            foreach (var (name, value) in new (string, object)[]
             {
-                var parameter = command.CreateParameter(); parameter.ParameterName = name; parameter.Value = value;
+                ("@clientId", clientId),
+                ("@fieldKey", fieldKey)
+            })
+            {
+                var parameter = command.CreateParameter();
+                parameter.ParameterName = name;
+                parameter.Value = value;
                 command.Parameters.Add(parameter);
             }
             return Convert.ToInt32(await command.ExecuteScalarAsync()) > 0;
