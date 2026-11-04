@@ -217,13 +217,15 @@ namespace PitchGenApi.Controllers
                 runtimeReplacements[SubjectInstructionsKey] = "";
 
                 // {manual_instruction}. The one-off steer typed next to the
-                // email in the editor, carried by this request alone. Authored
-                // in a plain textarea, but HTML is stripped anyway so a pasted
-                // instruction cannot smuggle markup into the prompt.
+                // email in the editor, carried by this request alone. The
+                // frontend sends it already composed — the instruction, the
+                // rule that says to apply it, and the email body as it stands.
+                //
+                // Deliberately NOT HTML-stripped, unlike the campaign values:
+                // that body is markup, and the rule asks the model to keep its
+                // tags, links and layout intact. Stripping here would ask it to
+                // preserve something it was never shown.
                 var manualInstruction = (request.ManualInstruction ?? "").Trim();
-
-                if (PromptTextCleaner.LooksLikeHtml(manualInstruction))
-                    manualInstruction = PromptTextCleaner.StripHtml(manualInstruction).Trim();
 
                 // Registered unconditionally for the same reason as the keys
                 // above: a blueprint that keeps the token must see an empty
