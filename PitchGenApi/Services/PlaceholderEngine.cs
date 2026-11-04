@@ -142,6 +142,16 @@ namespace PitchGenApi.Services
         public const string UnsubscribeUrlKey = "unsubscribe_url";
 
         /// <summary>
+        /// {manual_instruction} — a one-off steer the user types next to the
+        /// email in the editor and sends with a single regeneration.
+        ///
+        /// It is request-scoped, never stored: a blueprint that keeps the token
+        /// sees an empty string on any run that carries no instruction, so an
+        /// old instruction can never leak into a later email.
+        /// </summary>
+        public const string ManualInstructionKey = "manual_instruction";
+
+        /// <summary>
         /// Reads the yes/no switch out of a blueprint's saved placeholder values.
         /// </summary>
         public static bool IsHistoryEnabled(

@@ -216,6 +216,21 @@ namespace PitchGenApi.Controllers
                 // values it may itself contain can be resolved.
                 runtimeReplacements[SubjectInstructionsKey] = "";
 
+                // {manual_instruction}. The one-off steer typed next to the
+                // email in the editor, carried by this request alone. Authored
+                // in a plain textarea, but HTML is stripped anyway so a pasted
+                // instruction cannot smuggle markup into the prompt.
+                var manualInstruction = (request.ManualInstruction ?? "").Trim();
+
+                if (PromptTextCleaner.LooksLikeHtml(manualInstruction))
+                    manualInstruction = PromptTextCleaner.StripHtml(manualInstruction).Trim();
+
+                // Registered unconditionally for the same reason as the keys
+                // above: a blueprint that keeps the token must see an empty
+                // string — never a literal {manual_instruction} — on a run that
+                // carries no instruction.
+                runtimeReplacements[PlaceholderEngine.ManualInstructionKey] = manualInstruction;
+
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
 
@@ -242,6 +257,8 @@ namespace PitchGenApi.Controllers
                 var hasSummaryPlaceholder =
                     ContainsPlaceholder(campaignBlueprint, "linkedin_info") ||
                     ContainsPlaceholder(campaignBlueprint, "professional_summary");
+                var hasManualInstructionPlaceholder =
+                    ContainsPlaceholder(campaignBlueprint, PlaceholderEngine.ManualInstructionKey);
 
                 // ---- LinkedIn messages already sent to this contact ----
                 // {linkedin_messages} is the slot; use_linkedin_message is the
@@ -441,6 +458,17 @@ namespace PitchGenApi.Controllers
                             finalPrompt,
                             "Professional summary (LinkedIn) for this contact:",
                             professionalSummary);
+                }
+
+                // The user typed this instruction about the email in front of
+                // them, so dropping it because the blueprint has no slot for it
+                // would be the one failure they would notice immediately.
+                if (!string.IsNullOrWhiteSpace(manualInstruction) && !hasManualInstructionPlaceholder)
+                {
+                    finalPrompt = AppendContextSection(
+                        finalPrompt,
+                        "Additional instruction for this email (it comes from the user and takes precedence over any conflicting guidance above):",
+                        manualInstruction);
                 }
 
                 // ---- web / personalization search (every model) ----
