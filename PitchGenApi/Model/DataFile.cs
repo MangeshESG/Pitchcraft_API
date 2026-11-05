@@ -12,6 +12,7 @@ namespace PitchGenApi.Models
         public string? description { get; set; }
         public DateTime created_at { get; set; }
         public DateTime? updated_at { get; set; }
+        public int? category_id { get; set; }
 
         public List<Contact> contacts { get; set; } = new();
     }

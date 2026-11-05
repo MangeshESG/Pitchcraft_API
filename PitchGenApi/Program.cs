@@ -368,6 +368,7 @@ using (var notificationScope = app.Services.CreateScope())
 {
     var notificationContext = notificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
     await NotificationSchema.EnsureAsync(notificationContext);
+    await ContactListCategorySchema.EnsureAsync(notificationContext);
 }
 
 // ===============================

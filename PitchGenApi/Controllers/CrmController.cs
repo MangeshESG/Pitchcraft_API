@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Microsoft.EntityFrameworkCore;
@@ -220,13 +221,25 @@ namespace PitchGenApi.Controllers
                 _context.contacts.Add(contact);
                 await _context.SaveChangesAsync();
 
+                _context.Notifications.Add(new Notification
+                {
+                    ClientId = integration.client_id,
+                    ContactId = contact.id,
+                    Email = email,
+                    Source = NotificationSource.WebsiteContact.ToString(),
+                    CreatedAt = now
+                });
+                await _context.SaveChangesAsync();
+
                 if (!string.IsNullOrWhiteSpace(message))
                 {
+                    var noteBody = System.Net.WebUtility.HtmlEncode(message)
+                        .Replace("\r\n", "\n").Replace("\n", "<br />");
                     _context.Set<Notes>().Add(new Notes
                     {
                         ClientId = integration.client_id,
                         ContactId = contact.id,
-                        Note = message,
+                        Note = $"<p><strong>Source: Website contact</strong></p><p>{noteBody}</p>",
                         CreatedAt = now
                     });
                     await _context.SaveChangesAsync();
@@ -2448,6 +2461,7 @@ namespace PitchGenApi.Controllers
                         x.description,
                         x.created_at,
                         x.updated_at,
+                        x.category_id,
                         isWebsiteContactList = _context.website_api_keys
                             .Any(item => item.data_file_id == x.id),
 
@@ -5768,6 +5782,95 @@ namespace PitchGenApi.Controllers
             {
                 success = true,
                 message = "Unsubscribed successfully."
+            });
+        }
+
+        [HttpGet("contact-list-categories")]
+        public async Task<IActionResult> GetContactListCategories([FromQuery] int clientId)
+        {
+            if (clientId <= 0) return BadRequest(new { message = "Client ID is required." });
+            var categories = await _context.contact_list_categories.AsNoTracking()
+                .Where(category => category.client_id == clientId)
+                .OrderBy(category => category.name)
+                .Select(category => new { category.id, category.name })
+                .ToListAsync();
+            return Ok(categories);
+        }
+
+        public class SaveCategoryRequest
+        {
+            public int? Id { get; set; }
+            public string? Name { get; set; }
+            public List<int>? ListIds { get; set; }
+        }
+
+        [HttpPost("contact-list-categories")]
+        public async Task<IActionResult> SaveContactListCategory([FromQuery] int clientId, [FromBody] SaveCategoryRequest request)
+        {
+            if (clientId <= 0) return BadRequest(new { message = "Client ID is required." });
+            var name = request?.Name?.Trim();
+            var listIds = request?.ListIds?.Distinct().ToArray();
+            if (string.IsNullOrWhiteSpace(name) || name.Length > 120 || listIds == null ||
+                listIds.Any(id => id <= 0) || request!.Id < 0)
+                return BadRequest(new { message = "Enter a category name and valid lists." });
+
+            try
+            {
+                return await _context.Database.CreateExecutionStrategy().ExecuteAsync<IActionResult>(async () =>
+                {
+                    await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+                    var category = request.Id.HasValue
+                        ? await _context.contact_list_categories.FirstOrDefaultAsync(item =>
+                            item.id == request.Id && item.client_id == clientId)
+                        : new ContactListCategory { client_id = clientId, created_at = DateTime.UtcNow };
+                    if (category == null) return NotFound(new { message = "Category not found." });
+                    if (await _context.contact_list_categories.AnyAsync(item => item.client_id == clientId &&
+                        item.name == name && item.id != category.id))
+                        return Conflict(new { message = "Category name already exists." });
+
+                    var lists = await _context.data_files.Where(file => file.client_id == clientId &&
+                        listIds.Contains(file.id)).ToListAsync();
+                    if (lists.Count != listIds.Length || lists.Any(file =>
+                        file.name == "All manually added contacts" ||
+                        file.name == "Contacts involved in conversations" ||
+                        (file.category_id.HasValue && file.category_id != category.id)) ||
+                        await _context.website_api_keys.AnyAsync(item => listIds.Contains(item.data_file_id)))
+                        return Conflict(new { message = "Select only unassigned, manually added lists." });
+
+                    category.name = name;
+                    if (!request.Id.HasValue) _context.contact_list_categories.Add(category);
+                    await _context.SaveChangesAsync();
+                    await _context.data_files.Where(file => file.client_id == clientId &&
+                        file.category_id == category.id && !listIds.Contains(file.id))
+                        .ExecuteUpdateAsync(update => update.SetProperty(file => file.category_id, (int?)null));
+                    foreach (var list in lists) list.category_id = category.id;
+                    await _context.SaveChangesAsync();
+                    await transaction.CommitAsync();
+                    return Ok(new { category.id, category.name });
+                });
+            }
+            catch (DbUpdateException)
+            {
+                return Conflict(new { message = "Category name already exists." });
+            }
+        }
+
+        [HttpPost("contact-list-categories/{id:int}/delete")]
+        public async Task<IActionResult> DeleteContactListCategory([FromQuery] int clientId, int id)
+        {
+            if (clientId <= 0) return BadRequest(new { message = "Client ID is required." });
+            return await _context.Database.CreateExecutionStrategy().ExecuteAsync<IActionResult>(async () =>
+            {
+                await using var transaction = await _context.Database.BeginTransactionAsync();
+                var category = await _context.contact_list_categories.FirstOrDefaultAsync(item =>
+                    item.id == id && item.client_id == clientId);
+                if (category == null) return NotFound();
+                await _context.data_files.Where(file => file.client_id == clientId && file.category_id == id)
+                    .ExecuteUpdateAsync(update => update.SetProperty(file => file.category_id, (int?)null));
+                _context.contact_list_categories.Remove(category);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+                return NoContent();
             });
         }
 
