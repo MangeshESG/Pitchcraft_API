@@ -2405,6 +2405,14 @@ namespace PitchGenApi.Controllers
             if (!string.IsNullOrWhiteSpace(request.EmailBody))
                 contact.email_body = request.EmailBody;
 
+            // Null means "leave the stored highlights alone", which is what an
+            // ordinary draft save wants. An empty string is a deliberate clear:
+            // the caller is saving a body whose wording no highlight describes.
+            if (request.EmailHighlights != null)
+                contact.email_highlights = request.EmailHighlights.Length == 0
+                    ? null
+                    : request.EmailHighlights;
+
             contact.updated_at = DateTime.UtcNow;
 
             // 🧠 Deduct credit only from FinalUserCredit when GPTGenerate = true

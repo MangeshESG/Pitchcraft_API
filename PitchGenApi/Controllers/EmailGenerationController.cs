@@ -653,6 +653,33 @@ namespace PitchGenApi.Controllers
                 // really does teach - paragraphs, bold, lists, links - is kept.
                 var emailBody = PromptTextCleaner.NormalizeEmailHtml(generated.BodyHtml);
 
+                // Every option gets the same normalization, because any one of
+                // them can become the saved email once the user picks it.
+                //
+                // An un-migrated blueprint returns bare HTML and no options at
+                // all; it becomes the single option here, so the UI never has
+                // to tell the two shapes apart.
+                var normalizedOptions = generated.Options.Count > 0
+                    ? generated.Options
+                        .Select(option => new EmailOptionPayload
+                        {
+                            Label = option.Label,
+                            Subject = option.Subject,
+                            BodyHtml = PromptTextCleaner.NormalizeEmailHtml(option.BodyHtml),
+                            Highlights = option.Highlights
+                        })
+                        .ToList()
+                    : new List<EmailOptionPayload>
+                    {
+                        new()
+                        {
+                            Label = "",
+                            Subject = generated.Subject,
+                            BodyHtml = emailBody,
+                            Highlights = generated.Highlights
+                        }
+                    };
+
                 // ---- subject ----
                 string subjectLine = "";
                 PitchResult? subjectResult = null;
@@ -759,6 +786,31 @@ namespace PitchGenApi.Controllers
                     // each Text against the rendered email to paint it.
                     EmailHighlights = generated.Highlights,
 
+                    // Every option this generation produced, EmailBody above
+                    // being the first of them. One entry for a blueprint that
+                    // asks for a single email, so a caller that ignores this
+                    // field behaves exactly as it did before.
+                    //
+                    // Only the first option is saved. The others live in this
+                    // response alone: the user picks one in the editor and
+                    // saves it from there, and krafting again replaces the set.
+                    EmailOptions = normalizedOptions.Select((option, index) => new
+                    {
+                        Index = index,
+                        option.Label,
+
+                        // A folded subject belongs to its own option. When the
+                        // subject came from the manual template or the second
+                        // call instead, there is one subject for the whole
+                        // generation and every option carries it.
+                        Subject = subjectIsFolded && !string.IsNullOrWhiteSpace(option.Subject)
+                            ? option.Subject.Trim()
+                            : subjectLine,
+
+                        option.BodyHtml,
+                        option.Highlights
+                    }),
+
                     // 👇 EVERYTHING THE UI SHOWS IN THE INSIGHTS TABS
                     WebSearchData = webSearchData,
                     FinalPrompt = promptSentToAi,
@@ -820,6 +872,16 @@ namespace PitchGenApi.Controllers
                         StructuredReply = generated.IsStructured,
                         HighlightCount = generated.Highlights.Count,
                         UnmatchedHighlightCount = generated.UnmatchedHighlights,
+
+                        // How many emails came back, and whether the reply had
+                        // to be salvaged to get them. A count that does not
+                        // match the blueprint's Email Option Count, or a
+                        // recovery that keeps repeating, means the output
+                        // budget is too small for the number of options asked
+                        // for — raise MaxTokens for this model.
+                        OptionCount = normalizedOptions.Count,
+                        DroppedEmptyOptionCount = generated.DroppedEmptyOptions,
+                        RecoveredFromTruncation = generated.RecoveredFromTruncation,
                         FilledSubjectInstruction = filledSubjectInstruction,
                         ManualSubjectTemplate = manualSubjectTemplate,
                         RuntimeReplacements = runtimeReplacements,
