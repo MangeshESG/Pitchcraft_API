@@ -5799,7 +5799,7 @@ namespace PitchGenApi.Controllers
         [HttpPost("contact-list-categories")]
         public async Task<IActionResult> SaveContactListCategory([FromQuery] int clientId, [FromBody] SaveCategoryRequest request)
         {
-            if (await ResolveCategoryClientIdAsync(clientId) is not int accountId) return Unauthorized();
+            if (clientId <= 0) return BadRequest(new { message = "Client ID is required." });
             var name = request?.Name?.Trim();
             var listIds = request?.ListIds?.Distinct().ToArray();
             if (string.IsNullOrWhiteSpace(name) || name.Length > 120 || listIds == null ||
@@ -5813,14 +5813,14 @@ namespace PitchGenApi.Controllers
                     await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                     var category = request.Id.HasValue
                         ? await _context.contact_list_categories.FirstOrDefaultAsync(item =>
-                            item.id == request.Id && item.client_id == accountId)
-                        : new ContactListCategory { client_id = accountId, created_at = DateTime.UtcNow };
+                            item.id == request.Id && item.client_id == clientId)
+                        : new ContactListCategory { client_id = clientId, created_at = DateTime.UtcNow };
                     if (category == null) return NotFound(new { message = "Category not found." });
-                    if (await _context.contact_list_categories.AnyAsync(item => item.client_id == accountId &&
+                    if (await _context.contact_list_categories.AnyAsync(item => item.client_id == clientId &&
                         item.name == name && item.id != category.id))
                         return Conflict(new { message = "Category name already exists." });
 
-                    var lists = await _context.data_files.Where(file => file.client_id == accountId &&
+                    var lists = await _context.data_files.Where(file => file.client_id == clientId &&
                         listIds.Contains(file.id)).ToListAsync();
                     if (lists.Count != listIds.Length || lists.Any(file =>
                         file.name == "All manually added contacts" ||
@@ -5832,7 +5832,7 @@ namespace PitchGenApi.Controllers
                     category.name = name;
                     if (!request.Id.HasValue) _context.contact_list_categories.Add(category);
                     await _context.SaveChangesAsync();
-                    await _context.data_files.Where(file => file.client_id == accountId &&
+                    await _context.data_files.Where(file => file.client_id == clientId &&
                         file.category_id == category.id && !listIds.Contains(file.id))
                         .ExecuteUpdateAsync(update => update.SetProperty(file => file.category_id, (int?)null));
                     foreach (var list in lists) list.category_id = category.id;
@@ -5850,34 +5850,20 @@ namespace PitchGenApi.Controllers
         [HttpPost("contact-list-categories/{id:int}/delete")]
         public async Task<IActionResult> DeleteContactListCategory([FromQuery] int clientId, int id)
         {
-            if (await ResolveCategoryClientIdAsync(clientId) is not int accountId) return Unauthorized();
+            if (clientId <= 0) return BadRequest(new { message = "Client ID is required." });
             return await _context.Database.CreateExecutionStrategy().ExecuteAsync<IActionResult>(async () =>
             {
                 await using var transaction = await _context.Database.BeginTransactionAsync();
                 var category = await _context.contact_list_categories.FirstOrDefaultAsync(item =>
-                    item.id == id && item.client_id == accountId);
+                    item.id == id && item.client_id == clientId);
                 if (category == null) return NotFound();
-                await _context.data_files.Where(file => file.client_id == accountId && file.category_id == id)
+                await _context.data_files.Where(file => file.client_id == clientId && file.category_id == id)
                     .ExecuteUpdateAsync(update => update.SetProperty(file => file.category_id, (int?)null));
                 _context.contact_list_categories.Remove(category);
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
                 return NoContent();
             });
-        }
-
-        private async Task<int?> ResolveCategoryClientIdAsync(int selectedId)
-        {
-            if (selectedId <= 0 || !int.TryParse(User.FindFirst("UserId")?.Value, out var callerId)) return null;
-            if (callerId == selectedId) return selectedId;
-            var username = User.Identity?.Name;
-            if (string.IsNullOrWhiteSpace(username)) return null;
-            var isAdmin = await _context.ClientDetails.AsNoTracking().AnyAsync(client =>
-                    client.Id == callerId && client.Username == username && client.IsAdmin)
-                || await _context.tbl_clientdetails.AsNoTracking().AnyAsync(client =>
-                    client.ClientID == callerId && client.UserName == username && client.IsAdmin == true);
-            return isAdmin && await _context.ClientDetails.AsNoTracking()
-                .AnyAsync(client => client.Id == selectedId) ? selectedId : null;
         }
 
         [HttpPost("OneClick")]
