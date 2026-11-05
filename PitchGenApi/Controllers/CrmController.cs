@@ -220,13 +220,25 @@ namespace PitchGenApi.Controllers
                 _context.contacts.Add(contact);
                 await _context.SaveChangesAsync();
 
+                _context.Notifications.Add(new Notification
+                {
+                    ClientId = integration.client_id,
+                    ContactId = contact.id,
+                    Email = email,
+                    Source = NotificationSource.WebsiteContact.ToString(),
+                    CreatedAt = now
+                });
+                await _context.SaveChangesAsync();
+
                 if (!string.IsNullOrWhiteSpace(message))
                 {
+                    var noteBody = System.Net.WebUtility.HtmlEncode(message)
+                        .Replace("\r\n", "\n").Replace("\n", "<br />");
                     _context.Set<Notes>().Add(new Notes
                     {
                         ClientId = integration.client_id,
                         ContactId = contact.id,
-                        Note = message,
+                        Note = $"<p><strong>Source: Website contact</strong></p><p>{noteBody}</p>",
                         CreatedAt = now
                     });
                     await _context.SaveChangesAsync();

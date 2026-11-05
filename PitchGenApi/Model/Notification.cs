@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace PitchGenApi.Model
 {
-    public enum NotificationSource { UnsubscribeByToken, OneClick }
+    public enum NotificationSource { UnsubscribeByToken, OneClick, WebsiteContact }
 
     [System.ComponentModel.DataAnnotations.Schema.Table("Notification")]
     [Index(nameof(UnsubscribedContactId), IsUnique = true)]
@@ -17,7 +17,7 @@ namespace PitchGenApi.Model
         [MaxLength(32)] public string Source { get; set; } = "";
         public DateTime CreatedAt { get; set; }
         public DateTime? ReadAt { get; set; }
-        public int UnsubscribedContactId { get; set; }
-        public UnsubscribedContacts UnsubscribedContact { get; set; } = null!;
+        public int? UnsubscribedContactId { get; set; }
+        public UnsubscribedContacts? UnsubscribedContact { get; set; }
     }
 }
