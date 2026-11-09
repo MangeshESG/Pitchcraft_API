@@ -171,6 +171,20 @@ namespace PitchGenApi.Controllers
                 runtimeReplacements[PlaceholderEngine.UnsubscribeUrlKey] = "";
                 runtimeReplacements[SubjectInstructionsKey] = "";
 
+                // {manual_instruction}. The one-off steer typed next to the
+                // message in the panel, carried by this request alone. The
+                // caller sends it already composed — the instruction, the rule
+                // that says to apply it, and the message body as it stands —
+                // the same payload the email channel sends.
+                //
+                // Registered unconditionally for the same reason as the keys
+                // above: a blueprint that keeps the token must see an empty
+                // string — never a literal {manual_instruction} — on a run that
+                // carries no instruction.
+                var manualInstruction = (request.ManualInstruction ?? "").Trim();
+
+                runtimeReplacements[PlaceholderEngine.ManualInstructionKey] = manualInstruction;
+
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
 
@@ -196,6 +210,8 @@ namespace PitchGenApi.Controllers
                 var hasSummaryPlaceholder =
                     PlaceholderEngine.Contains(campaignBlueprint, "linkedin_info") ||
                     PlaceholderEngine.Contains(campaignBlueprint, "professional_summary");
+                var hasManualInstructionPlaceholder =
+                    PlaceholderEngine.Contains(campaignBlueprint, PlaceholderEngine.ManualInstructionKey);
 
                 // {linkedin_messages} — everything already sent to this contact
                 // on LinkedIn, so a follow-up doesn't repeat the opener. The
@@ -263,6 +279,17 @@ namespace PitchGenApi.Controllers
                         finalPrompt,
                         "Professional summary (LinkedIn) for this contact:",
                         insights.ProfessionalSummary);
+
+                // The user typed this instruction about the message in front of
+                // them, so dropping it because the blueprint has no slot for it
+                // would be the one failure they would notice immediately. Same
+                // wording as the email channel's fallback, so a blueprint moved
+                // between the two reads the instruction the same way.
+                if (!string.IsNullOrWhiteSpace(manualInstruction) && !hasManualInstructionPlaceholder)
+                    finalPrompt = PlaceholderEngine.AppendContextSection(
+                        finalPrompt,
+                        "Additional instruction for this message (it comes from the user and takes precedence over any conflicting guidance above):",
+                        manualInstruction);
 
                 // ---- web / personalization search (every model) ----
                 // The same dedicated search step email generation runs, so both
@@ -492,6 +519,39 @@ namespace PitchGenApi.Controllers
                 // body's text rather than against its HTML.
                 var body = PromptTextCleaner.StripHtml(generated.BodyHtml).Trim();
 
+                // Every message this generation produced, `body` above being the
+                // first of them. Each option is stripped the same way, because
+                // any one of them can become the message the user copies into
+                // LinkedIn once they pick it.
+                //
+                // An un-migrated blueprint returns one message and no options
+                // array at all; it becomes the single option here, so the panel
+                // never has to tell the two shapes apart.
+                var messageOptions = generated.Options.Count > 0
+                    ? generated.Options
+                        .Select(option => new LinkedInMessageOptionPayload
+                        {
+                            Label = (option.Label ?? "").Trim(),
+                            Body = PromptTextCleaner.StripHtml(option.BodyHtml).Trim(),
+                            Highlights = option.Highlights
+                        })
+                        // An option whose body strips to nothing is not a
+                        // message: offering it would hand the user a blank box
+                        // and an index that steps onto it.
+                        .Where(option => !string.IsNullOrWhiteSpace(option.Body))
+                        .ToList()
+                    : new List<LinkedInMessageOptionPayload>();
+
+                if (messageOptions.Count == 0)
+                {
+                    messageOptions.Add(new LinkedInMessageOptionPayload
+                    {
+                        Label = "",
+                        Body = body,
+                        Highlights = generated.Highlights
+                    });
+                }
+
                 // No message row is written here. A krafted message is a draft
                 // in the user's hands until they tick "sent", and only that tick
                 // writes a row (see mark-sent) - the table is a record of what
@@ -556,6 +616,23 @@ namespace PitchGenApi.Controllers
                     // serves both channels.
                     EmailHighlights = generated.Highlights,
 
+                    // Every option this generation produced, Body above being
+                    // the first of them. One entry for a blueprint that asks for
+                    // a single message, so a caller that ignores this field
+                    // behaves exactly as it did before.
+                    //
+                    // Nothing here is stored: generation writes no row at all on
+                    // this channel, so the whole set lives in this response until
+                    // the user picks one and marks it sent.
+                    MessageOptions = messageOptions.Select((option, index) => new
+                    {
+                        Index = index,
+                        option.Label,
+                        option.Body,
+                        CharacterCount = option.Body.Length,
+                        option.Highlights
+                    }),
+
                     // Same transparency payload the email generator returns, so
                     // the Insights tabs work unchanged on this channel.
                     Notes = insights.Notes,
@@ -615,6 +692,19 @@ namespace PitchGenApi.Controllers
                         StructuredReply = generated.IsStructured,
                         HighlightCount = generated.Highlights.Count,
                         UnmatchedHighlightCount = generated.UnmatchedHighlights,
+
+                        // How many messages came back, and whether the reply had
+                        // to be salvaged to get them. A count that does not match
+                        // the blueprint's option count, or a recovery that keeps
+                        // repeating, means the output budget is too small for the
+                        // number of options asked for — raise MaxTokens for this
+                        // model.
+                        OptionCount = messageOptions.Count,
+                        DroppedEmptyOptionCount = generated.DroppedEmptyOptions,
+                        RecoveredFromTruncation = generated.RecoveredFromTruncation,
+
+                        ManualInstruction = manualInstruction,
+                        ManualInstructionPlaceholderFound = hasManualInstructionPlaceholder,
                         UnresolvedPlaceholders = PlaceholderEngine.FindUnresolved(promptSentToAi),
                         RuntimeReplacements = runtimeReplacements,
                         CampaignPlaceholderValues = campaignPlaceholderValues

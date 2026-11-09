@@ -1,8 +1,37 @@
 ﻿using System;
 using System.Collections.Generic;
+using PitchGenApi.Services;
 
 namespace PitchGenApi.Model.DTOs
 {
+    /// <summary>
+    /// One krafted LinkedIn message on its way to the UI: a complete, sendable
+    /// message with its own highlights.
+    ///
+    /// A blueprint asks for one or more of these in a single generation, the
+    /// same way the email channel does. The first is the one the response's
+    /// Body field carries; the rest are offered in the panel until the user
+    /// picks one, and none of them are stored — generation writes no row at
+    /// all, and krafting again produces a fresh set.
+    /// </summary>
+    public sealed class LinkedInMessageOptionPayload
+    {
+        /// <summary>
+        /// A few plain words naming this option's angle, for the picker.
+        /// Never part of the message itself.
+        /// </summary>
+        public string Label { get; set; } = "";
+
+        /// <summary>The message as it goes into LinkedIn's composer: plain text.</summary>
+        public string Body { get; set; } = "";
+
+        /// <summary>
+        /// Highlights belonging to THIS option's wording. Options differ, so a
+        /// record from one of them generally does not match another.
+        /// </summary>
+        public List<EmailHighlight> Highlights { get; set; } = new();
+    }
+
     /// <summary>POST api/linkedin-messages/generate</summary>
     public class GenerateLinkedInMessageRequest
     {
@@ -17,6 +46,19 @@ namespace PitchGenApi.Model.DTOs
 
         /// <summary>extension | web — recorded on the row when it is marked sent.</summary>
         public string? Source { get; set; }
+
+        /// <summary>
+        /// A one-off instruction typed next to the message by the user, applied
+        /// to this generation only. It fills the blueprint's
+        /// {manual_instruction} slot, and is appended as its own labelled
+        /// section when the blueprint has no slot for it.
+        ///
+        /// Nothing is stored: the next kraft for the same contact starts clean
+        /// again. The caller sends it already composed — the instruction, the
+        /// rule that says to apply it, and the message as it stands — exactly
+        /// as the email channel does.
+        /// </summary>
+        public string? ManualInstruction { get; set; }
     }
 
     /// <summary>POST api/linkedin-messages/save — store a hand-written message, or edit a draft.</summary>
