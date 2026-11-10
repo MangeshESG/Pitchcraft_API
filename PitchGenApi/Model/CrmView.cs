@@ -11,6 +11,7 @@ namespace PitchGenApi.Model
         public int id { get; set; }
 
         public int client_id { get; set; }
+        public int? category_id { get; set; }
 
         public string name { get; set; }
 

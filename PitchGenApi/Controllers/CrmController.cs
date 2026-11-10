@@ -4680,6 +4680,7 @@ namespace PitchGenApi.Controllers
                     v.description,
                     v.created_at,
                     v.filters_json,
+                    v.category_id,
                     v.use_all_datafiles,
 
                     dataFileIds = _context.crm_view_datafiles
@@ -4786,6 +4787,7 @@ namespace PitchGenApi.Controllers
                     v.name,
                     v.description,
                     v.created_at,
+                    v.category_id,
                     v.use_all_datafiles
                 })
                 .ToListAsync();
@@ -5786,11 +5788,12 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpGet("contact-list-categories")]
-        public async Task<IActionResult> GetContactListCategories([FromQuery] int clientId)
+        public async Task<IActionResult> GetContactListCategories([FromQuery] int clientId, [FromQuery] string type = "list")
         {
-            if (clientId <= 0) return BadRequest(new { message = "Client ID is required." });
+            if (clientId <= 0 || (type != "list" && type != "view"))
+                return BadRequest(new { message = "Valid client ID and category type are required." });
             var categories = await _context.contact_list_categories.AsNoTracking()
-                .Where(category => category.client_id == clientId)
+                .Where(category => category.client_id == clientId && category.category_type == type)
                 .OrderBy(category => category.name)
                 .Select(category => new { category.id, category.name })
                 .ToListAsync();
@@ -5805,9 +5808,11 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpPost("contact-list-categories")]
-        public async Task<IActionResult> SaveContactListCategory([FromQuery] int clientId, [FromBody] SaveCategoryRequest request)
+        public async Task<IActionResult> SaveContactListCategory([FromQuery] int clientId,
+            [FromBody] SaveCategoryRequest request, [FromQuery] string type = "list")
         {
-            if (clientId <= 0) return BadRequest(new { message = "Client ID is required." });
+            if (clientId <= 0 || (type != "list" && type != "view"))
+                return BadRequest(new { message = "Valid client ID and category type are required." });
             var name = request?.Name?.Trim();
             var listIds = request?.ListIds?.Distinct().ToArray();
             if (string.IsNullOrWhiteSpace(name) || name.Length > 120 || listIds == null ||
@@ -5821,29 +5826,55 @@ namespace PitchGenApi.Controllers
                     await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
                     var category = request.Id.HasValue
                         ? await _context.contact_list_categories.FirstOrDefaultAsync(item =>
-                            item.id == request.Id && item.client_id == clientId)
-                        : new ContactListCategory { client_id = clientId, created_at = DateTime.UtcNow };
+                            item.id == request.Id && item.client_id == clientId && item.category_type == type)
+                        : new ContactListCategory { client_id = clientId, category_type = type, created_at = DateTime.UtcNow };
                     if (category == null) return NotFound(new { message = "Category not found." });
                     if (await _context.contact_list_categories.AnyAsync(item => item.client_id == clientId &&
+                        item.category_type == type &&
                         item.name == name && item.id != category.id))
                         return Conflict(new { message = "Category name already exists." });
 
-                    var lists = await _context.data_files.Where(file => file.client_id == clientId &&
-                        listIds.Contains(file.id)).ToListAsync();
-                    if (lists.Count != listIds.Length || lists.Any(file =>
-                        file.name == "All manually added contacts" ||
-                        file.name == "Contacts involved in conversations" ||
-                        (file.category_id.HasValue && file.category_id != category.id)) ||
-                        await _context.website_api_keys.AnyAsync(item => listIds.Contains(item.data_file_id)))
-                        return Conflict(new { message = "Select only unassigned, manually added lists." });
+                    List<CrmView>? views = null;
+                    List<DataFile>? lists = null;
+                    if (type == "view")
+                    {
+                        views = await _context.crm_views.Where(view => view.client_id == clientId &&
+                            listIds.Contains(view.id)).ToListAsync();
+                        if (views.Count != listIds.Length || views.Any(view =>
+                            view.category_id.HasValue && view.category_id != category.id))
+                            return Conflict(new { message = "Select only unassigned views." });
+                    }
+                    else
+                    {
+                        lists = await _context.data_files.Where(file => file.client_id == clientId &&
+                            listIds.Contains(file.id)).ToListAsync();
+                        if (lists.Count != listIds.Length || lists.Any(file =>
+                            file.name == "All manually added contacts" ||
+                            file.name == "Contacts involved in conversations" ||
+                            (file.category_id.HasValue && file.category_id != category.id)) ||
+                            await _context.website_api_keys.AnyAsync(item => listIds.Contains(item.data_file_id)))
+                            return Conflict(new { message = "Select only unassigned, manually added lists." });
+
+                    }
 
                     category.name = name;
                     if (!request.Id.HasValue) _context.contact_list_categories.Add(category);
                     await _context.SaveChangesAsync();
-                    await _context.data_files.Where(file => file.client_id == clientId &&
-                        file.category_id == category.id && !listIds.Contains(file.id))
-                        .ExecuteUpdateAsync(update => update.SetProperty(file => file.category_id, (int?)null));
-                    foreach (var list in lists) list.category_id = category.id;
+                    if (views != null)
+                    {
+                        await _context.crm_views.Where(view => view.client_id == clientId &&
+                            view.category_id == category.id && !listIds.Contains(view.id))
+                            .ExecuteUpdateAsync(update => update.SetProperty(view => view.category_id, (int?)null));
+                        foreach (var view in views) view.category_id = category.id;
+                    }
+                    else if (lists != null)
+                    {
+                        await _context.data_files.Where(file => file.client_id == clientId &&
+                            file.category_id == category.id && !listIds.Contains(file.id))
+                            .ExecuteUpdateAsync(update => update.SetProperty(file => file.category_id, (int?)null));
+                        foreach (var list in lists) list.category_id = category.id;
+                    }
+
                     await _context.SaveChangesAsync();
                     await transaction.CommitAsync();
                     return Ok(new { category.id, category.name });
@@ -5856,17 +5887,23 @@ namespace PitchGenApi.Controllers
         }
 
         [HttpPost("contact-list-categories/{id:int}/delete")]
-        public async Task<IActionResult> DeleteContactListCategory([FromQuery] int clientId, int id)
+        public async Task<IActionResult> DeleteContactListCategory([FromQuery] int clientId, int id,
+            [FromQuery] string type = "list")
         {
-            if (clientId <= 0) return BadRequest(new { message = "Client ID is required." });
+            if (clientId <= 0 || (type != "list" && type != "view"))
+                return BadRequest(new { message = "Valid client ID and category type are required." });
             return await _context.Database.CreateExecutionStrategy().ExecuteAsync<IActionResult>(async () =>
             {
                 await using var transaction = await _context.Database.BeginTransactionAsync();
                 var category = await _context.contact_list_categories.FirstOrDefaultAsync(item =>
-                    item.id == id && item.client_id == clientId);
+                    item.id == id && item.client_id == clientId && item.category_type == type);
                 if (category == null) return NotFound();
-                await _context.data_files.Where(file => file.client_id == clientId && file.category_id == id)
-                    .ExecuteUpdateAsync(update => update.SetProperty(file => file.category_id, (int?)null));
+                if (type == "view")
+                    await _context.crm_views.Where(view => view.client_id == clientId && view.category_id == id)
+                        .ExecuteUpdateAsync(update => update.SetProperty(view => view.category_id, (int?)null));
+                else
+                    await _context.data_files.Where(file => file.client_id == clientId && file.category_id == id)
+                        .ExecuteUpdateAsync(update => update.SetProperty(file => file.category_id, (int?)null));
                 _context.contact_list_categories.Remove(category);
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
