@@ -477,6 +477,11 @@ namespace PitchGenApi.Controllers
                 PitchResult? searchResult = null;
                 string webSearchData = "";
                 string filledSearchInstructions = "";
+                // Named in the usage block so the UI can attribute the research
+                // spend to the model that actually did it — it is a different
+                // model from the writing one whenever Settings > AI models says
+                // so. Null while no search has run.
+                string? webSearchModel = null;
 
                 var personalization = campaignPlaceholderValues.TryGetValue("use_personalization_search", out var ps)
                     ? (ps ?? "").Trim().ToLower()
@@ -511,11 +516,13 @@ namespace PitchGenApi.Controllers
                     }
                     else
                     {
+                        webSearchModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch);
+
                         searchResult = await GenerateWebSearchByProviderAsync(new EnquiryRequest
                         {
                             Prompt = filledSearchInstructions,
                             ScrappedData = "",
-                            ModelName = await _aiModelSettings.GetModelAsync(AiModelPurposes.WebSearch)
+                            ModelName = webSearchModel
                         }, parsedClientId);
 
                         if (searchResult != null && searchResult.IsSuccess)
@@ -906,10 +913,19 @@ namespace PitchGenApi.Controllers
 
                     Usage = new
                     {
+                        // Each leg carries the model that was billed for it, so
+                        // the caller can break the spend down per model instead
+                        // of showing one unattributed total. Search runs on its
+                        // own model; body and subject both run on the writing
+                        // model, and the subject leg is absent when the subject
+                        // is manual or folded into the body call.
+                        WebSearchModel = webSearchModel,
                         WebSearchTokens = searchResult?.TotalTokens ?? 0,
                         WebSearchCost = searchResult?.CurrentCost ?? 0,
+                        BodyModel = selectedModel,
                         BodyTokens = bodyResult.TotalTokens,
                         BodyCost = bodyResult.CurrentCost,
+                        SubjectModel = subjectResult != null ? selectedModel : null,
                         SubjectTokens = subjectResult?.TotalTokens ?? 0,
                         SubjectCost = subjectResult?.CurrentCost ?? 0,
                         TotalTokens = (searchResult?.TotalTokens ?? 0) + bodyResult.TotalTokens + (subjectResult?.TotalTokens ?? 0),
