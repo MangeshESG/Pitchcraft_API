@@ -25,6 +25,20 @@
         public const string EmailGenerationModel = "deepseek-v4-flash";
 
         /// <summary>
+        /// Model used for the one-off emails written from a conversation —
+        /// inbox reply/forward and the profile's Compose / Emails drafts.
+        /// Defaults to the same model the kraft writer uses, so splitting the
+        /// purpose out changed nothing until an admin picks something else.
+        /// </summary>
+        public const string TransactionalEmailModel = EmailGenerationModel;
+
+        /// <summary>
+        /// Model used to write LinkedIn messages. Same default as the email
+        /// writer, which is the model it used before it had its own purpose.
+        /// </summary>
+        public const string LinkedInMessageModel = EmailGenerationModel;
+
+        /// <summary>
         /// Model used to answer contact Q&amp;A questions.
         /// </summary>
         public const string ContactQAModel = "gpt-4o-mini";
@@ -69,6 +83,8 @@
                 AiModelPurposes.WebSearch => WebSearchModel,
                 AiModelPurposes.BlueprintGeneration => BlueprintGenerationModel,
                 AiModelPurposes.EmailGeneration => EmailGenerationModel,
+                AiModelPurposes.TransactionalEmail => TransactionalEmailModel,
+                AiModelPurposes.LinkedInMessage => LinkedInMessageModel,
                 AiModelPurposes.ContactQA => ContactQAModel,
                 AiModelPurposes.FindEmail => FindEmailModel,
                 AiModelPurposes.ProfileSummary => ProfileSummaryModel,

@@ -334,10 +334,19 @@ namespace PitchGenApi.Controllers
                 }
 
                 // ---- model + GPT detection ----
-                // The email-generation model is set application-wide by an admin
+                // The writing model is set application-wide by an admin
                 // (Settings > AI models); the blueprint's own model is only a
                 // fallback for installs that haven't configured one.
-                var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.EmailGeneration);
+                //
+                // Which purpose that is depends on who called: this endpoint
+                // serves both the campaign kraft and the one-off emails written
+                // from a conversation (inbox reply/forward, profile Compose and
+                // the Emails timeline), and those are two different jobs on two
+                // separately configurable models. The caller says which via
+                // ModelPurpose; a caller that says nothing gets the kraft model,
+                // which is what every one of these calls used before the split.
+                var modelPurpose = request.ResolvedModelPurpose;
+                var selectedModel = await _aiModelSettings.GetModelAsync(modelPurpose);
 
                 if (string.IsNullOrWhiteSpace(selectedModel))
                 {
@@ -345,7 +354,7 @@ namespace PitchGenApi.Controllers
                         ? template.SelectedModel
                         : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
                             ? template.TemplateDefinition.SelectedModel
-                            : AiModelDefaults.EmailGenerationModel);
+                            : AiModelDefaults.ForPurpose(modelPurpose));
                 }
 
                 var isGptModel = selectedModel.Trim().StartsWith("gpt", StringComparison.OrdinalIgnoreCase);

@@ -383,7 +383,12 @@ namespace PitchGenApi.Controllers
                 // the model gets, and how long the message should run is part of
                 // what the blueprint itself says.
 
-                var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.EmailGeneration);
+                // LinkedIn messages have their own purpose in Settings > AI
+                // models. They shared the email writer's model until then,
+                // which is why the default behind this key is the same one —
+                // a message is short, plain text and has a different register,
+                // so it is worth being able to point it somewhere else.
+                var selectedModel = await _aiModelSettings.GetModelAsync(AiModelPurposes.LinkedInMessage);
 
                 if (string.IsNullOrWhiteSpace(selectedModel))
                 {
@@ -391,7 +396,7 @@ namespace PitchGenApi.Controllers
                         ? template.SelectedModel
                         : (!string.IsNullOrWhiteSpace(template.TemplateDefinition.SelectedModel)
                             ? template.TemplateDefinition.SelectedModel
-                            : AiModelDefaults.EmailGenerationModel);
+                            : AiModelDefaults.LinkedInMessageModel);
                 }
 
                 // Does this blueprint describe the JSON contract?

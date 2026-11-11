@@ -1,4 +1,4 @@
-namespace PitchGenApi.Model
+﻿namespace PitchGenApi.Model
 {
     /// <summary>
     /// The AI purposes an admin can point at a model. The keys are stored in
@@ -10,6 +10,23 @@ namespace PitchGenApi.Model
         public const string WebSearch = "web_search";
         public const string BlueprintGeneration = "blueprint_generation";
         public const string EmailGeneration = "email_generation";
+
+        /// <summary>
+        /// The one-off emails written from a conversation rather than from a
+        /// campaign run: an inbox reply or forward, and Compose / the Emails
+        /// timeline on a contact profile. Same endpoint as a kraft, but the
+        /// job is different — it answers a message that is already on screen,
+        /// usually short, and is written while someone waits for it — so it
+        /// gets its own model instead of sharing the campaign writer's.
+        /// </summary>
+        public const string TransactionalEmail = "transactional_email";
+
+        /// <summary>
+        /// LinkedIn message generation. Shared the email writer's model until
+        /// it got this key; a LinkedIn note has its own length and register, so
+        /// it is worth being able to point somewhere cheaper or different.
+        /// </summary>
+        public const string LinkedInMessage = "linkedin_message";
         public const string ContactQA = "contact_qa";
         public const string FindEmail = "find_email";
         public const string ProfileSummary = "profile_summary";
@@ -26,6 +43,8 @@ namespace PitchGenApi.Model
             WebSearch,
             BlueprintGeneration,
             EmailGeneration,
+            TransactionalEmail,
+            LinkedInMessage,
             ContactQA,
             FindEmail,
             ProfileSummary,
@@ -52,8 +71,14 @@ namespace PitchGenApi.Model
                     "Blueprint generation",
                     "Powers the blueprint builder conversation and example-output generation."),
                 EmailGeneration => (
-                    "Email generation",
-                    "Writes email bodies and subject lines when a contact is krafted."),
+                    "Kraft email generation",
+                    "Writes email bodies and subject lines when a contact is krafted from a campaign."),
+                TransactionalEmail => (
+                    "Transactional email generation",
+                    "Writes inbox replies and forwards, and the Compose / Emails drafts on a contact profile."),
+                LinkedInMessage => (
+                    "LinkedIn message generation",
+                    "Writes the LinkedIn messages krafted from a blueprint."),
                 ContactQA => (
                     "Contact Q&A",
                     "Answers questions asked on a contact profile from CRM context."),
