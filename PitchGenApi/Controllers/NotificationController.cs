@@ -24,7 +24,9 @@ namespace PitchGenApi.Controllers
                 .AnyAsync(c => c.Id == callerId && c.Username == username && c.IsAdmin)
                 || await _context.tbl_clientdetails.AsNoTracking()
                     .AnyAsync(c => c.ClientID == callerId && c.UserName == username && c.IsAdmin == true);
-            return isAdmin && await _context.ClientDetails.AnyAsync(c => c.Id == clientId)
+            if (!isAdmin) return null;
+            return await _context.ClientDetails.AsNoTracking().AnyAsync(c => c.Id == clientId)
+                || await _context.tbl_clientdetails.AsNoTracking().AnyAsync(c => c.ClientID == clientId)
                 ? clientId : null;
         }
 
@@ -49,16 +51,13 @@ namespace PitchGenApi.Controllers
                 nextCursor = items.Count > 0 ? (int?)items[^1].Id : null });
         }
 
-        public class MarkReadRequest { public int ThroughId { get; set; } }
-
         [HttpPost("read")]
-        public async Task<IActionResult> MarkRead([FromQuery] int? clientId, [FromBody] MarkReadRequest request)
+        public async Task<IActionResult> MarkRead([FromQuery] int? clientId)
         {
             var account = await ResolveClientIdAsync(clientId);
             if (!account.HasValue) return Forbid();
-            if (request.ThroughId <= 0) return BadRequest(new { message = "A notification ID is required." });
             await _context.Notifications
-                .Where(n => n.ClientId == account && n.Id <= request.ThroughId && n.ReadAt == null)
+                .Where(n => n.ClientId == account && n.ReadAt == null)
                 .ExecuteUpdateAsync(setters => setters.SetProperty(n => n.ReadAt, (DateTime?)DateTime.UtcNow));
             return NoContent();
         }
