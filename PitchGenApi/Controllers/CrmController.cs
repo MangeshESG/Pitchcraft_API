@@ -183,76 +183,98 @@ namespace PitchGenApi.Controllers
             if (message?.Length > 10000)
                 return BadRequest(new { message = "Message is too long." });
 
-            var emailExists = await _context.contacts
-                .AnyAsync(x =>
-                    x.DataFileId == integration.data_file_id &&
-                    x.email == email);
-
-            if (emailExists)
-            {
-                return Conflict(new
-                {
-                    message = "This email already exists in the website list."
-                });
-            }
-
             var parts = hasFirstAndLastName
                 ? new[] { request.FirstName.Trim(), request.LastName.Trim() }
                 : name.Split(' ', 2, StringSplitOptions.RemoveEmptyEntries);
 
             var now = DateTime.UtcNow;
             var strategy = _context.Database.CreateExecutionStrategy();
-            var contactId = await strategy.ExecuteAsync(async () =>
+            var result = await strategy.ExecuteAsync(async () =>
             {
                 _context.ChangeTracker.Clear();
-                await using var transaction = await _context.Database.BeginTransactionAsync();
+                await using var transaction = await _context.Database.BeginTransactionAsync(IsolationLevel.Serializable);
 
-                var contact = new Contact
-                {
-                    DataFileId = integration.data_file_id,
-                    full_name = name,
-                    first_name = parts[0],
-                    last_name = parts.Length > 1 ? parts[1] : "",
-                    email = email,
-                    CompanyTelephone = phone,
-                    company_name = company,
-                    created_at = now
-                };
-                _context.contacts.Add(contact);
-                await _context.SaveChangesAsync();
+                var contact = await _context.contacts
+                    .Where(x => x.email == email && x.DataFileId.HasValue &&
+                        _context.data_files.Any(file => file.id == x.DataFileId &&
+                            file.client_id == integration.client_id))
+                    .OrderByDescending(x => x.DataFileId == integration.data_file_id)
+                    .ThenBy(x => x.id)
+                    .FirstOrDefaultAsync();
+                var isRepeat = contact != null;
+                string? enquiryLabel = null;
 
-                _context.Notifications.Add(new Notification
+                if (contact == null)
                 {
-                    ClientId = integration.client_id,
-                    ContactId = contact.id,
-                    Email = email,
-                    Source = NotificationSource.WebsiteContact.ToString(),
-                    CreatedAt = now
-                });
-                await _context.SaveChangesAsync();
+                    contact = new Contact
+                    {
+                        DataFileId = integration.data_file_id,
+                        full_name = name,
+                        first_name = parts[0],
+                        last_name = parts.Length > 1 ? parts[1] : "",
+                        email = email,
+                        CompanyTelephone = phone,
+                        company_name = company,
+                        created_at = now
+                    };
+                    _context.contacts.Add(contact);
+                    await _context.SaveChangesAsync();
 
-                if (!string.IsNullOrWhiteSpace(message))
+                    _context.Notifications.Add(new Notification
+                    {
+                        ClientId = integration.client_id,
+                        ContactId = contact.id,
+                        Email = email,
+                        Source = NotificationSource.WebsiteContact.ToString(),
+                        CreatedAt = now
+                    });
+                    await _context.SaveChangesAsync();
+                }
+
+                if (isRepeat)
                 {
-                    var noteBody = System.Net.WebUtility.HtmlEncode(message)
+                    var repeatCount = await _context.Set<Notes>().CountAsync(note =>
+                        note.ClientId == integration.client_id && note.ContactId == contact!.id &&
+                        note.Note.StartsWith("<p><strong>Source: Website contact</strong></p><p><strong>") &&
+                        note.Note.Contains(" enquiry</strong></p>"));
+                    var enquiryNumber = repeatCount + 2;
+                    var suffix = enquiryNumber % 100 is >= 11 and <= 13 ? "th" :
+                        (enquiryNumber % 10) switch { 1 => "st", 2 => "nd", 3 => "rd", _ => "th" };
+                    enquiryLabel = enquiryNumber switch
+                    {
+                        2 => "Second",
+                        3 => "Third",
+                        4 => "Fourth",
+                        _ => $"{enquiryNumber}{suffix}"
+                    };
+                }
+
+                if (isRepeat || !string.IsNullOrWhiteSpace(message))
+                {
+                    var noteBody = System.Net.WebUtility.HtmlEncode(message ?? "")
                         .Replace("\r\n", "\n").Replace("\n", "<br />");
                     _context.Set<Notes>().Add(new Notes
                     {
                         ClientId = integration.client_id,
                         ContactId = contact.id,
-                        Note = $"<p><strong>Source: Website contact</strong></p><p>{noteBody}</p>",
+                        Note = $"<p><strong>Source: Website contact</strong></p>" +
+                            (isRepeat ? $"<p><strong>{enquiryLabel} enquiry</strong></p>" : "") +
+                            (noteBody.Length > 0 ? $"<p>{noteBody}</p>" : ""),
                         CreatedAt = now
                     });
                     await _context.SaveChangesAsync();
                 }
 
                 await transaction.CommitAsync();
-                return contact.id;
+                return (contactId: contact.id, enquiryLabel);
             });
 
             return Ok(new
             {
-                message = "Contact created successfully.",
-                contactId
+                message = result.enquiryLabel == null
+                    ? "Contact created successfully."
+                    : $"{result.enquiryLabel} enquiry added to existing contact.",
+                result.contactId
             });
         }
 
