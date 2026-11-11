@@ -380,6 +380,16 @@ namespace PitchGenApi.Controllers
                         : JsonSerializer.Deserialize<Dictionary<string, string>>(template.PlaceholderValues)
                           ?? new Dictionary<string, string>();
 
+                // The elements page shows (and re-saves) what comes back here,
+                // so the signature is refreshed from Settings first. That way
+                // the builder never displays a sign-off the client has already
+                // changed.
+                if (int.TryParse((template.ClientId ?? "").Trim(), out var templateClientId))
+                {
+                    await SignatureResolver.ApplySavedSignatureAsync(
+                        _dbContext, placeholderValues, templateClientId);
+                }
+
                 // -------------------------------
                 // Runtime placeholder replacement
                 // -------------------------------
@@ -1413,6 +1423,13 @@ namespace PitchGenApi.Controllers
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
 
+                // Refreshed from Settings → Email signature before the prompt
+                // is built, for the reason given in SignatureResolver: the
+                // blueprint holds a copy, and the signature it copied may have
+                // been edited since.
+                await SignatureResolver.ApplySavedSignatureAsync(
+                    _dbContext, campaignPlaceholderValues, parsedClientId);
+
                 // 🔧 FIX: runtime keys must SURVIVE the campaign-level pass, otherwise
                 // {notes} / {use_email} get blanked before runtime values apply.
                 var campaignOnlyValues = campaignPlaceholderValues
@@ -1461,6 +1478,26 @@ namespace PitchGenApi.Controllers
                 // ---- body prompt ----
                 // ---- body prompt ----
                 var finalPrompt = ApplyPlaceholders(campaignBlueprint, runtimeReplacements);
+
+                // ---- signature: copied, not written ----
+                // The same rule the single-contact generator appends, for the
+                // same reason: the signature is the one part of the email the
+                // model is reproducing rather than writing, and without saying
+                // so it comes back re-typed as plain text.
+                var promptSignature = SignatureResolver.FindSignatureValue(campaignOnlyValues);
+
+                if (!string.IsNullOrWhiteSpace(promptSignature) &&
+                    finalPrompt.Contains(
+                        promptSignature.Trim().Length > 120
+                            ? promptSignature.Trim()[..120]
+                            : promptSignature.Trim(),
+                        StringComparison.Ordinal))
+                {
+                    finalPrompt = finalPrompt
+                        + Environment.NewLine + Environment.NewLine
+                        + "Signature rule:" + Environment.NewLine
+                        + SignatureResolver.VerbatimRule;
+                }
 
                 // Email history ON but no {use_emails} placeholder → append it
                 var pastEmails = runtimeReplacements["use_emails"];

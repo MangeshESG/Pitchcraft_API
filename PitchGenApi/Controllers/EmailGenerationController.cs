@@ -236,6 +236,14 @@ namespace PitchGenApi.Controllers
                 foreach (var kv in customFields)
                     runtimeReplacements[kv.Key] = kv.Value ?? "";
 
+                // The signature is picked from Settings, not typed into the
+                // blueprint, so the saved copy is refreshed from that
+                // signature before the prompt is built. Without this an edit
+                // made in Settings - a link added, the logo swapped - would
+                // never reach a campaign that picked the signature earlier.
+                await SignatureResolver.ApplySavedSignatureAsync(
+                    _dbContext, campaignPlaceholderValues, parsedClientId);
+
                 // runtime keys must SURVIVE the campaign-level pass
                 var campaignOnlyValues = campaignPlaceholderValues
                     .Where(kv => !runtimeReplacements.ContainsKey(kv.Key))
@@ -421,6 +429,21 @@ namespace PitchGenApi.Controllers
                         finalPrompt,
                         "Subject line rules (write the subject for this email and return it in the \"subject\" field):",
                         runtimeReplacements[SubjectInstructionsKey]);
+                }
+
+                // ---- signature: copied, not written ----
+                // Added only when the signature really landed in the prompt,
+                // so a blueprint without one is never told about a signature
+                // it does not have.
+                var promptSignature = SignatureResolver.FindSignatureValue(campaignOnlyValues);
+
+                if (!string.IsNullOrWhiteSpace(promptSignature) &&
+                    PromptContains(finalPrompt, promptSignature))
+                {
+                    finalPrompt = AppendContextSection(
+                        finalPrompt,
+                        "Signature rule:",
+                        SignatureResolver.VerbatimRule);
                 }
 
                 // ============================================================
