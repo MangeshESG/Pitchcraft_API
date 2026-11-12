@@ -1564,9 +1564,6 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                     cleanbody ??= "";
 
-                    if (cleanbody.Length > 4000)
-                        cleanbody = cleanbody.Substring(0, 4000);
-
                     // =========================================
                     // MATCHING LOGIC
                     // =========================================
