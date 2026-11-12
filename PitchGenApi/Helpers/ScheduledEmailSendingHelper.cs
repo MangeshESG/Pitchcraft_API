@@ -83,10 +83,9 @@ public class ScheduledEmailSendingHelper
                 continue;
             }
 
-            bool isUnsubscribed = await context.UnsubscribedContacts
-                .AnyAsync(x => x.ClientId == step.ClientId &&
-                               x.Email.ToLower() == contact.email.ToLower(),
-                          cancellationToken);
+            // Shared with every other send path: matches on contact id as well as address.
+            bool isUnsubscribed = await EmailSuppression.IsSuppressedAsync(
+                context, step.ClientId, contact.id, contact.email, cancellationToken);
 
             if (isUnsubscribed)
             {

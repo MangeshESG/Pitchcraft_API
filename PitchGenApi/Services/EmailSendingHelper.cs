@@ -1,8 +1,9 @@
-
+﻿
 using PitchGenApi.Database;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
 using PitchGenApi.Interfaces;
+using PitchGenApi.Services;
 using PitchGenApi.Model.DTOs;
 using MailKit.Security;
 using MimeKit;
@@ -165,6 +166,35 @@ public class EmailSendingHelper
 
         int? blueprintId = Blueprint?.TemplateId;
         int? segmentId = Blueprint?.SegmentId;
+
+        // An unsubscribe outranks every send path, so block before any work is done.
+        if (await EmailSuppression.IsSuppressedAsync(_context, clientId, contactId, EmailDetails?.email))
+        {
+            _context.EmailLogs.Add(new EmailLog
+            {
+                ClientId = clientId,
+                ContactId = contactId,
+                DataFileId = DataFileId,
+                CampaignId = CampaignId,
+                BlueprintId = blueprintId,
+                SegmentId = segmentId,
+                ToEmail = EmailDetails?.email ?? string.Empty,
+                Subject = EmailDetails?.email_subject ?? string.Empty,
+                Body = EmailDetails?.email_body ?? string.Empty,
+                IsSuccess = false,
+                ErrorMessage = EmailSuppression.BlockedMessage,
+                Provider = "SMTP",
+                SentAt = DateTime.UtcNow
+            });
+            await _context.SaveChangesAsync();
+
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = EmailSuppression.BlockedMessage
+            };
+        }
+
 
 
         if (string.IsNullOrWhiteSpace(EmailDetails.email_subject) ||
@@ -453,6 +483,35 @@ public class EmailSendingHelper
 
         int? blueprintId = Blueprint?.TemplateId;
         int? segmentId = Blueprint?.SegmentId;
+
+        // An unsubscribe outranks every send path, so block before any work is done.
+        if (await EmailSuppression.IsSuppressedAsync(_context, clientId, contactId, EmailDetails?.email))
+        {
+            _context.EmailLogs.Add(new EmailLog
+            {
+                ClientId = clientId,
+                ContactId = contactId,
+                DataFileId = DataFileId,
+                CampaignId = CampaignId,
+                BlueprintId = blueprintId,
+                SegmentId = segmentId,
+                ToEmail = EmailDetails?.email ?? string.Empty,
+                Subject = EmailDetails?.email_subject ?? string.Empty,
+                Body = EmailDetails?.email_body ?? string.Empty,
+                IsSuccess = false,
+                ErrorMessage = EmailSuppression.BlockedMessage,
+                Provider = "Gmail",
+                SentAt = DateTime.UtcNow
+            });
+            await _context.SaveChangesAsync();
+
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = EmailSuppression.BlockedMessage
+            };
+        }
+
         if (string.IsNullOrWhiteSpace(EmailDetails?.email_subject) ||
             string.IsNullOrWhiteSpace(EmailDetails?.email_body))
         {
@@ -668,6 +727,35 @@ public class EmailSendingHelper
 
         int? blueprintId = Blueprint?.TemplateId;
         int? segmentId = Blueprint?.SegmentId;
+
+        // An unsubscribe outranks every send path, so block before any work is done.
+        if (await EmailSuppression.IsSuppressedAsync(_context, clientId, contactId, EmailDetails?.email))
+        {
+            _context.EmailLogs.Add(new EmailLog
+            {
+                ClientId = clientId,
+                ContactId = contactId,
+                DataFileId = DataFileId,
+                CampaignId = CampaignId,
+                BlueprintId = blueprintId,
+                SegmentId = segmentId,
+                ToEmail = EmailDetails?.email ?? string.Empty,
+                Subject = EmailDetails?.email_subject ?? string.Empty,
+                Body = EmailDetails?.email_body ?? string.Empty,
+                IsSuccess = false,
+                ErrorMessage = EmailSuppression.BlockedMessage,
+                Provider = "Outlook",
+                SentAt = DateTime.UtcNow
+            });
+            await _context.SaveChangesAsync();
+
+            return new EmailSendResult
+            {
+                Success = false,
+                Message = EmailSuppression.BlockedMessage
+            };
+        }
+
         if (string.IsNullOrWhiteSpace(EmailDetails?.email_subject) ||
             string.IsNullOrWhiteSpace(EmailDetails?.email_body))
         {

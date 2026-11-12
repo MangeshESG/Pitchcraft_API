@@ -1,8 +1,9 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using MimeKit;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
 using PitchGenApi.Model.DTOs;
+using PitchGenApi.Services;
 using System.Net.Http.Headers;
 
 namespace PitchGenApi.Repository
@@ -28,6 +29,15 @@ namespace PitchGenApi.Repository
         {
             try
             {
+                // A forward is still an outbound email, so a suppressed address is off limits.
+                if (await EmailSuppression.IsSuppressedAsync(_context, clientId, null, forwardToEmail))
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = EmailSuppression.BlockedMessage
+                    };
+                }
                 // =========================
                 // GET INBOX + SMTP
                 // =========================
@@ -240,6 +250,15 @@ namespace PitchGenApi.Repository
         {
             try
             {
+                // A forward is still an outbound email, so a suppressed address is off limits.
+                if (await EmailSuppression.IsSuppressedAsync(_context, clientId, null, forwardToEmail))
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = EmailSuppression.BlockedMessage
+                    };
+                }
                 var tokenData = await _emailSending.GetValidGmailTokenAsync(outboxId);
 
                 if (tokenData == null)
@@ -404,6 +423,15 @@ namespace PitchGenApi.Repository
         {
             try
             {
+                // A forward is still an outbound email, so a suppressed address is off limits.
+                if (await EmailSuppression.IsSuppressedAsync(_context, clientId, null, forwardToEmail))
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = EmailSuppression.BlockedMessage
+                    };
+                }
                 var tokenData = await _emailSending.GetValidOutlookTokenAsync(outboxId);
 
                 if (tokenData == null)

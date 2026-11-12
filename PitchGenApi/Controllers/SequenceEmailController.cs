@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Database;
 using PitchGenApi.Model;
@@ -487,6 +487,17 @@ namespace PitchGenApi.Controllers
                     (sender, certificate, chain, sslPolicyErrors) => true;
 
                 var nowUtc = DateTime.UtcNow;
+
+                // An unsubscribed contact is never emailable, whichever provider is picked.
+                var recipient = await _context.contacts
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.id == dto.contactid);
+
+                if (await EmailSuppression.IsSuppressedAsync(
+                        _context, dto.clientId, dto.contactid, recipient?.email))
+                {
+                    return Conflict(new { message = EmailSuppression.BlockedMessage });
+                }
 
                 // ? Correct type use
                 EmailSendResult success = new EmailSendResult

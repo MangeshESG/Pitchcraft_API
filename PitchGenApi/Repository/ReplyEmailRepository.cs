@@ -5,6 +5,7 @@ using System.Net.Mail;
 using System.Net;
 using PitchGenApi.Database;
 using PitchGenApi.Interfaces;
+using PitchGenApi.Services;
 using MimeKit;
 using Newtonsoft.Json;
 using System.Net.Http.Headers;
@@ -175,6 +176,17 @@ namespace PitchGenApi.Repository
                     lastSent?.ToEmail ??
                     firstInbox?.FromEmail ??
                     firstReply?.FromEmail;
+
+                // An unsubscribe applies to replies too: never email a suppressed address.
+                if (await EmailSuppression.IsSuppressedAsync(
+                        _context, clientId, firstLog?.ContactId, replyToEmail))
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = EmailSuppression.BlockedMessage
+                    };
+                }
 
                 var threadSubject =
                     (
@@ -588,6 +600,17 @@ namespace PitchGenApi.Repository
                     firstReply?.FromEmail ??
                     firstLog?.ToEmail;
 
+                // An unsubscribe applies to replies too: never email a suppressed address.
+                if (await EmailSuppression.IsSuppressedAsync(
+                        _context, clientId, firstLog?.ContactId, replyToEmail))
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = EmailSuppression.BlockedMessage
+                    };
+                }
+
                 if (string.IsNullOrWhiteSpace(replyToEmail))
                 {
                     return new EmailSendResult
@@ -954,6 +977,17 @@ namespace PitchGenApi.Repository
                     lastSent?.ToEmail ??
                     firstInbox?.FromEmail ??
                     firstReply?.FromEmail;
+
+                // An unsubscribe applies to replies too: never email a suppressed address.
+                if (await EmailSuppression.IsSuppressedAsync(
+                        _context, clientId, firstLog?.ContactId, replyToEmail))
+                {
+                    return new EmailSendResult
+                    {
+                        Success = false,
+                        Message = EmailSuppression.BlockedMessage
+                    };
+                }
 
                 var threadSubject =
                     firstInbox?.Subject ??
