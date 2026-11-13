@@ -777,26 +777,44 @@ public class EmailSendingHelper
             }
             else
             {
-                // Use the original Graph draft/send flow when RFC headers aren't needed.
-                using var draftStream = new MemoryStream();
-                await mimeMessage.WriteToAsync(draftStream);
-                var rawDraft = Convert.ToBase64String(draftStream.ToArray());
-
                 using var client = new HttpClient();
                 client.DefaultRequestHeaders.Authorization =
                     new AuthenticationHeaderValue("Bearer", tokenData.AccessToken);
 
-                using var draftContent = new StringContent(
-                    rawDraft,
-                    System.Text.Encoding.UTF8,
-                    "text/plain");
+                HttpContent draftContent;
+                if (isContactCompose)
+                {
+                    var draft = new Dictionary<string, object>
+                    {
+                        ["subject"] = EmailDetails.email_subject,
+                        ["body"] = new { contentType = "HTML", content = finalEmailBody },
+                        ["toRecipients"] = new[] { new { emailAddress = new { address = EmailDetails.email } } },
+                        ["ccRecipients"] = NormalizeEmailList(CcEmail).Select(address => new { emailAddress = new { address } }).ToArray(),
+                        ["bccRecipients"] = NormalizeEmailList(BccEmail).Select(address => new { emailAddress = new { address } }).ToArray()
+                    };
+                    if (!hasCopyRecipients)
+                        draft["internetMessageHeaders"] = new[] { new { name = "x-tracking-id", value = trackingId } };
+
+                    draftContent = JsonContent.Create(draft);
+                }
+                else
+                {
+                    using var draftStream = new MemoryStream();
+                    await mimeMessage.WriteToAsync(draftStream);
+                    draftContent = new StringContent(
+                        Convert.ToBase64String(draftStream.ToArray()),
+                        System.Text.Encoding.UTF8,
+                        "text/plain");
+                }
+
+                using var content = draftContent;
                 using var createResponse = await client.PostAsync(
                     "https://graph.microsoft.com/v1.0/me/messages",
-                    draftContent);
+                    content);
 
                 var createResult = await createResponse.Content.ReadAsStringAsync();
                 if (!createResponse.IsSuccessStatusCode)
-                    throw new Exception(createResult);
+                    throw new Exception($"Outlook draft creation failed: {createResult}");
 
                 dynamic createdMail = Newtonsoft.Json.JsonConvert.DeserializeObject(createResult);
                 string graphMessageId = createdMail?.id?.ToString();
@@ -813,7 +831,7 @@ public class EmailSendingHelper
 
                 var sendResult = await sendResponse.Content.ReadAsStringAsync();
                 if (!sendResponse.IsSuccessStatusCode)
-                    throw new Exception(sendResult);
+                    throw new Exception($"Outlook draft send failed: {sendResult}");
 
                 threadId = graphMessageId;
             }

@@ -119,6 +119,11 @@ namespace PitchGenApi.Repository
                     .OrderBy(x => x.Date)
                     .FirstOrDefaultAsync();
 
+                var originalSender = firstLog?.SenderEmailId ?? firstInbox?.ToEmail ?? firstReply?.ToEmail;
+                var startNewThread = !string.IsNullOrWhiteSpace(originalSender) &&
+                    !string.Equals(smtpCredential.FromEmail, originalSender, StringComparison.OrdinalIgnoreCase);
+                var sendTrackingId = startNewThread ? Guid.NewGuid() : trackingid;
+
                 DateTime? logDate = firstLog?.SentAt;
                 DateTime? inboxDate = firstInbox?.CreatedAt;
                 DateTime? replyDate = firstReply?.Date;
@@ -229,15 +234,15 @@ namespace PitchGenApi.Repository
                 {
                     finalBody = EmailTrackingHelper.InjectClickTracking(
                         finalBody,
-                        trackingid.ToString());
+                        sendTrackingId.ToString());
 
                     finalBody += EmailTrackingHelper.GetPixelTag(
-                        trackingid.ToString());
+                        sendTrackingId.ToString());
                 }
 
                 finalBody = EmailTrackingHelper.InjectinboxTracking(
                     finalBody,
-                    trackingid.ToString());
+                    sendTrackingId.ToString());
 
                 // =========================
                 // MAIL
@@ -269,14 +274,16 @@ namespace PitchGenApi.Repository
                     }
                 }
 
-                mail.Subject = threadSubject;
+                mail.Subject = startNewThread && threadSubject.StartsWith("Re: ", StringComparison.OrdinalIgnoreCase)
+                    ? threadSubject[4..]
+                    : threadSubject;
 
                 var newMessageId =
                     $"<{MimeKit.Utils.MimeUtils.GenerateMessageId().Trim('<', '>')}>";
 
                 mail.Headers.Replace(HeaderId.MessageId, newMessageId);
 
-                var threadIndex = lastSent?.ThreadId ?? firstInbox?.ThreadId;
+                var threadIndex = startNewThread ? null : (lastSent?.ThreadId ?? firstInbox?.ThreadId);
 
                 if (!string.IsNullOrEmpty(threadIndex))
                 {
@@ -313,7 +320,7 @@ namespace PitchGenApi.Repository
                 // THREAD FIX
                 // =========================
 
-                if (!string.IsNullOrEmpty(latestMessageId))
+                if (!startNewThread && !string.IsNullOrEmpty(latestMessageId))
                 {
                     var normalizedLatest = latestMessageId.Trim();
 
@@ -330,11 +337,12 @@ namespace PitchGenApi.Repository
                     normalizedRefs.Add(normalizedLatest);
                 }
 
-                mail.Headers.Replace(
-                    HeaderId.References,
-                    string.Join(
-                        " ",
-                        normalizedRefs.Where(x => !string.IsNullOrEmpty(x))));
+                if (!startNewThread)
+                    mail.Headers.Replace(
+                        HeaderId.References,
+                        string.Join(
+                            " ",
+                            normalizedRefs.Where(x => !string.IsNullOrEmpty(x))));
 
                 // =========================
                 // BODY BUILDER + ATTACHMENTS
@@ -415,13 +423,13 @@ namespace PitchGenApi.Repository
 
                     SentAt = DateTime.UtcNow,
 
-                    TrackingId = trackingid,
+                    TrackingId = sendTrackingId,
 
                     MessageId = newMessageId,
 
-                    ThreadId = threadIndex,
+                    ThreadId = startNewThread ? newMessageId : threadIndex,
 
-                    process_name = "ThreadReply"
+                    process_name = startNewThread ? "NewEmail" : "ThreadReply"
                 };
 
                 _context.EmailLogs.Add(emailLog);
@@ -504,7 +512,7 @@ namespace PitchGenApi.Repository
                 .FirstOrDefaultAsync(x => x.Id == clientId);
 
             var tokenData = await _emailSending.GetValidGmailTokenAsync(outboxId);
-            if (tokenData == null)
+            if (tokenData == null || tokenData.ClientId != clientId)
             {
                 return new EmailSendResult
                 {
@@ -526,6 +534,11 @@ namespace PitchGenApi.Repository
                 .Where(x => x.TrackingId == trackingid)
                 .OrderBy(x => x.Date)
                 .FirstOrDefaultAsync();
+
+            var originalSender = firstLog?.SenderEmailId ?? firstInbox?.ToEmail ?? firstReply?.ToEmail;
+            var startNewThread = !string.IsNullOrWhiteSpace(originalSender) &&
+                !string.Equals(tokenData.Email, originalSender, StringComparison.OrdinalIgnoreCase);
+            var sendTrackingId = startNewThread ? Guid.NewGuid() : trackingid;
 
             var lastSent = await _context.EmailLogs
                 .Where(x => x.TrackingId == trackingid)
@@ -555,12 +568,12 @@ namespace PitchGenApi.Repository
                  firstInbox?.MessageId;
 
             // 🔥 STEP 3: threadId (VERY IMPORTANT)
-            string threadId =
+            string threadId = startNewThread ? null : (
                 lastReply?.ThreadId ??
                 lastSent?.ThreadId ??
                 firstReply?.ThreadId ??
                 firstInbox?.ThreadId ??
-                firstLog?.ThreadId;
+                firstLog?.ThreadId);
             try
             {
                 string finalBody = replyBody;
@@ -568,11 +581,11 @@ namespace PitchGenApi.Repository
                 // ✅ tracking
                 if (user.IsTracking)
                 {
-                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, trackingid.ToString());
-                    finalBody += EmailTrackingHelper.GetPixelTag(trackingid.ToString());
+                    finalBody = EmailTrackingHelper.InjectClickTracking(finalBody, sendTrackingId.ToString());
+                    finalBody += EmailTrackingHelper.GetPixelTag(sendTrackingId.ToString());
                 }
 
-                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, trackingid.ToString());
+                finalBody = EmailTrackingHelper.InjectinboxTracking(finalBody, sendTrackingId.ToString());
 
                 // =========================
                 // MIME BUILD
@@ -625,7 +638,9 @@ namespace PitchGenApi.Repository
                     threadSubject = "Re: " + threadSubject;
                 }
 
-                mimeMessage.Subject = threadSubject;
+                mimeMessage.Subject = startNewThread && threadSubject.StartsWith("Re: ", StringComparison.OrdinalIgnoreCase)
+                    ? threadSubject[4..]
+                    : threadSubject;
                 if (!string.IsNullOrWhiteSpace(CC))
                 {
                     if (!TryAddRecipients(
@@ -664,7 +679,7 @@ namespace PitchGenApi.Repository
                         latestMessageId += ">";
                 }
                 // 🔥 THREAD HEADERS (IMPORTANT)
-                if (!string.IsNullOrWhiteSpace(latestMessageId))
+                if (!startNewThread && !string.IsNullOrWhiteSpace(latestMessageId))
                 {
                     mimeMessage.Headers.Add(
                         "In-Reply-To",
@@ -675,7 +690,7 @@ namespace PitchGenApi.Repository
                         latestMessageId);
                 }
 
-                mimeMessage.Headers.Add("X-Tracking-Id", trackingid.ToString());
+                mimeMessage.Headers.Add("X-Tracking-Id", sendTrackingId.ToString());
 
                 var bodyBuilder = new BodyBuilder
                 {
@@ -768,10 +783,10 @@ namespace PitchGenApi.Repository
                     outboxid = tokenData.Id,
                     IsSuccess = true,
                     SentAt = DateTime.UtcNow,
-                    TrackingId = trackingid,
+                    TrackingId = sendTrackingId,
                     MessageId = gmailMessageId,
                     ThreadId = newThreadId, // 🔥 update thread
-                    process_name = "ThreadReply",
+                    process_name = startNewThread ? "NewEmail" : "ThreadReply",
                     ContactId = firstLog?.ContactId ?? firstInbox?.Contactid ?? firstReply?.ContactId,
                 });
 
@@ -859,7 +874,7 @@ namespace PitchGenApi.Repository
                 var tokenData = await _emailSending
                     .GetValidOutlookTokenAsync(outboxId);
 
-                if (tokenData == null)
+                if (tokenData == null || tokenData.ClientId != clientId)
                 {
                     return new EmailSendResult
                     {
@@ -886,6 +901,11 @@ namespace PitchGenApi.Repository
                     .Where(x => x.TrackingId == trackingid)
                     .OrderBy(x => x.Date)
                     .FirstOrDefaultAsync();
+
+                var originalSender = firstLog?.SenderEmailId ?? firstInbox?.ToEmail ?? firstReply?.ToEmail;
+                var startNewThread = !string.IsNullOrWhiteSpace(originalSender) &&
+                    !string.Equals(tokenData.Email, originalSender, StringComparison.OrdinalIgnoreCase);
+                var sendTrackingId = startNewThread ? Guid.NewGuid() : trackingid;
 
                 DateTime? logDate = firstLog?.SentAt;
                 DateTime? inboxDate = firstInbox?.CreatedAt;
@@ -964,17 +984,20 @@ namespace PitchGenApi.Repository
 
                 threadSubject = threadSubject.Trim();
 
-                if (!threadSubject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase))
+                if (!startNewThread && !threadSubject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase))
                 {
                     threadSubject = "Re: " + threadSubject;
                 }
+
+                if (startNewThread && threadSubject.StartsWith("Re: ", StringComparison.OrdinalIgnoreCase))
+                    threadSubject = threadSubject[4..];
 
                 if (threadSubject.Length > 500)
                 {
                     threadSubject = threadSubject.Substring(0, 500);
                 }
 
-                if (string.IsNullOrWhiteSpace(latestMessageId))
+                if (!startNewThread && string.IsNullOrWhiteSpace(latestMessageId))
                 {
                     return new EmailSendResult
                     {
@@ -993,15 +1016,15 @@ namespace PitchGenApi.Repository
                 {
                     finalBody = EmailTrackingHelper.InjectClickTracking(
                         finalBody,
-                        trackingid.ToString());
+                        sendTrackingId.ToString());
 
                     finalBody += EmailTrackingHelper.GetPixelTag(
-                        trackingid.ToString());
+                        sendTrackingId.ToString());
                 }
 
                 finalBody = EmailTrackingHelper.InjectinboxTracking(
                     finalBody,
-                    trackingid.ToString());
+                    sendTrackingId.ToString());
 
                 using var client = new HttpClient();
 
@@ -1010,6 +1033,23 @@ namespace PitchGenApi.Repository
                         "Bearer",
                         tokenData.AccessToken);
 
+                HttpResponseMessage createDraftResponse;
+                if (startNewThread)
+                {
+                    if (string.IsNullOrWhiteSpace(replyToEmail))
+                        return new EmailSendResult { Success = false, Message = "Recipient email not found" };
+
+                    createDraftResponse = await client.PostAsJsonAsync(
+                        "https://graph.microsoft.com/v1.0/me/messages",
+                        new
+                        {
+                            subject = threadSubject,
+                            toRecipients = new[] { new { emailAddress = new { address = replyToEmail } } },
+                            body = new { contentType = "HTML", content = finalBody }
+                        });
+                }
+                else
+                {
                 // =========================================
                 // NORMALIZE MESSAGE ID
                 // =========================================
@@ -1072,9 +1112,10 @@ namespace PitchGenApi.Repository
 
                 var safeId = Uri.EscapeDataString(graphId);
 
-                var createDraftResponse = await client.PostAsync(
+                createDraftResponse = await client.PostAsync(
                     $"https://graph.microsoft.com/v1.0/me/messages/{safeId}/createReply",
                     null);
+                }
 
                 var createDraftJson =
                     await createDraftResponse.Content.ReadAsStringAsync();
@@ -1292,16 +1333,16 @@ namespace PitchGenApi.Repository
 
                     SentAt = DateTime.UtcNow,
 
-                    TrackingId = trackingid,
+                    TrackingId = sendTrackingId,
 
                     MessageId = newMessageId,
 
-                    ThreadId =
+                    ThreadId = startNewThread ? newMessageId :
                         lastSent?.ThreadId ??
                         firstInbox?.ThreadId ??
                         firstReply?.ThreadId,
 
-                    process_name = "ThreadReply"
+                    process_name = startNewThread ? "NewEmail" : "ThreadReply"
                 });
 
                 await _context.SaveChangesAsync();
