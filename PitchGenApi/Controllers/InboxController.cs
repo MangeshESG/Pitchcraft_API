@@ -451,6 +451,10 @@ public class InboxController : ControllerBase
                         Body = i.Body,
                         FromEmail = i.FromEmail,
                         ToEmail = i.ToEmail,
+
+                        ToRecipients = i.ToRecipients ?? i.ToEmail,
+
+                        CcEmail = i.CcEmail,
                         Date = i.Date,
                         IsRead = i.IsRead,
                         IsAutoReply = i.IsAutoReply,
@@ -483,6 +487,12 @@ public class InboxController : ControllerBase
                         Body = s.Body,
                         FromEmail = s.SenderEmailId,
                         ToEmail = s.ToEmail,
+
+                        ToRecipients = s.ToEmail,
+
+                        CcEmail = s.CcEmail,
+
+                        BccEmail = s.BccEmail,
                         Date = s.SentAt,
                         IsRead = true,
                         ContactId = s.ContactId ?? contactId,
@@ -520,6 +530,10 @@ public class InboxController : ControllerBase
                         Body = r.Body,
                         FromEmail = r.FromEmail,
                         ToEmail = r.ToEmail,
+
+                        ToRecipients = r.ToRecipients ?? r.ToEmail,
+
+                        CcEmail = r.CcEmail,
                         Date = r.Date,
                         IsRead = r.IsRead ?? false,
                         IsAutoReply = r.IsAutoReply,

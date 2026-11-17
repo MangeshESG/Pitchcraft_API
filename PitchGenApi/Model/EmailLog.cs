@@ -7,6 +7,13 @@
 
     public string ToEmail { get; set; }
 
+    /// <summary>Cc line this message went out with, comma separated.</summary>
+    public string? CcEmail { get; set; }
+
+    /// <summary>Bcc line this message went out with, comma separated. Known
+    /// only because we are the sender; received mail never carries it.</summary>
+    public string? BccEmail { get; set; }
+
     public string Subject { get; set; }
 
     public string Body { get; set; }

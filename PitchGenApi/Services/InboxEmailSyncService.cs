@@ -42,6 +42,121 @@ public class InboxEmailSyncService : IInboxEmailSyncService
         return $"<{value}>";
     }
 
+    /// <summary>
+    /// Reads a string out of a dynamic Newtonsoft JSON node, walking the given
+    /// property path. A JSON null (JValue.Null) is NOT a CLR null, so the usual
+    /// <c>node.a?.b ?? ""</c> pattern silently produces a null string (or throws
+    /// on member access). This returns "" for missing / null / non-object nodes.
+    /// </summary>
+    private static string JsonStr(object node, params string[] path)
+    {
+        var token = node as Newtonsoft.Json.Linq.JToken;
+
+        if (token == null)
+            return node?.ToString() ?? "";
+
+        foreach (var name in path)
+        {
+            if (token is Newtonsoft.Json.Linq.JObject obj)
+                token = obj[name];
+            else
+                return "";
+
+            if (token == null)
+                return "";
+        }
+
+        if (token.Type == Newtonsoft.Json.Linq.JTokenType.Null ||
+            token.Type == Newtonsoft.Json.Linq.JTokenType.Undefined)
+            return "";
+
+        return token.ToString();
+    }
+
+    // =========================================
+    // RECIPIENT LISTS (To / Cc)
+    // =========================================
+    // Stored comma separated so the inbox can show a Cc line and Reply all can
+    // copy everyone in. Bcc is deliberately absent: a received message never
+    // carries one.
+
+    /// <summary>Longest list we keep; the column is nvarchar(max) but a
+    /// thousand-address header is spam, not something to reply to.</summary>
+    private const int MaxRecipientListLength = 4000;
+
+    private static string? TrimRecipientList(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        value = value.Trim();
+
+        return value.Length <= MaxRecipientListLength
+            ? value
+            : value.Substring(0, MaxRecipientListLength);
+    }
+
+    /// <summary>IMAP/SMTP: MimeKit address list to "a@x.com, b@y.com".</summary>
+    private static string? FormatAddressList(InternetAddressList? addresses)
+    {
+        if (addresses == null || addresses.Count == 0)
+            return null;
+
+        var list = addresses.Mailboxes
+            .Select(mailbox => mailbox.Address)
+            .Where(address => !string.IsNullOrWhiteSpace(address))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        return TrimRecipientList(string.Join(", ", list));
+    }
+
+    /// <summary>
+    /// Gmail: a raw To/Cc header, which may carry display names
+    /// ("Colin Martin &lt;colin@x.com&gt;, b@y.com"). Kept as addresses only so
+    /// every provider stores the same shape.
+    /// </summary>
+    private static string? FormatHeaderAddressList(string? headerValue)
+    {
+        if (string.IsNullOrWhiteSpace(headerValue))
+            return null;
+
+        var list = headerValue
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part =>
+            {
+                part = part.Trim();
+
+                var open = part.LastIndexOf('<');
+                var close = part.LastIndexOf('>');
+
+                if (open >= 0 && close > open)
+                    part = part.Substring(open + 1, close - open - 1);
+
+                return part.Trim().Trim('"').Trim();
+            })
+            .Where(address => address.Contains('@'))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        return TrimRecipientList(string.Join(", ", list));
+    }
+
+    /// <summary>
+    /// Graph: a toRecipients / ccRecipients array of
+    /// <c>{ emailAddress: { address } }</c>.
+    /// </summary>
+    private static string? FormatGraphRecipients(object? node)
+    {
+        if (node is not Newtonsoft.Json.Linq.JArray array || array.Count == 0)
+            return null;
+
+        var list = array
+            .Select(entry => JsonStr(entry, "emailAddress", "address"))
+            .Where(address => !string.IsNullOrWhiteSpace(address))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        return TrimRecipientList(string.Join(", ", list));
+    }
+
     private static bool DetectAutoReply(string? subject, string? body, string? rawHeaders)
     {
         var headers = rawHeaders ?? string.Empty;
@@ -451,6 +566,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                         ToEmail = setting.EmailAddress,
 
+                        ToRecipients = FormatAddressList(msg.To),
+
+                        CcEmail = FormatAddressList(msg.Cc),
+
                         Inboxid = setting.Id,
 
                         Subject = (msg.Subject ?? "")
@@ -606,6 +725,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                             ToEmail = setting.EmailAddress,
 
+                            ToRecipients = FormatAddressList(msg.To),
+
+                            CcEmail = FormatAddressList(msg.Cc),
+
                             Subject = (msg.Subject ?? "")
                                 .Substring(0,
                                     Math.Min(
@@ -674,6 +797,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             FromName = fromName,
 
                             ToEmail = setting.EmailAddress,
+
+                            ToRecipients = FormatAddressList(msg.To),
+
+                            CcEmail = FormatAddressList(msg.Cc),
 
                             Subject = (msg.Subject ?? "")
                                 .Substring(0,
@@ -935,6 +1062,13 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     string subject = GetHeader(headers, "Subject");
                     string fromHeader = GetHeader(headers, "From");
 
+                    // Everyone the message was addressed to, for the Cc line
+                    // in the reader and for Reply all.
+                    string toRecipients =
+                        FormatHeaderAddressList(GetHeader(headers, "To"));
+                    string ccRecipients =
+                        FormatHeaderAddressList(GetHeader(headers, "Cc"));
+
                     string fromName = "";
                     string fromAddress = fromHeader;
 
@@ -1133,6 +1267,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             FromName = fromName,
                             ToEmail = tokenData.Email,
 
+                            ToRecipients = toRecipients,
+
+                            CcEmail = ccRecipients,
+
                             Subject = subject,
                             Inboxid = tokenData.Id,
                             Body = cleanbody,
@@ -1193,6 +1331,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 FromEmail = fromAddress,
                                 FromName = fromName,
                                 ToEmail = tokenData.Email,
+
+                                ToRecipients = toRecipients,
+
+                                CcEmail = ccRecipients,
                                 Subject = subject,
                                 Inboxid = tokenData.Id,
                                 Body = cleanbody,
@@ -1222,6 +1364,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 FromEmail = fromAddress,
                                 FromName = fromName,
                                 ToEmail = tokenData.Email,
+
+                                ToRecipients = toRecipients,
+
+                                CcEmail = ccRecipients,
                                 Subject = subject,
                                 Inboxid = tokenData.Id,
                                 Body = cleanbody,
@@ -1264,6 +1410,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 FromEmail = fromAddress,
                                 FromName = fromName,
                                 ToEmail = tokenData.Email,
+
+                                ToRecipients = toRecipients,
+
+                                CcEmail = ccRecipients,
                                 Subject = subject,
                                 Contactid = contactResult.ContactId,
                                 Body = cleanbody,
@@ -1365,7 +1515,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
             $"https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages" +
             $"?$filter=receivedDateTime ge {filterTime}" +
             $"&$top=50" +
-            $"&$select=id,internetMessageId,subject,from,toRecipients,body,receivedDateTime,hasAttachments,internetMessageHeaders";
+            $"&$select=id,internetMessageId,subject,from,toRecipients,ccRecipients,body,receivedDateTime,hasAttachments,internetMessageHeaders";
 
         string nextLink = url;
 
@@ -1425,16 +1575,27 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                             x.MessageId == messageId ||
                             x.MessageId == outlookMessageId);
 
-                    string subject = msg.subject ?? "";
+                    string subject = JsonStr(msg, "subject");
 
                     if (subject.Length > 500)
                         subject = subject.Substring(0, 500);
 
                     string from =
-                        msg.from?.emailAddress?.address ?? "";
+                        JsonStr(msg, "from", "emailAddress", "address");
 
                     string fromName =
-                        msg.from?.emailAddress?.name ?? "";
+                        JsonStr(msg, "from", "emailAddress", "name");
+
+                    // Everyone the message was addressed to, for the Cc line
+                    // in the reader and for Reply all. Typed on the way out of
+                    // `dynamic` so the helper call binds at compile time.
+                    Newtonsoft.Json.Linq.JToken msgToken =
+                        msg as Newtonsoft.Json.Linq.JToken;
+
+                    string toRecipients =
+                        FormatGraphRecipients(msgToken?["toRecipients"]);
+                    string ccRecipients =
+                        FormatGraphRecipients(msgToken?["ccRecipients"]);
 
                     // =========================================
                     // SKIP OWN MAILS
@@ -1526,7 +1687,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     // BODY
                     // =========================================
 
-                    string body = msg.body?.content ?? "";
+                    string body = JsonStr(msg, "body", "content");
 
                     var bounceInfo = BounceParser.Parse(new BounceMailInput
                     {
@@ -1537,11 +1698,11 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                         Provider = "Outlook"
                     });
 
+                    string receivedRaw = JsonStr(msg, "receivedDateTime");
+
                     DateTime emailDate =
-                        msg.receivedDateTime != null
-                        ? DateTimeOffset.Parse(
-                            msg.receivedDateTime.ToString())
-                            .UtcDateTime
+                        DateTimeOffset.TryParse(receivedRaw, out var receivedAt)
+                        ? receivedAt.UtcDateTime
                         : DateTime.UtcNow;
 
                     // =========================================
@@ -1662,6 +1823,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                             ToEmail = tokenData.Email,
 
+                            ToRecipients = toRecipients,
+
+                            CcEmail = ccRecipients,
+
                             FromName = fromName,
 
                             Subject = subject,
@@ -1743,6 +1908,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                 ToEmail = tokenData.Email,
 
+                                ToRecipients = toRecipients,
+
+                                CcEmail = ccRecipients,
+
                                 FromName = fromName,
 
                                 Subject = subject,
@@ -1786,6 +1955,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                                 FromEmail = from,
 
                                 ToEmail = tokenData.Email,
+
+                                ToRecipients = toRecipients,
+
+                                CcEmail = ccRecipients,
 
                                 FromName = fromName,
 
@@ -1846,6 +2019,10 @@ public class InboxEmailSyncService : IInboxEmailSyncService
 
                                 ToEmail = tokenData.Email,
 
+                                ToRecipients = toRecipients,
+
+                                CcEmail = ccRecipients,
+
                                 Subject = subject,
 
                                 Contactid = contactResult.ContactId,
@@ -1888,7 +2065,7 @@ public class InboxEmailSyncService : IInboxEmailSyncService
                     {
                         Console.WriteLine("📎 Fetching attachments...");
 
-                        string graphMessageId = msg.id;
+                        string graphMessageId = outlookMessageId;
 
                         var attachmentRes = await http.GetAsync(
                             $"https://graph.microsoft.com/v1.0/me/messages/{graphMessageId}/attachments");

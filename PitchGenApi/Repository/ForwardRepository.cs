@@ -25,6 +25,17 @@ namespace PitchGenApi.Repository
                 .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(email => !string.IsNullOrWhiteSpace(email));
 
+        /// <summary>
+        /// Cc/Bcc as they go onto the EmailLog row: trimmed, comma separated,
+        /// null when empty. Stored so the thread can show who was copied.
+        /// </summary>
+        private static string? StoreRecipientList(string? recipients)
+        {
+            var joined = string.Join(", ", ParseRecipients(recipients));
+
+            return string.IsNullOrWhiteSpace(joined) ? null : joined;
+        }
+
         public async Task<EmailSendResult> ForwardEmailUsingSmtp(Guid trackingid, int clientId,string forwardToEmail, string forwardMessage, int outboxId, string? CcEmail = "", string? BccEmail = "")
         {
             try
@@ -209,6 +220,10 @@ namespace PitchGenApi.Repository
                                 ?? firstReply?.ContactId,
 
                     ToEmail = forwardToEmail,
+
+                    CcEmail = StoreRecipientList(CcEmail),
+
+                    BccEmail = StoreRecipientList(BccEmail),
                     Subject = mail.Subject,
                     Body = finalBody,
 
@@ -387,6 +402,10 @@ namespace PitchGenApi.Repository
                                 ?? firstInbox?.Contactid
                                 ?? firstReply?.ContactId,
                     ToEmail = forwardToEmail,
+
+                    CcEmail = StoreRecipientList(CcEmail),
+
+                    BccEmail = StoreRecipientList(BccEmail),
                     Subject = forwardSubject,
                     Body = finalBody,
                     SenderEmailId = tokenData.Email,
@@ -593,6 +612,10 @@ namespace PitchGenApi.Repository
                                 ?? firstReply?.ContactId,
 
                     ToEmail = forwardToEmail,
+
+                    CcEmail = StoreRecipientList(CcEmail),
+
+                    BccEmail = StoreRecipientList(BccEmail),
 
                     Subject = forwardSubject,
 

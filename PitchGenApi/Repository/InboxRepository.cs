@@ -614,6 +614,10 @@ public class InboxRepository : IInboxRepository
 
                         ToEmail = inboxEmail,
 
+                        ToRecipients = i.ToRecipients ?? i.ToEmail,
+
+                        CcEmail = i.CcEmail,
+
                         Date = i.Date,
 
                         IsRead = i.IsRead,
@@ -658,6 +662,12 @@ public class InboxRepository : IInboxRepository
 
                         ToEmail = s.ToEmail,
 
+                        ToRecipients = s.ToEmail,
+
+                        CcEmail = s.CcEmail,
+
+                        BccEmail = s.BccEmail,
+
                         Date = s.SentAt,
 
                         IsRead = true,
@@ -700,6 +710,10 @@ public class InboxRepository : IInboxRepository
                         FromEmail = r.FromEmail,
 
                         ToEmail = inboxEmail,
+
+                        ToRecipients = r.ToRecipients ?? r.ToEmail,
+
+                        CcEmail = r.CcEmail,
 
                         Date = r.Date,
 
@@ -900,6 +914,12 @@ public class InboxRepository : IInboxRepository
                     FromEmail = s.SenderEmailId,
 
                     ToEmail = s.ToEmail,
+
+                    ToRecipients = s.ToEmail,
+
+                    CcEmail = s.CcEmail,
+
+                    BccEmail = s.BccEmail,
 
                     Date = s.SentAt,
 
@@ -1172,6 +1192,10 @@ public class InboxRepository : IInboxRepository
 
                 ToEmail = inbox.ToEmail,
 
+                ToRecipients = inbox.ToRecipients ?? inbox.ToEmail,
+
+                CcEmail = inbox.CcEmail,
+
                 Date = inbox.Date,
 
                 IsRead = inbox.IsRead,
@@ -1214,6 +1238,10 @@ public class InboxRepository : IInboxRepository
                     FromEmail = r.FromEmail,
 
                     ToEmail = r.ToEmail,
+
+                    ToRecipients = r.ToRecipients ?? r.ToEmail,
+
+                    CcEmail = r.CcEmail,
 
                     Date = r.Date,
 
@@ -1473,6 +1501,10 @@ public class InboxRepository : IInboxRepository
 
                         ToEmail = i.ToEmail,
 
+                        ToRecipients = i.ToRecipients ?? i.ToEmail,
+
+                        CcEmail = i.CcEmail,
+
                         Date = i.Date,
 
                         IsRead = i.IsRead,
@@ -1519,6 +1551,12 @@ public class InboxRepository : IInboxRepository
 
                         ToEmail = s.ToEmail,
 
+                        ToRecipients = s.ToEmail,
+
+                        CcEmail = s.CcEmail,
+
+                        BccEmail = s.BccEmail,
+
                         Date = s.SentAt,
 
                         IsRead = true,
@@ -1563,6 +1601,10 @@ public class InboxRepository : IInboxRepository
                         FromEmail = r.FromEmail,
 
                         ToEmail = r.ToEmail,
+
+                        ToRecipients = r.ToRecipients ?? r.ToEmail,
+
+                        CcEmail = r.CcEmail,
 
                         Date = r.Date,
 
@@ -1846,6 +1888,10 @@ public class InboxRepository : IInboxRepository
                         Body = i.Body,
                         FromEmail = i.FromEmail,
                         ToEmail = i.ToEmail,
+
+                        ToRecipients = i.ToRecipients ?? i.ToEmail,
+
+                        CcEmail = i.CcEmail,
                         Date = i.Date,
                         IsRead = i.IsRead,
                         IsAutoReply = i.IsAutoReply,
@@ -1878,6 +1924,12 @@ public class InboxRepository : IInboxRepository
                         Body = s.Body,
                         FromEmail = s.SenderEmailId,
                         ToEmail = s.ToEmail,
+
+                        ToRecipients = s.ToEmail,
+
+                        CcEmail = s.CcEmail,
+
+                        BccEmail = s.BccEmail,
                         Date = s.SentAt,
                         IsRead = true,
                         ContactId = s.ContactId,
@@ -1909,6 +1961,10 @@ public class InboxRepository : IInboxRepository
                         Body = r.Body,
                         FromEmail = r.FromEmail,
                         ToEmail = r.ToEmail,
+
+                        ToRecipients = r.ToRecipients ?? r.ToEmail,
+
+                        CcEmail = r.CcEmail,
                         Date = r.Date,
                         IsRead = r.IsRead ?? false,
                         IsAutoReply = r.IsAutoReply,

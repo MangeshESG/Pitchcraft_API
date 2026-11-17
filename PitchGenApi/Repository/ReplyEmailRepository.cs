@@ -27,6 +27,26 @@ namespace PitchGenApi.Repository
             _inboxRepository = inboxRepository;
         }
 
+        /// <summary>
+        /// Cc/Bcc as they go onto the EmailLog row: trimmed, comma separated,
+        /// null when empty. Stored so the thread can show who was copied and
+        /// Reply all can copy them again.
+        /// </summary>
+        private static string? StoreRecipientList(string? recipients)
+        {
+            if (string.IsNullOrWhiteSpace(recipients))
+                return null;
+
+            var list = recipients
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(address => address.Trim())
+                .Where(address => address.Length > 0);
+
+            var joined = string.Join(", ", list);
+
+            return string.IsNullOrWhiteSpace(joined) ? null : joined;
+        }
+
         private static bool TryAddRecipients(
             InternetAddressList target,
             string recipients,
@@ -411,6 +431,10 @@ namespace PitchGenApi.Repository
 
                     ToEmail = replyToEmail,
 
+                    CcEmail = StoreRecipientList(CC),
+
+                    BccEmail = StoreRecipientList(BCC),
+
                     Subject = mail.Subject,
 
                     Body = replyBody,
@@ -783,6 +807,10 @@ namespace PitchGenApi.Repository
                 {
                     ClientId = clientId,
                     ToEmail = replyToEmail,
+
+                    CcEmail = StoreRecipientList(CC),
+
+                    BccEmail = StoreRecipientList(BCC),
                     Subject = mimeMessage.Subject,
                     Body = replyBody,
                     SenderEmailId = tokenData.Email,
@@ -1309,6 +1337,10 @@ namespace PitchGenApi.Repository
                         firstReply?.ContactId,
 
                     ToEmail = replyToEmail,
+
+                    CcEmail = StoreRecipientList(CC),
+
+                    BccEmail = StoreRecipientList(BCC),
 
                     Subject = threadSubject,
 

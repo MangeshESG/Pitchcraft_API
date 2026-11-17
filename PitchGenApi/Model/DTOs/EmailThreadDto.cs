@@ -27,6 +27,18 @@
 
         public string ToEmail { get; set; }
 
+        /// <summary>
+        /// Every address on the message's To line, comma separated. Falls back
+        /// to ToEmail for rows stored before the column existed.
+        /// </summary>
+        public string? ToRecipients { get; set; }
+
+        /// <summary>The message's Cc line, comma separated.</summary>
+        public string? CcEmail { get; set; }
+
+        /// <summary>Bcc, on sent messages only — received mail never has it.</summary>
+        public string? BccEmail { get; set; }
+
         public DateTime? Date { get; set; }
 
         public bool IsRead { get; set; }
