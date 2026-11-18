@@ -32,7 +32,7 @@ BEGIN
         UnsubscribedContactId int NULL,
         CONSTRAINT FK_Notification_UnsubscribedContacts FOREIGN KEY (UnsubscribedContactId)
             REFERENCES dbo.UnsubscribedContacts(Id) ON DELETE CASCADE,
-        CONSTRAINT CK_Notification_Source CHECK (Source IN (N'UnsubscribeByToken', N'OneClick', N'WebsiteContact'))
+        CONSTRAINT CK_Notification_Source CHECK (Source IN (N'UnsubscribeByToken', N'OneClick', N'WebsiteContact', N'WebsiteContactRepeat'))
     );
     CREATE UNIQUE INDEX IX_Notification_UnsubscribedContactId
         ON dbo.Notification(UnsubscribedContactId) WHERE UnsubscribedContactId IS NOT NULL;
@@ -74,7 +74,7 @@ BEGIN
         ON dbo.Notification(UnsubscribedContactId) WHERE UnsubscribedContactId IS NOT NULL;
 END;
 IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE parent_object_id = OBJECT_ID(N'dbo.Notification')
-    AND definition LIKE N'%WebsiteContact%')
+    AND definition LIKE N'%WebsiteContactRepeat%')
 BEGIN
     DECLARE @sourceConstraint sysname = (SELECT TOP (1) name FROM sys.check_constraints
         WHERE parent_object_id = OBJECT_ID(N'dbo.Notification') AND definition LIKE N'%UnsubscribeByToken%');
@@ -84,7 +84,7 @@ BEGIN
         EXEC(@dropSourceConstraint);
     END;
     ALTER TABLE dbo.Notification ADD CONSTRAINT CK_Notification_Source
-        CHECK (Source IN (N'UnsubscribeByToken', N'OneClick', N'WebsiteContact'));
+        CHECK (Source IN (N'UnsubscribeByToken', N'OneClick', N'WebsiteContact', N'WebsiteContactRepeat'));
 END;
 COMMIT TRANSACTION;
 ");

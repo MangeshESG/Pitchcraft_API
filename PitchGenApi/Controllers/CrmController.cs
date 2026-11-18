@@ -247,6 +247,16 @@ namespace PitchGenApi.Controllers
                         4 => "Fourth",
                         _ => $"{enquiryNumber}{suffix}"
                     };
+
+                    _context.Notifications.Add(new Notification
+                    {
+                        ClientId = integration.client_id,
+                        ContactId = contact!.id,
+                        Email = email,
+                        Source = NotificationSource.WebsiteContactRepeat.ToString(),
+                        CreatedAt = now
+                    });
+                    await _context.SaveChangesAsync();
                 }
 
                 if (isRepeat || !string.IsNullOrWhiteSpace(message))
