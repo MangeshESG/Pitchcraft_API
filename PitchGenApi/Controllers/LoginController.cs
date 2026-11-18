@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
@@ -783,6 +783,43 @@ namespace PitchGenApi.Controllers
         {
             /// <summary>Client whose account the admin wants to work inside.</summary>
             public int TargetClientId { get; set; }
+        }
+
+        /// <summary>
+        /// Re-issues the caller's token so an active session does not die at the
+        /// Jwt:ExpiryMinutes mark while they are still working.
+        ///
+        /// [Authorize] is the whole check: a request only gets here carrying a
+        /// token we signed that has not expired yet, so this can never revive a
+        /// dead session — it slides a live one forward. The SPA calls it a few
+        /// minutes before the current token's "exp".
+        ///
+        /// The account is re-read on every renewal rather than trusted from the
+        /// claims, so a client deleted mid-session stops sliding instead of
+        /// renewing indefinitely off a token issued before they were removed.
+        /// </summary>
+        [Authorize]
+        [HttpPost("renew")]
+        public async Task<IActionResult> RenewSession()
+        {
+            // Same claim the impersonation endpoint and the super-admin guard
+            // read, so one signed token identifies the caller everywhere.
+            if (!int.TryParse(User.FindFirst("UserId")?.Value, out var callerId) ||
+                callerId <= 0)
+            {
+                return Unauthorized(new { message = "Sign in again and retry." });
+            }
+
+            var exists = await _context.ClientDetails
+                .AsNoTracking()
+                .AnyAsync(client => client.Id == callerId);
+
+            if (!exists)
+            {
+                return Unauthorized(new { message = "This account is no longer active." });
+            }
+
+            return Ok(new { Token = _jwtService.RenewToken(User.Claims) });
         }
 
         // ---------------- PROFILE ----------------
