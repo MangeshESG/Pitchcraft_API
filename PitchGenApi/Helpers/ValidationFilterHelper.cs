@@ -24,6 +24,7 @@ namespace PitchGenApi.Helpers
             "dataIntegrityConfidence",
             "liveContactConfidence",
             "emailValidityConfidence",
+            "dataEnhancementConfidence",
             "isVerified",
             "lastChecked"
         };

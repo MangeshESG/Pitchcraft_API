@@ -77,6 +77,14 @@
         /// </summary>
         public const string LiveContactModel = "gpt-5.6-luna";
 
+        /// <summary>
+        /// Model used by Customisable Data Enhancement. Half of what it is
+        /// asked to fill - an industry, a head count, a company phone number -
+        /// is not in the record at all, so it defaults to the same searching
+        /// model the other research checks use rather than to the cheap one.
+        /// </summary>
+        public const string DataEnhancementModel = "gpt-5.6-luna";
+
         public static string ForPurpose(string purposeKey) =>
             purposeKey switch
             {
@@ -91,6 +99,7 @@
                 AiModelPurposes.ContactFit => ContactFitModel,
                 AiModelPurposes.DataIntegrity => DataIntegrityModel,
                 AiModelPurposes.LiveContact => LiveContactModel,
+                AiModelPurposes.DataEnhancement => DataEnhancementModel,
                 _ => EmailGenerationModel
             };
 

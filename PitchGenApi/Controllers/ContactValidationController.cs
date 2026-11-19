@@ -739,6 +739,151 @@ namespace PitchGenApi.Controllers
             [FromBody] ResolveSuggestionRequestDto request) =>
             ResolveSuggestionAsync(request, accept: false);
 
+        /// <summary>
+        /// Applies every correction one check still has pending on one contact,
+        /// in a single save.
+        /// </summary>
+        /// <remarks>
+        /// The per-suggestion endpoint exists because accepting a correction is
+        /// a write to a customer record and each one deserves to be read first.
+        /// This one exists because that stops being true the moment a run comes
+        /// back with eight proposals for the same contact: an enhancement run
+        /// is asked for several columns at once, and clicking Accept eight
+        /// times - each a round trip, each re-patching the same row - is the
+        /// review happening once and the clicking happening eight times.
+        ///
+        /// Every proposal is still applied through the same checks as a single
+        /// Accept, one at a time: a field that no longer resolves is left
+        /// pending and reported, rather than failing the other seven with it.
+        /// </remarks>
+        [HttpPost("suggestions/accept-all")]
+        public async Task<IActionResult> AcceptAllSuggestions(
+            [FromBody] ResolveSuggestionRequestDto request)
+        {
+            if (request == null || request.ClientId <= 0 || request.ContactId <= 0)
+                return BadRequest(new { success = false, message = "A valid client and contact are required." });
+
+            var checkType = ValidationCheckTypes.Normalize(
+                request.CheckType ?? ValidationCheckTypes.DataIntegrity);
+
+            if (!ValidationCheckTypes.IsKnown(checkType))
+                return BadRequest(new { success = false, message = "Unknown check." });
+
+            var row = await _context.contact_validations
+                .FirstOrDefaultAsync(v =>
+                    v.ClientId == request.ClientId && v.ContactId == request.ContactId);
+
+            if (row == null)
+                return NotFound(new { success = false, message = "This contact has not been validated." });
+
+            var suggestions = ValidationSuggestionJson.Deserialize(
+                row.SuggestionsJsonFor(checkType));
+
+            var pending = suggestions
+                .Where(item => item.Status == ValidationSuggestionStatuses.Pending)
+                .ToList();
+
+            if (pending.Count == 0)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "There is nothing left to accept on this contact."
+                });
+            }
+
+            var contact = await _context.contacts
+                .FirstOrDefaultAsync(c =>
+                    c.id == request.ContactId &&
+                    _context.data_files.Any(f =>
+                        f.id == c.DataFileId && f.client_id == request.ClientId));
+
+            if (contact == null)
+                return NotFound(new { success = false, message = "Contact not found." });
+
+            var now = DateTime.UtcNow;
+            var applied = new List<object>();
+            var refused = new List<string>();
+
+            foreach (var suggestion in pending)
+            {
+                object? outcome;
+
+                if (checkType == ValidationCheckTypes.DataEnhancement)
+                {
+                    outcome = await ApplyEnhancementValueAsync(
+                        request.ClientId, contact, suggestion, now);
+                }
+                else if (ValidationSuggestionFields.IsWritableBy(checkType, suggestion.Field) &&
+                         ValidationSuggestionFields.Apply(contact, suggestion.Field, suggestion.Suggested))
+                {
+                    outcome = new
+                    {
+                        field = suggestion.Field,
+                        columnKey = suggestion.Field,
+                        value = suggestion.Suggested,
+                        fullName = contact.full_name,
+                        firstName = contact.first_name,
+                        lastName = contact.last_name,
+                        customFieldId = (int?)null,
+                        customFieldName = (string?)null
+                    };
+                }
+                else
+                {
+                    outcome = null;
+                }
+
+                if (outcome == null)
+                {
+                    // Left pending on purpose. The user can still see what it
+                    // was and decide, which is more use than a correction that
+                    // quietly disappeared into a bulk action.
+                    refused.Add(SuggestionLabel(checkType, suggestion));
+                    continue;
+                }
+
+                applied.Add(outcome);
+
+                suggestion.Status = ValidationSuggestionStatuses.Accepted;
+                suggestion.ResolvedAt = now;
+                suggestion.ResolvedBy = request.ResolvedBy;
+            }
+
+            if (applied.Count == 0)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "None of these corrections could be applied: " +
+                              string.Join(", ", refused) +
+                              " no longer name columns this check can write."
+                });
+            }
+
+            contact.updated_at = now;
+
+            row.SetSuggestionsJson(checkType, ValidationSuggestionJson.Serialize(suggestions));
+            row.UpdatedAt = now;
+
+            await _context.SaveChangesAsync();
+
+            var message = $"{applied.Count} correction{(applied.Count == 1 ? "" : "s")} applied.";
+
+            if (refused.Count > 0)
+                message += $" {string.Join(", ", refused)} could not be written and {(refused.Count == 1 ? "is" : "are")} still waiting.";
+
+            return Ok(new
+            {
+                success = true,
+                message,
+                applied,
+                checkType,
+                suggestions,
+                suggestionsJson = row.SuggestionsJsonFor(checkType)
+            });
+        }
+
         private async Task<IActionResult> ResolveSuggestionAsync(
             ResolveSuggestionRequestDto request,
             bool accept)
@@ -806,33 +951,61 @@ namespace PitchGenApi.Controllers
                 if (contact == null)
                     return NotFound(new { success = false, message = "Contact not found." });
 
-                // Checked again here rather than trusting what was stored: the
-                // field sets are what stop one check rewriting another's
-                // evidence, and a row written before a set was narrowed must
-                // not still be applyable.
-                if (!ValidationSuggestionFields.IsWritableBy(checkType, suggestion.Field) ||
-                    !ValidationSuggestionFields.Apply(contact, suggestion.Field, suggestion.Suggested))
+                if (checkType == ValidationCheckTypes.DataEnhancement)
                 {
-                    return BadRequest(new
+                    applied = await ApplyEnhancementValueAsync(
+                        request.ClientId, contact, suggestion, now);
+
+                    if (applied == null)
                     {
-                        success = false,
-                        message = $"{suggestion.Field} is not a field this check can correct."
-                    });
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message =
+                                $"{suggestion.Label ?? suggestion.Field} is no longer a column this " +
+                                "client has, so the value could not be written."
+                        });
+                    }
+                }
+                else
+                {
+                    // Checked again here rather than trusting what was stored:
+                    // the field sets are what stop one check rewriting
+                    // another's evidence, and a row written before a set was
+                    // narrowed must not still be applyable.
+                    if (!ValidationSuggestionFields.IsWritableBy(checkType, suggestion.Field) ||
+                        !ValidationSuggestionFields.Apply(contact, suggestion.Field, suggestion.Suggested))
+                    {
+                        return BadRequest(new
+                        {
+                            success = false,
+                            message = $"{suggestion.Field} is not a field this check can correct."
+                        });
+                    }
+
+                    applied = new
+                    {
+                        field = suggestion.Field,
+                        // The seven fields these checks write are all named
+                        // after their database column, so the key is already
+                        // the name the row carries. Sent anyway, so a caller
+                        // patching a row never has to know which checks that
+                        // is true of.
+                        columnKey = suggestion.Field,
+                        value = suggestion.Suggested,
+                        // The name write also rebuilds the two split columns,
+                        // and the grid shows those rather than full_name, so it
+                        // needs all three back or the row it patches goes
+                        // stale.
+                        fullName = contact.full_name,
+                        firstName = contact.first_name,
+                        lastName = contact.last_name,
+                        customFieldId = (int?)null,
+                        customFieldName = (string?)null
+                    };
                 }
 
                 contact.updated_at = now;
-
-                applied = new
-                {
-                    field = suggestion.Field,
-                    value = suggestion.Suggested,
-                    // The name write also rebuilds the two split columns, and
-                    // the grid shows those rather than full_name, so it needs
-                    // all three back or the row it patches goes stale.
-                    fullName = contact.full_name,
-                    firstName = contact.first_name,
-                    lastName = contact.last_name
-                };
             }
 
             suggestion.Status = accept
@@ -850,7 +1023,7 @@ namespace PitchGenApi.Controllers
             {
                 success = true,
                 message = accept
-                    ? $"{ValidationSuggestionFields.Label(suggestion.Field)} updated."
+                    ? $"{SuggestionLabel(checkType, suggestion)} updated."
                     : "Suggestion dismissed.",
                 applied,
                 checkType,
@@ -859,6 +1032,111 @@ namespace PitchGenApi.Controllers
                 suggestions,
                 suggestionsJson = row.SuggestionsJsonFor(checkType)
             });
+        }
+
+        /// <summary>
+        /// How a suggestion is named in the message the user reads. The
+        /// enhancement check's fields can be the client's own attributes, whose
+        /// names are not compiled in anywhere, so it uses the label the run
+        /// stored beside the suggestion.
+        /// </summary>
+        private static string SuggestionLabel(
+            string checkType,
+            ValidationSuggestionDto suggestion) =>
+            checkType == ValidationCheckTypes.DataEnhancement
+                ? suggestion.Label ?? suggestion.Field
+                : ValidationSuggestionFields.Label(suggestion.Field);
+
+        /// <summary>
+        /// Writes one accepted enhancement value, to a contact column or to a
+        /// custom attribute, and returns what the grid needs to patch its row.
+        /// Null when the column no longer exists or is not one this check may
+        /// write.
+        /// </summary>
+        /// <remarks>
+        /// The field name is re-resolved against the client's live attributes
+        /// rather than trusted from the stored suggestion, for the same reason
+        /// the other four checks re-check their field sets here: what is in the
+        /// column is a language model's claim until something on this side of
+        /// the wire has checked it. Resolving it against this client's own
+        /// attributes is also what stops a suggestion row naming
+        /// <c>custom:17</c> from reaching another client's attribute 17.
+        /// </remarks>
+        private async Task<object?> ApplyEnhancementValueAsync(
+            int clientId,
+            PitchGenApi.Models.Contact contact,
+            ValidationSuggestionDto suggestion,
+            DateTime now)
+        {
+            var value = suggestion.Suggested?.Trim();
+
+            if (string.IsNullOrWhiteSpace(value)) return null;
+
+            if (!DataEnhancementFields.TryParseCustomKey(suggestion.Field, out var customFieldId))
+            {
+                var key = DataEnhancementFields.NormalizeSystem(suggestion.Field);
+
+                if (key == null || !DataEnhancementFields.ApplySystem(contact, key, value))
+                    return null;
+
+                return new
+                {
+                    field = key,
+                    // Not the same string as the key for the four company
+                    // columns: they reach the browser camel-cased, and a patch
+                    // written under the key would change nothing on screen.
+                    columnKey = DataEnhancementFields.RowKeyFor(key),
+                    value,
+                    fullName = contact.full_name,
+                    firstName = contact.first_name,
+                    lastName = contact.last_name,
+                    customFieldId = (int?)null,
+                    customFieldName = (string?)null
+                };
+            }
+
+            var customField = await _context.crm_custom_fields
+                .FirstOrDefaultAsync(field =>
+                    field.id == customFieldId && field.client_id == clientId);
+
+            if (customField == null) return null;
+
+            var existing = await _context.contact_custom_field_values
+                .FirstOrDefaultAsync(row =>
+                    row.contact_id == contact.id && row.field_id == customField.id);
+
+            if (existing == null)
+            {
+                _context.contact_custom_field_values.Add(new ContactCustomFieldValue
+                {
+                    client_id = clientId,
+                    contact_id = contact.id,
+                    field_id = customField.id,
+                    value = value,
+                    created_at = now
+                });
+            }
+            else
+            {
+                existing.value = value;
+            }
+
+            return new
+            {
+                field = suggestion.Field,
+                // A custom attribute has no column of its own on the row; the
+                // name below is where it actually lives.
+                columnKey = (string?)null,
+                value,
+                fullName = contact.full_name,
+                firstName = contact.first_name,
+                lastName = contact.last_name,
+                customFieldId = (int?)customField.id,
+                // The grid keys a row's custom values by the attribute's name,
+                // not its id, so the name is what a patch needs to find the
+                // cell it has just changed.
+                customFieldName = customField.field_name
+            };
         }
 
         private static ContactValidationDto ToDto(ContactValidation row)
@@ -898,11 +1176,15 @@ namespace PitchGenApi.Controllers
                 EmailValiditySource = row.EmailValiditySource,
                 EmailValidityComments = row.EmailValidityComments,
                 EmailCheckedAt = row.EmailCheckedAt,
+                DataEnhancementConfidence = row.DataEnhancementConfidence,
+                DataEnhancementComments = row.DataEnhancementComments,
+                DataEnhancementCheckedAt = row.DataEnhancementCheckedAt,
                 Sources = sources,
                 ContactFitSuggestions = ValidationSuggestionJson.Deserialize(row.ContactFitSuggestionsJson),
                 DataIntegritySuggestions = ValidationSuggestionJson.Deserialize(row.DataIntegritySuggestionsJson),
                 LiveContactSuggestions = ValidationSuggestionJson.Deserialize(row.LiveContactSuggestionsJson),
                 EmailValiditySuggestions = ValidationSuggestionJson.Deserialize(row.EmailValiditySuggestionsJson),
+                DataEnhancementSuggestions = ValidationSuggestionJson.Deserialize(row.DataEnhancementSuggestionsJson),
                 IsVerified = row.IsVerified,
                 VerifiedAt = row.VerifiedAt,
                 VerifiedBy = row.VerifiedBy,
@@ -918,6 +1200,63 @@ namespace PitchGenApi.Controllers
         /// The four checks with their labels, so the run panel does not have to
         /// keep its own copy of the descriptions.
         /// </summary>
+        /// <summary>
+        /// The columns a Customisable Data Enhancement run can be pointed at:
+        /// the contact's own, then this client's custom attributes.
+        /// </summary>
+        /// <remarks>
+        /// Served from here rather than assembled in the browser from the CRM's
+        /// column endpoints, because the keys have to be the ones the run will
+        /// accept. The picker offering a column the runner would then drop is
+        /// the failure this endpoint exists to make impossible: one list, built
+        /// from the same <see cref="EnhancementFieldSet"/> the run resolves
+        /// against.
+        ///
+        /// The custom attributes are listed in the order the client arranged
+        /// them, so the picker reads like their own grid rather than like the
+        /// database.
+        /// </remarks>
+        [HttpGet("enhancement-fields")]
+        public async Task<IActionResult> GetEnhancementFields([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+                return BadRequest(new { success = false, message = "A valid client is required." });
+
+            var fields = DataEnhancementFields.SystemFields
+                .Select(field => new EnhancementFieldDto
+                {
+                    Key = field.Key,
+                    Label = field.Label,
+                    Description = field.Description,
+                    IsCustom = false
+                })
+                .ToList();
+
+            var customFields = await _context.crm_custom_fields
+                .AsNoTracking()
+                .Where(field => field.client_id == clientId)
+                .OrderBy(field => field.sort_order)
+                .ThenBy(field => field.id)
+                .ToListAsync();
+
+            var custom = EnhancementFieldSet.Build(
+                customFields.Select(field => DataEnhancementFields.CustomKey(field.id)),
+                customFields);
+
+            fields.AddRange(custom.Fields.Select(field => new EnhancementFieldDto
+            {
+                Key = field.Key,
+                Label = field.Label,
+                Description = field.Description,
+                IsCustom = true,
+                CustomFieldId = field.CustomFieldId,
+                FieldType = field.FieldType,
+                Options = field.Options.ToList()
+            }));
+
+            return Ok(new { success = true, fields });
+        }
+
         [HttpGet("check-types")]
         public IActionResult GetCheckTypes() => Ok(new
         {
@@ -932,7 +1271,11 @@ namespace PitchGenApi.Controllers
                     label,
                     description,
                     requiresBrief = ValidationCheckTypes.RequiresBrief(key),
-                    usesWebSearch = ValidationCheckTypes.UsesWebSearch(key)
+                    usesWebSearch = ValidationCheckTypes.UsesWebSearch(key),
+                    // True for exactly one check, and it is what tells the run
+                    // panel to show the column picker and the instruction box
+                    // instead of starting the run on the next click.
+                    requiresFields = ValidationCheckTypes.RequiresFields(key)
                 };
             })
         });

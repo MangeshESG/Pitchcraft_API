@@ -23,12 +23,16 @@ namespace PitchGenApi.Model
         /// <summary>Audience Assurance: checks whether the contact is still current.</summary>
         public const string LiveContact = ValidationCheckTypes.LiveContact;
 
+        /// <summary>Audience Assurance: fills or corrects the columns the user picked.</summary>
+        public const string DataEnhancement = ValidationCheckTypes.DataEnhancement;
+
         public static readonly string[] All =
         {
             FindEmail,
             ContactFit,
             DataIntegrity,
-            LiveContact
+            LiveContact,
+            DataEnhancement
         };
 
         public static bool IsKnown(string? key) =>
@@ -51,6 +55,9 @@ namespace PitchGenApi.Model
             DataIntegrity => (
                 "Data Integrity Check (Audience Assurance)",
                 "Checks the supplied record for missing fields, generic or malformed emails, contaminated names and titles, domain mismatches and duplicates. Runs with web search off, so it stays nearly free. The rule that comments contain problems only is what keeps the column readable — don't soften it. Keep the JSON output block intact."),
+            DataEnhancement => (
+                "Customisable Data Enhancement (Audience Assurance)",
+                "Fills in or corrects whichever columns the user picked for that run. {target_fields} is replaced with those columns and what each one is for, and {user_instructions} with what the user typed into the run panel \u2014 so this text is the standing part of the instruction and theirs is the specific part. The rule that every proposed value carries its evidence is what makes the Accept button safe to click; don't soften it. Keep the JSON output block intact."),
             LiveContact => (
                 "Employment Match (Audience Assurance)",
                 "Checks against current public evidence whether the person is still at that company in that role. This is the most search-heavy check, so the instruction to reuse evidence across contacts at the same employer is doing real work. Keep the JSON output block intact."),
@@ -86,6 +93,12 @@ namespace PitchGenApi.Model
             },
             LiveContact => new[]
             {
+                "{contacts_json}"
+            },
+            DataEnhancement => new[]
+            {
+                "{target_fields}",
+                "{user_instructions}",
                 "{contacts_json}"
             },
             _ => Array.Empty<string>()

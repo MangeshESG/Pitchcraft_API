@@ -123,6 +123,48 @@ namespace PitchGenApi.Model
         [Column("email_validity_suggestions")]
         public string? EmailValiditySuggestionsJson { get; set; }
 
+        // ---------------- Customisable data enhancement ----------------
+
+        /// <summary>
+        /// How much of what the run was asked for it could establish for this
+        /// contact, and how well: 100 means every requested column was filled
+        /// or confirmed from solid evidence, a low score means most of it could
+        /// not be found.
+        ///
+        /// Deliberately not a judgement of the record, which is what the other
+        /// four scores are. Nothing is written to the contact by a run, so this
+        /// number does not say the data is good - it says how much the run had
+        /// to offer, which is what decides whether a contact is worth opening.
+        /// </summary>
+        [Column("data_enhancement_confidence")]
+        public int? DataEnhancementConfidence { get; set; }
+
+        /// <summary>
+        /// What the run could not establish, and why. Like the data integrity
+        /// comments this carries the problems only: a run that filled
+        /// everything it was asked for leaves an empty string and lets the
+        /// proposals speak for themselves.
+        /// </summary>
+        [Column("data_enhancement_comments")]
+        public string? DataEnhancementComments { get; set; }
+
+        [Column("data_enhancement_checked_at")]
+        public DateTime? DataEnhancementCheckedAt { get; set; }
+
+        /// <summary>
+        /// The values the run proposed, in the same shape as every other
+        /// check's corrections - except that a field here may name a custom
+        /// attribute (<c>custom:17</c>) as well as a contact column, and the
+        /// "current" side is routinely empty, because filling a blank column is
+        /// the point of this check rather than an edge case.
+        ///
+        /// Each one also carries the column's label as it stood when the run
+        /// finished, so the grid can name a custom attribute without having to
+        /// load the client's field definitions to render a cell.
+        /// </summary>
+        [Column("data_enhancement_suggestions")]
+        public string? DataEnhancementSuggestionsJson { get; set; }
+
         // ---------------- Shared ----------------
 
         /// <summary>
@@ -192,6 +234,7 @@ namespace PitchGenApi.Model
                 ValidationCheckTypes.DataIntegrity => DataIntegritySuggestionsJson,
                 ValidationCheckTypes.LiveContact => LiveContactSuggestionsJson,
                 ValidationCheckTypes.EmailVerification => EmailValiditySuggestionsJson,
+                ValidationCheckTypes.DataEnhancement => DataEnhancementSuggestionsJson,
                 _ => null
             };
 
@@ -211,6 +254,7 @@ namespace PitchGenApi.Model
                 ValidationCheckTypes.DataIntegrity => DataIntegrityConfidence,
                 ValidationCheckTypes.LiveContact => LiveContactConfidence,
                 ValidationCheckTypes.EmailVerification => EmailValidityConfidence,
+                ValidationCheckTypes.DataEnhancement => DataEnhancementConfidence,
                 _ => null
             };
 
@@ -230,6 +274,9 @@ namespace PitchGenApi.Model
                 case ValidationCheckTypes.EmailVerification:
                     EmailValidityConfidence = score;
                     break;
+                case ValidationCheckTypes.DataEnhancement:
+                    DataEnhancementConfidence = score;
+                    break;
             }
         }
 
@@ -248,6 +295,9 @@ namespace PitchGenApi.Model
                     break;
                 case ValidationCheckTypes.EmailVerification:
                     EmailValiditySuggestionsJson = json;
+                    break;
+                case ValidationCheckTypes.DataEnhancement:
+                    DataEnhancementSuggestionsJson = json;
                     break;
             }
         }

@@ -497,7 +497,8 @@ namespace PitchGenApi.Controllers
                 (v.ContactFitConfidence.HasValue ? 1 : 0) +
                 (v.DataIntegrityConfidence.HasValue ? 1 : 0) +
                 (v.LiveContactConfidence.HasValue ? 1 : 0) +
-                (v.EmailValidityConfidence.HasValue ? 1 : 0);
+                (v.EmailValidityConfidence.HasValue ? 1 : 0) +
+                (v.DataEnhancementConfidence.HasValue ? 1 : 0);
 
             // The most recent of the four, so one column can answer "is any of
             // this still worth trusting?" without four date columns to read.
@@ -506,7 +507,8 @@ namespace PitchGenApi.Controllers
                 v.ContactFitCheckedAt,
                 v.DataIntegrityCheckedAt,
                 v.LiveContactCheckedAt,
-                v.EmailCheckedAt
+                v.EmailCheckedAt,
+                v.DataEnhancementCheckedAt
             }.Where(date => date.HasValue).Max();
 
             return new
@@ -525,6 +527,9 @@ namespace PitchGenApi.Controllers
                 emailValidityConfidence = v.EmailValidityConfidence,
                 emailValidityComments = v.EmailValidityComments,
                 emailCheckedAt = v.EmailCheckedAt,
+                dataEnhancementConfidence = v.DataEnhancementConfidence,
+                dataEnhancementComments = v.DataEnhancementComments,
+                dataEnhancementCheckedAt = v.DataEnhancementCheckedAt,
                 validationSources = v.SourcesJson,
                 // The raw JSON, parsed in the browser like validationSources is.
                 // Sending these as arrays would make them column candidates in
@@ -534,6 +539,7 @@ namespace PitchGenApi.Controllers
                 dataIntegritySuggestions = v.DataIntegritySuggestionsJson,
                 liveContactSuggestions = v.LiveContactSuggestionsJson,
                 emailValiditySuggestions = v.EmailValiditySuggestionsJson,
+                dataEnhancementSuggestions = v.DataEnhancementSuggestionsJson,
                 isVerified = v.IsVerified,
                 verifiedAt = v.VerifiedAt,
                 // The raw JSON, parsed in the browser like validationSources
@@ -784,6 +790,7 @@ namespace PitchGenApi.Controllers
             public int? dataIntegrityConfidence { get; set; }
             public int? liveContactConfidence { get; set; }
             public int? emailValidityConfidence { get; set; }
+            public int? dataEnhancementConfidence { get; set; }
             public bool? isVerified { get; set; }
             public DateTime? lastChecked { get; set; }
         }
@@ -907,13 +914,15 @@ namespace PitchGenApi.Controllers
                 row.dataIntegrityConfidence = validation.DataIntegrityConfidence;
                 row.liveContactConfidence = validation.LiveContactConfidence;
                 row.emailValidityConfidence = validation.EmailValidityConfidence;
+                row.dataEnhancementConfidence = validation.DataEnhancementConfidence;
                 row.isVerified = validation.IsVerified;
                 row.lastChecked = new[]
                 {
                     validation.ContactFitCheckedAt,
                     validation.DataIntegrityCheckedAt,
                     validation.LiveContactCheckedAt,
-                    validation.EmailCheckedAt
+                    validation.EmailCheckedAt,
+                    validation.DataEnhancementCheckedAt
                 }.Where(date => date.HasValue).Max();
             }
 
@@ -5250,7 +5259,8 @@ namespace PitchGenApi.Controllers
                         validation?.ContactFitCheckedAt,
                         validation?.DataIntegrityCheckedAt,
                         validation?.LiveContactCheckedAt,
-                        validation?.EmailCheckedAt
+                        validation?.EmailCheckedAt,
+                        validation?.DataEnhancementCheckedAt
                     }.Where(date => date.HasValue).Max();
                     result.Add(new
                     {
@@ -5281,6 +5291,7 @@ namespace PitchGenApi.Controllers
                         dataIntegrityConfidence = validation?.DataIntegrityConfidence,
                         liveContactConfidence = validation?.LiveContactConfidence,
                         emailValidityConfidence = validation?.EmailValidityConfidence,
+                        dataEnhancementConfidence = validation?.DataEnhancementConfidence,
                         isVerified = validation?.IsVerified,
                         lastChecked
                     });

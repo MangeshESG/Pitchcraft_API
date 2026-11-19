@@ -27,12 +27,26 @@
         /// <summary>Is the address real and deliverable? Runs on Prospeo/Hunter, not a model.</summary>
         public const string EmailVerification = "email_verification";
 
+        /// <summary>
+        /// Fill in, or correct, whichever columns the user picked - including
+        /// their own custom attributes - under an instruction they wrote.
+        ///
+        /// The odd one out of the five. The other four ask a fixed question of
+        /// a fixed set of fields and answer it with a score; this one is handed
+        /// its subject at run time, so the fields it may write are decided per
+        /// run rather than by <see cref="ValidationSuggestionFields"/>, and
+        /// everything it produces arrives as a suggestion the user accepts or
+        /// dismisses. Nothing is ever written to a contact without that click.
+        /// </summary>
+        public const string DataEnhancement = "data_enhancement";
+
         public static readonly IReadOnlyList<string> All = new[]
         {
             ContactFit,
             DataIntegrity,
             LiveContact,
-            EmailVerification
+            EmailVerification,
+            DataEnhancement
         };
 
         public static bool IsKnown(string? checkType) =>
@@ -60,6 +74,14 @@
             Normalize(checkType) != EmailVerification;
 
         /// <summary>
+        /// Whether the check is told at run time which columns to work on.
+        /// Only data enhancement is - the other four have a fixed subject, and
+        /// a field list sent with one of them is ignored rather than obeyed.
+        /// </summary>
+        public static bool RequiresFields(string checkType) =>
+            Normalize(checkType) == DataEnhancement;
+
+        /// <summary>
         /// Whether the check needs live web evidence.
         ///
         /// Data integrity is pure logic over the supplied record, so it must
@@ -67,6 +89,33 @@
         /// would also blur the line into the live contact check.
         /// </summary>
         public static bool UsesWebSearch(string checkType) => Normalize(checkType) switch
+        {
+            ContactFit => true,
+            LiveContact => true,
+            DataEnhancement => true,
+            _ => false
+        };
+
+        /// <summary>
+        /// Whether an answer that arrived without a single web search is
+        /// worthless and has to be failed.
+        ///
+        /// Not the same question as <see cref="UsesWebSearch"/>, and data
+        /// enhancement is why they had to come apart. It is offered the search
+        /// tool because half of what it is asked to fill - an industry, a head
+        /// count, a company phone number - cannot be known without it. But the
+        /// other half can: splitting a full name, normalising a job title or
+        /// deriving a website from an email address are all answerable from the
+        /// record in front of it. A run over only those fields would search
+        /// nothing and be right, and failing it would cost the user the whole
+        /// batch for having asked an easy question.
+        ///
+        /// The two research checks keep the hard rule: their verdict means
+        /// "current public evidence says so", and a verdict reached without
+        /// looking is indistinguishable from one that was - which is exactly
+        /// the failure the rule exists to catch.
+        /// </summary>
+        public static bool RequiresSearchEvidence(string checkType) => Normalize(checkType) switch
         {
             ContactFit => true,
             LiveContact => true,
@@ -87,6 +136,9 @@
             EmailVerification => (
                 "Email discovery and verification",
                 "Finds and confirms the address through the same four stages as the extension: a recent unlock, then Prospeo, then an AI web search, then Hunter. Costs one credit per contact."),
+            DataEnhancement => (
+                "Customisable Data Enhancement",
+                "Pick the columns you want filled or checked - including your own custom attributes - add an instruction in your own words, and the AI researches each contact and proposes a value for every column it can. Nothing is written until you accept it."),
             _ => (checkType, "")
         };
     }

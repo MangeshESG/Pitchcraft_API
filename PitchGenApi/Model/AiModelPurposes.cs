@@ -38,6 +38,13 @@
         public const string DataIntegrity = ValidationCheckTypes.DataIntegrity;
         public const string LiveContact = ValidationCheckTypes.LiveContact;
 
+        /// <summary>
+        /// Audience Assurance: fills or corrects the columns a user picked.
+        /// Searches the web for anything the record cannot answer on its own,
+        /// so it needs a model that can reach it.
+        /// </summary>
+        public const string DataEnhancement = ValidationCheckTypes.DataEnhancement;
+
         public static readonly IReadOnlyList<string> All = new[]
         {
             WebSearch,
@@ -50,7 +57,8 @@
             ProfileSummary,
             ContactFit,
             DataIntegrity,
-            LiveContact
+            LiveContact,
+            DataEnhancement
         };
 
         public static bool IsKnown(string? purposeKey) =>
@@ -97,6 +105,9 @@
                 LiveContact => (
                     "Employment Match (Audience Assurance)",
                     "Checks whether the contact is still at that company in that role. The most search-heavy check — pick a model that can reach the live web."),
+                DataEnhancement => (
+                    "Customisable Data Enhancement (Audience Assurance)",
+                    "Fills in or corrects whichever columns the user picked, including their own custom attributes. It researches what the record cannot answer by itself, so pick a model that can reach the live web and is good at following a free-text instruction."),
                 _ => (purposeKey, "")
             };
     }

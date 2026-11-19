@@ -33,6 +33,28 @@ namespace PitchGenApi.Model
         [Column("brief_id")]
         public int? BriefId { get; set; }
 
+        /// <summary>
+        /// The columns a Customisable Data Enhancement run was pointed at, as
+        /// a JSON array of canonical keys - <c>["job_title","custom:17"]</c>.
+        /// Null for every other check.
+        ///
+        /// Stored on the job rather than held in memory because the run is
+        /// queued: the process that builds the prompt is not the one that took
+        /// the request, and may not even be the same machine. It is also what
+        /// the run log reads to say what a past run was asked to do.
+        /// </summary>
+        [Column("target_fields")]
+        public string? TargetFieldsJson { get; set; }
+
+        /// <summary>
+        /// What the user typed into the run panel, verbatim. The standing half
+        /// of the instruction is the admin-editable prompt; this is the half
+        /// that is specific to the run, and the two are kept apart so a user's
+        /// sentence can never silently replace the rules the prompt sets.
+        /// </summary>
+        [Column("instructions")]
+        public string? Instructions { get; set; }
+
         [Column("model_name")]
         [MaxLength(200)]
         public string? ModelName { get; set; }

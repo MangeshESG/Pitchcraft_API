@@ -38,7 +38,37 @@
         /// <summary>Required for contact fit, ignored otherwise.</summary>
         public int? BriefId { get; set; }
 
+        /// <summary>
+        /// The columns a Customisable Data Enhancement run should fill or
+        /// check: contact column keys such as <c>job_title</c>, and
+        /// <c>custom:17</c> for a custom attribute. Required for that check,
+        /// ignored by the other four.
+        /// </summary>
+        public List<string> Fields { get; set; } = new();
+
+        /// <summary>
+        /// What the user wants done, in their own words. Optional - the saved
+        /// prompt already says how to behave; this says what to look for.
+        /// </summary>
+        public string? Instructions { get; set; }
+
         public string? RequestedBy { get; set; }
+    }
+
+    /// <summary>
+    /// One column the enhancement picker can offer, as the run panel lists
+    /// them. The custom attributes are the client's own, so this is built per
+    /// client rather than being a constant the browser could hold.
+    /// </summary>
+    public sealed class EnhancementFieldDto
+    {
+        public string Key { get; set; } = "";
+        public string Label { get; set; } = "";
+        public string Description { get; set; } = "";
+        public bool IsCustom { get; set; }
+        public int? CustomFieldId { get; set; }
+        public string? FieldType { get; set; }
+        public List<string> Options { get; set; } = new();
     }
 
     /// <summary>
@@ -54,6 +84,15 @@
         public int? BriefId { get; set; }
         public string? ModelName { get; set; }
         public string? Provider { get; set; }
+
+        /// <summary>
+        /// The columns a Customisable Data Enhancement run was pointed at, and
+        /// the sentence the user added. Empty for every other check. The run
+        /// log reads them, so a past run can say what it was asked to do rather
+        /// than only what it cost.
+        /// </summary>
+        public List<string> TargetFields { get; set; } = new();
+        public string? Instructions { get; set; }
 
         public int ContactCount { get; set; }
         public int ProcessedCount { get; set; }
@@ -109,6 +148,10 @@
         public string? EmailValidityComments { get; set; }
         public DateTime? EmailCheckedAt { get; set; }
 
+        public int? DataEnhancementConfidence { get; set; }
+        public string? DataEnhancementComments { get; set; }
+        public DateTime? DataEnhancementCheckedAt { get; set; }
+
         public List<ValidationSourceDto> Sources { get; set; } = new();
 
         /// <summary>
@@ -123,6 +166,7 @@
         public List<ValidationSuggestionDto> DataIntegritySuggestions { get; set; } = new();
         public List<ValidationSuggestionDto> LiveContactSuggestions { get; set; } = new();
         public List<ValidationSuggestionDto> EmailValiditySuggestions { get; set; } = new();
+        public List<ValidationSuggestionDto> DataEnhancementSuggestions { get; set; } = new();
 
         public bool IsVerified { get; set; }
         public DateTime? VerifiedAt { get; set; }
@@ -159,8 +203,24 @@
         /// </summary>
         public string Id { get; set; } = "";
 
-        /// <summary>A key from <see cref="ValidationSuggestionFields"/>.</summary>
+        /// <summary>
+        /// A key from <see cref="ValidationSuggestionFields"/> - or, for the
+        /// enhancement check, any column that run was pointed at, including
+        /// <c>custom:17</c> for a custom attribute.
+        /// </summary>
         public string Field { get; set; } = "";
+
+        /// <summary>
+        /// What that column is called on screen, stored with the suggestion
+        /// rather than looked up when it is shown.
+        ///
+        /// Only the enhancement check sets it, and only because its fields can
+        /// be the client's own attributes: <c>custom:17</c> means nothing to a
+        /// grid cell, and making every cell load the client's field definitions
+        /// to render a label would be a request per grid for a string the run
+        /// already knew. Null everywhere else, where the label is compiled in.
+        /// </summary>
+        public string? Label { get; set; }
 
         /// <summary>The value as the check saw it — shown as the "from" side of the diff.</summary>
         public string? Current { get; set; }
@@ -253,6 +313,9 @@
 
         public int? LiveContactValidityConfidence { get; set; }
         public string? LiveContactValidityComments { get; set; }
+
+        public int? DataEnhancementConfidence { get; set; }
+        public string? DataEnhancementComments { get; set; }
 
         public List<ValidationSourceDto>? Sources { get; set; }
 

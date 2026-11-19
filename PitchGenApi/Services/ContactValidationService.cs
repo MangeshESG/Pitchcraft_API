@@ -30,6 +30,24 @@
         private const int ContactsPerCredit = 10;
 
         /// <summary>
+        /// How many columns one enhancement run may be pointed at.
+        ///
+        /// Not a storage limit - it is what the model can hold in its head at
+        /// once. Every column asked for is researched for every contact in the
+        /// batch, so the work, the output budget and the chance of the reply
+        /// being truncated all grow with this number. Twenty-five is more
+        /// columns than any contact grid shows at once.
+        /// </summary>
+        private const int MaxEnhancementFields = 25;
+
+        /// <summary>
+        /// The user's own instruction, capped. It is pasted into every batch's
+        /// prompt, so an essay here is paid for once per batch for the whole
+        /// run; four thousand characters is several paragraphs.
+        /// </summary>
+        private const int MaxInstructionLength = 4000;
+
+        /// <summary>
         /// How long one batch may wait on a provider before it is abandoned.
         ///
         /// The HttpClient timeout is ten minutes, which is a ceiling for a
@@ -331,6 +349,45 @@
                     throw new InvalidOperationException("That brief no longer exists.");
             }
 
+            string? targetFieldsJson = null;
+            string? instructions = null;
+
+            if (ValidationCheckTypes.RequiresFields(checkType))
+            {
+                // Resolved here rather than at the model, for the same reason
+                // the brief is: a run pointed at a column this client does not
+                // have should be refused while someone is looking at the panel,
+                // not discovered after it has spent their credits.
+                var customFields = await _context.crm_custom_fields
+                    .AsNoTracking()
+                    .Where(field => field.client_id == request.ClientId)
+                    .ToListAsync();
+
+                var fieldSet = EnhancementFieldSet.Build(request.Fields, customFields);
+
+                if (fieldSet.IsEmpty)
+                {
+                    throw new InvalidOperationException(
+                        "Customisable Data Enhancement needs at least one column to work on. " +
+                        "Pick the columns you want filled or checked.");
+                }
+
+                if (fieldSet.Count > MaxEnhancementFields)
+                {
+                    throw new InvalidOperationException(
+                        $"That is {fieldSet.Count} columns. Run at most {MaxEnhancementFields} at a time - " +
+                        "a longer list makes the model's answer less reliable for every column in it.");
+                }
+
+                targetFieldsJson = JsonConvert.SerializeObject(
+                    fieldSet.Fields.Select(field => field.Key));
+
+                instructions = request.Instructions?.Trim();
+
+                if (instructions?.Length > MaxInstructionLength)
+                    instructions = instructions[..MaxInstructionLength];
+            }
+
             string? modelName = null;
 
             if (ValidationCheckTypes.UsesModel(checkType))
@@ -381,6 +438,8 @@
                 ClientId = request.ClientId,
                 CheckType = checkType,
                 BriefId = briefId,
+                TargetFieldsJson = targetFieldsJson,
+                Instructions = instructions,
                 ModelName = modelName,
                 Provider = ProviderFor(checkType, modelName),
                 Status = ValidationJobStatuses.Queued,
@@ -732,13 +791,39 @@
                 ? DescribeDuplicates(contacts)
                 : "";
 
+            // The columns this run was pointed at, the sentence the user added,
+            // and what each contact already holds in those columns. Null for
+            // the four checks whose subject is fixed.
+            var enhancement = ValidationCheckTypes.RequiresFields(job.CheckType)
+                ? await LoadEnhancementContextAsync(job, contacts, cancellationToken)
+                : null;
+
+            if (enhancement != null && enhancement.Fields.IsEmpty)
+            {
+                // Every column the run named has been deleted since it was
+                // queued. There is nothing left to ask for, and asking anyway
+                // would spend the run's credits on an empty question.
+                job.ErrorMessage =
+                    "None of the columns this run was pointed at still exist, so there was nothing to fill.";
+
+                items.ForEach(i =>
+                {
+                    i.Status = ValidationItemStatuses.Failed;
+                    i.Error = job.ErrorMessage;
+                });
+
+                return;
+            }
+
             var itemsByContact = items.ToDictionary(i => i.ContactId);
 
             var batchSize = await GetBatchSizeAsync(cancellationToken);
 
-            // Whether this check is only meaningful with live evidence. Used
-            // below to reject an answer that came back without having searched.
-            var needsSearch = ValidationCheckTypes.UsesWebSearch(job.CheckType);
+            // Whether an answer that did no searching at all has to be thrown
+            // away. Narrower than UsesWebSearch, which only decides whether the
+            // tool is offered at all: the enhancement check is given it and may
+            // legitimately find it did not need it.
+            var requiresSearchEvidence = ValidationCheckTypes.RequiresSearchEvidence(job.CheckType);
 
             // Loaded once for the whole run rather than once per batch. It has
             // to be: it is an EF read returning tracked entities, and the
@@ -763,7 +848,10 @@
                         briefText,
                         duplicateFlags,
                         DescribeCompanyIntelligence(NarrowToBatch(intelligence, batch)),
-                        BuildContactsJson(batch))))
+                        enhancement == null
+                            ? BuildContactsJson(batch)
+                            : BuildEnhancementContactsJson(batch, enhancement),
+                        enhancement)))
                 .ToList();
 
             if (work.Count == 0)
@@ -800,7 +888,8 @@
                             try
                             {
                                 var outcome = await RunOneBatchAsync(
-                                    job, unit.Batch, unit.Prompt, needsSearch, token);
+                                    job, unit.Batch, unit.Prompt, requiresSearchEvidence,
+                                    enhancement, token);
 
                                 // Never the batch's own token: a result that has
                                 // already been paid for must reach the consumer
@@ -856,7 +945,7 @@
                     while (reader.TryRead(out var outcome))
                     {
                         await ApplyBatchOutcomeAsync(
-                            job, outcome, itemsByContact, intelligence, cancellationToken);
+                            job, outcome, itemsByContact, intelligence, enhancement, cancellationToken);
                     }
 
                     // Saved as results arrive, so a long run shows progress as
@@ -937,6 +1026,7 @@
             BatchOutcome outcome,
             IReadOnlyDictionary<int, ContactValidationJobItem> itemsByContact,
             Dictionary<string, CompanyIntelligence> intelligence,
+            EnhancementContext? enhancement,
             CancellationToken cancellationToken)
         {
             // Counted before the branch: a batch that failed still spent what
@@ -974,7 +1064,8 @@
             }
 
             await ApplyResultsAsync(
-                job, outcome.Contacts, itemsByContact, outcome.Parsed, intelligence, cancellationToken);
+                job, outcome.Contacts, itemsByContact, outcome.Parsed, intelligence,
+                enhancement, cancellationToken);
         }
 
         /// <summary>
@@ -998,7 +1089,8 @@
             ContactValidationJob job,
             Contact[] batch,
             string prompt,
-            bool needsSearch,
+            bool requiresSearchEvidence,
+            EnhancementContext? enhancement,
             CancellationToken cancellationToken)
         {
             // Its own scope, and so its own DbContext: both pitch services read
@@ -1013,7 +1105,8 @@
             for (var attempt = 1; ; attempt++)
             {
                 result = await AttemptBatchAsync(
-                    job, scope, batch, attemptPrompt, needsSearch, usage, cancellationToken);
+                    job, scope, batch, attemptPrompt, requiresSearchEvidence,
+                    enhancement, usage, cancellationToken);
 
                 if (result.Failure == null || attempt == 2)
                     break;
@@ -1058,7 +1151,8 @@
             ProviderScope scope,
             Contact[] batch,
             string prompt,
-            bool needsSearch,
+            bool requiresSearchEvidence,
+            EnhancementContext? enhancement,
             UsageTotals usage,
             CancellationToken cancellationToken)
         {
@@ -1100,7 +1194,7 @@
             // tools it ignores, and deepseek-v4-pro is routed to V4.1-Flash
             // after 2026-09-14. Whichever way that lands, it surfaces here as a
             // failed batch rather than as silently invented verification.
-            if (needsSearch && call.WebSearchCalls == 0)
+            if (requiresSearchEvidence && call.WebSearchCalls == 0)
             {
                 var returned = call.OutputItemTypes.Count > 0
                     ? string.Join(", ", call.OutputItemTypes)
@@ -1119,7 +1213,7 @@
                     retryWithSearchReminder: true);
             }
 
-            var parsed = ParseResults(call.Content, job.CheckType);
+            var parsed = ParseResults(call.Content, job.CheckType, enhancement?.Fields);
 
             if (parsed.Count == 0)
             {
@@ -1188,7 +1282,8 @@
             string brief,
             string duplicateFlags,
             string companyIntelligence,
-            string contactsJson) =>
+            string contactsJson,
+            EnhancementContext? enhancement = null) =>
             template
                 .Replace("{brief}", string.IsNullOrWhiteSpace(brief) ? "(no brief supplied)" : brief)
                 .Replace("{duplicate_flags}",
@@ -1199,7 +1294,54 @@
                     string.IsNullOrWhiteSpace(companyIntelligence)
                         ? "(nothing established yet — research as needed)"
                         : companyIntelligence)
+                .Replace("{target_fields}", DescribeTargetFields(enhancement?.Fields))
+                // The user's sentence goes in last and goes in verbatim. It is
+                // the one part of the prompt they wrote, and the placeholder
+                // sits inside whatever framing the saved instruction puts
+                // around it - so it can add to the rules above it, but it is
+                // never spliced in where those rules are being stated.
+                .Replace("{user_instructions}",
+                    string.IsNullOrWhiteSpace(enhancement?.Instructions)
+                        ? "(no extra instruction - follow the rules above as they stand)"
+                        : enhancement!.Instructions)
                 .Replace("{contacts_json}", contactsJson);
+
+        /// <summary>
+        /// The columns this run was pointed at, one per line, as the prompt
+        /// asks for them.
+        ///
+        /// The key is given alongside the label because the key is what has to
+        /// come back: a suggestion is matched to a column by it, and a reply
+        /// that names columns only by their on-screen labels is one rename away
+        /// from matching nothing. A custom attribute carries its type and, for
+        /// a dropdown, the values the column can actually hold - a model told
+        /// to fill "Tier" with its best guess will happily answer "Mid-market"
+        /// into a column whose only options are A, B and C.
+        /// </summary>
+        private static string DescribeTargetFields(EnhancementFieldSet? fields)
+        {
+            if (fields == null || fields.IsEmpty)
+                return "(no columns were requested)";
+
+            var lines = fields.Fields.Select(field =>
+            {
+                var line = $"- {field.Key} ({field.Label})";
+
+                if (!string.IsNullOrWhiteSpace(field.Description))
+                    line += $": {field.Description}";
+
+                if (field.IsCustom)
+                {
+                    line += field.Options.Count > 0
+                        ? $" [custom attribute; answer with one of: {string.Join(", ", field.Options)}]"
+                        : $" [custom attribute; type: {field.FieldType ?? "text"}]";
+                }
+
+                return line;
+            });
+
+            return string.Join("\n", lines);
+        }
 
         /// <summary>
         /// The contact fields the checks judge, and nothing else.
@@ -1209,28 +1351,196 @@
         /// a score and comments for the same reason — we already hold the names
         /// and addresses, so paying tokens to have them read back is waste.
         /// </summary>
-        private static string BuildContactsJson(IEnumerable<Contact> contacts)
-        {
-            var rows = contacts.Select(c =>
-            {
-                var row = new Dictionary<string, object?>
-                {
-                    ["id"] = c.id.ToString()
-                };
+        private static string BuildContactsJson(IEnumerable<Contact> contacts) =>
+            JsonConvert.SerializeObject(
+                contacts.Select(ContactContextRow), Formatting.None);
 
-                void Add(string key, string? value)
+        /// <summary>
+        /// Who this contact is, as every check is told it. Empty fields are
+        /// left out rather than sent as nulls: the checks reading this are
+        /// judging what is here, and a row of nulls costs tokens to say
+        /// nothing.
+        /// </summary>
+        private static Dictionary<string, object?> ContactContextRow(Contact c)
+        {
+            var row = new Dictionary<string, object?>
+            {
+                ["id"] = c.id.ToString()
+            };
+
+            void Add(string key, string? value)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                    row[key] = value.Trim();
+            }
+
+            Add("name", c.full_name ?? $"{c.first_name} {c.last_name}".Trim());
+            Add("title", c.job_title);
+            Add("company", c.company_name);
+            Add("website", c.website);
+            Add("email", c.email);
+            Add("linkedin", c.linkedin_url);
+            Add("location", c.country_or_address);
+
+            return row;
+        }
+
+        // -----------------------------------------------------------------
+        // Customisable data enhancement
+        // -----------------------------------------------------------------
+
+        /// <summary>
+        /// Everything an enhancement run needs that the other checks do not:
+        /// which columns it was pointed at, what the user asked for in their
+        /// own words, and what those columns already hold.
+        ///
+        /// Built once per run and then read from several threads at once, so
+        /// nothing in it is mutable and nothing in it is a tracked entity. The
+        /// custom attribute values in particular have to be lifted out of EF
+        /// here - reading them inside a batch would put the run's DbContext on
+        /// a parallel thread, which is the one thing this service's whole
+        /// producer/consumer shape exists to prevent.
+        /// </summary>
+        private sealed class EnhancementContext
+        {
+            public EnhancementFieldSet Fields { get; init; } =
+                EnhancementFieldSet.Build(null, null);
+
+            public string Instructions { get; init; } = "";
+
+            /// <summary>contact id -> custom attribute key -> current value.</summary>
+            public IReadOnlyDictionary<int, Dictionary<string, string?>> CustomValues { get; init; } =
+                new Dictionary<int, Dictionary<string, string?>>();
+
+            /// <summary>
+            /// What this contact holds in one of the run's columns today,
+            /// wherever that column actually lives.
+            /// </summary>
+            public string? Current(Contact contact, string key)
+            {
+                if (DataEnhancementFields.TryParseCustomKey(key, out _))
                 {
-                    if (!string.IsNullOrWhiteSpace(value))
-                        row[key] = value.Trim();
+                    return CustomValues.TryGetValue(contact.id, out var values) &&
+                           values.TryGetValue(key, out var value)
+                        ? value
+                        : null;
                 }
 
-                Add("name", c.full_name ?? $"{c.first_name} {c.last_name}".Trim());
-                Add("title", c.job_title);
-                Add("company", c.company_name);
-                Add("website", c.website);
-                Add("email", c.email);
-                Add("linkedin", c.linkedin_url);
-                Add("location", c.country_or_address);
+                return DataEnhancementFields.ReadSystem(contact, key);
+            }
+        }
+
+        /// <summary>
+        /// The columns a run was pointed at, off the job row. A malformed blob
+        /// yields none, which the caller reports as "nothing left to fill"
+        /// rather than running an unbounded question.
+        /// </summary>
+        private static List<string> ReadTargetFields(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+
+            try
+            {
+                return JsonConvert.DeserializeObject<List<string>>(json) ?? new List<string>();
+            }
+            catch (JsonException)
+            {
+                return new List<string>();
+            }
+        }
+
+        private async Task<EnhancementContext> LoadEnhancementContextAsync(
+            ContactValidationJob job,
+            List<Contact> contacts,
+            CancellationToken cancellationToken)
+        {
+            var keys = ReadTargetFields(job.TargetFieldsJson);
+
+            var customFieldIds = new List<int>();
+
+            foreach (var key in keys)
+            {
+                if (DataEnhancementFields.TryParseCustomKey(key, out var id))
+                    customFieldIds.Add(id);
+            }
+
+            // Scoped to the client: a job row naming attribute 17 must not be
+            // able to reach another client's attribute 17, however it got
+            // there.
+            var customFields = customFieldIds.Count == 0
+                ? new List<CrmCustomField>()
+                : await _context.crm_custom_fields
+                    .AsNoTracking()
+                    .Where(field => field.client_id == job.ClientId &&
+                                    customFieldIds.Contains(field.id))
+                    .ToListAsync(cancellationToken);
+
+            var values = new Dictionary<int, Dictionary<string, string?>>();
+
+            if (customFields.Count > 0)
+            {
+                var contactIds = contacts.Select(contact => contact.id).ToList();
+                var liveIds = customFields.Select(field => field.id).ToList();
+
+                var rows = await _context.contact_custom_field_values
+                    .AsNoTracking()
+                    .Where(value => value.client_id == job.ClientId &&
+                                    contactIds.Contains(value.contact_id) &&
+                                    liveIds.Contains(value.field_id))
+                    .Select(value => new { value.contact_id, value.field_id, value.value })
+                    .ToListAsync(cancellationToken);
+
+                foreach (var row in rows)
+                {
+                    if (!values.TryGetValue(row.contact_id, out var map))
+                    {
+                        map = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+                        values[row.contact_id] = map;
+                    }
+
+                    map[DataEnhancementFields.CustomKey(row.field_id)] = row.value;
+                }
+            }
+
+            return new EnhancementContext
+            {
+                Fields = EnhancementFieldSet.Build(keys, customFields),
+                Instructions = job.Instructions?.Trim() ?? "",
+                CustomValues = values
+            };
+        }
+
+        /// <summary>
+        /// The batch as the enhancement check sees it: who each contact is,
+        /// then what it currently holds in each requested column.
+        ///
+        /// The requested columns are listed separately from the identity even
+        /// where the two overlap, and a column with nothing in it is sent as an
+        /// explicit null rather than being left out. Both are deliberate. The
+        /// identity block is what the model researches *from*; the "current"
+        /// block is what it is being asked *about*, and the difference between
+        /// "this column is empty" and "this column was not mentioned" is the
+        /// whole distinction between filling a gap and inventing a correction.
+        /// </summary>
+        private static string BuildEnhancementContactsJson(
+            IEnumerable<Contact> contacts,
+            EnhancementContext enhancement)
+        {
+            var keys = enhancement.Fields.Fields.Select(field => field.Key).ToList();
+
+            var rows = contacts.Select(contact =>
+            {
+                var row = ContactContextRow(contact);
+
+                var current = new Dictionary<string, string?>();
+
+                foreach (var key in keys)
+                {
+                    var value = enhancement.Current(contact, key)?.Trim();
+                    current[key] = string.IsNullOrWhiteSpace(value) ? null : value;
+                }
+
+                row["current"] = current;
 
                 return row;
             });
@@ -1881,7 +2191,8 @@
         /// </summary>
         private static Dictionary<string, ValidationResultItemDto> ParseResults(
             string content,
-            string checkType)
+            string checkType,
+            EnhancementFieldSet? enhancementFields = null)
         {
             var results = new Dictionary<string, ValidationResultItemDto>(StringComparer.OrdinalIgnoreCase);
 
@@ -1910,9 +2221,15 @@
                     LiveContactValidityComments = ReadString(element,
                         "Live Contact Validity comments", "live_contact_validity_comments",
                         "LiveContactValidityComments", "Live Contact comments"),
+                    DataEnhancementConfidence = ReadInt(element,
+                        "Data Enhancement confidence", "data_enhancement_confidence",
+                        "DataEnhancementConfidence"),
+                    DataEnhancementComments = ReadString(element,
+                        "Data Enhancement comments", "data_enhancement_comments",
+                        "DataEnhancementComments"),
                     CompanyClassification = ReadString(element,
                         "Company classification", "company_classification", "CompanyClassification"),
-                    Suggestions = ReadSuggestions(element, checkType),
+                    Suggestions = ReadSuggestions(element, checkType, enhancementFields),
                     Sources = ReadSources(element)
                 };
             }
@@ -2024,6 +2341,11 @@
                     "Live Contact suggestions", "live_contact_suggestions",
                     "Live Contact Validity suggestions", "suggestions"
                 },
+                ValidationCheckTypes.DataEnhancement => new[]
+                {
+                    "Data Enhancement suggestions", "data_enhancement_suggestions",
+                    "values", "fields", "suggestions"
+                },
                 _ => new[]
                 {
                     "Data Integrity suggestions", "data_integrity_suggestions", "suggestions"
@@ -2032,7 +2354,8 @@
 
         private static List<ValidationSuggestionDto> ReadSuggestions(
             JObject element,
-            string checkType)
+            string checkType,
+            EnhancementFieldSet? enhancementFields = null)
         {
             var suggestions = new List<ValidationSuggestionDto>();
 
@@ -2048,13 +2371,40 @@
             {
                 var raw = ReadString(item, "field", "field_name", "fieldName");
 
-                // Two gates, not one: the field has to be writable at all, and
-                // it has to be writable *by this check*. A live contact prompt
-                // naming the email address is the case that matters — the field
-                // is real, and it still must not be rewritten from here.
-                if (!ValidationSuggestionFields.IsWritableBy(checkType, raw)) continue;
+                string field;
+                string? label = null;
 
-                var field = ValidationSuggestionFields.Normalize(raw)!;
+                if (enhancementFields != null)
+                {
+                    // The enhancement check has no compiled-in field list: the
+                    // columns the user picked for this run are the whitelist,
+                    // and they are the only thing a suggestion may name. A
+                    // model that answers about a column nobody asked for is
+                    // dropped exactly like one naming a column that does not
+                    // exist - it was not reviewed when the run was started, so
+                    // there is no basis for offering to write it.
+                    var resolved = enhancementFields.Resolve(raw);
+
+                    if (resolved == null) continue;
+
+                    field = resolved;
+
+                    // Stored with the suggestion so the grid can name a custom
+                    // attribute without loading the client's field definitions
+                    // to render one cell.
+                    label = enhancementFields.LabelFor(resolved);
+                }
+                else
+                {
+                    // Two gates, not one: the field has to be writable at all,
+                    // and it has to be writable *by this check*. A live contact
+                    // prompt naming the email address is the case that matters
+                    // - the field is real, and it still must not be rewritten
+                    // from here.
+                    if (!ValidationSuggestionFields.IsWritableBy(checkType, raw)) continue;
+
+                    field = ValidationSuggestionFields.Normalize(raw)!;
+                }
 
                 var suggested = ReadString(item, "suggested", "suggested_value",
                                                  "suggestedValue", "corrected", "correction")?.Trim();
@@ -2078,6 +2428,7 @@
                     // for as long as this result exists.
                     Id = $"s{index++}",
                     Field = field,
+                    Label = label,
                     Current = current,
                     Suggested = suggested,
                     Reason = reason,
@@ -2125,6 +2476,7 @@
             IReadOnlyDictionary<int, ContactValidationJobItem> itemsByContact,
             Dictionary<string, ValidationResultItemDto> parsed,
             Dictionary<string, CompanyIntelligence> intelligence,
+            EnhancementContext? enhancement,
             CancellationToken cancellationToken)
         {
             var batchList = batch.ToList();
@@ -2187,6 +2539,16 @@
                         row.LiveContactComments = result.LiveContactValidityComments;
                         row.LiveContactCheckedAt = now;
                         break;
+
+                    case ValidationCheckTypes.DataEnhancement:
+                        row.DataEnhancementConfidence = result.DataEnhancementConfidence;
+                        // The empty string is meaningful here, as it is for
+                        // data integrity: it is how "nothing was missing that I
+                        // could not fill" is reported, and it must not become
+                        // null.
+                        row.DataEnhancementComments = result.DataEnhancementComments ?? "";
+                        row.DataEnhancementCheckedAt = now;
+                        break;
                 }
 
                 // Written for whichever check ran, and only that one. A re-run
@@ -2194,7 +2556,17 @@
                 // accepted: it has just judged the corrected record and has
                 // nothing left to say about it.
                 row.SetSuggestionsJson(
-                    job.CheckType, SerialiseSuggestions(result.Suggestions, contact));
+                    job.CheckType,
+                    SerialiseSuggestions(
+                        result.Suggestions,
+                        contact,
+                        // The enhancement check reads half its columns from
+                        // somewhere other than the contact row, so it supplies
+                        // its own reader; the other four only ever write the
+                        // seven columns the default reader knows.
+                        enhancement == null
+                            ? null
+                            : field => enhancement.Current(contact, field)));
 
                 // The check has just scored this contact itself, so any note
                 // that its last 100 was typed in by hand no longer describes
@@ -2283,20 +2655,38 @@
         /// </remarks>
         private static string? SerialiseSuggestions(
             List<ValidationSuggestionDto>? suggestions,
-            Contact contact)
+            Contact contact,
+            Func<string, string?>? readCurrent = null)
         {
-            var usable = (suggestions ?? new List<ValidationSuggestionDto>())
-                .Where(suggestion => !string.Equals(
-                    ValidationSuggestionFields.Read(contact, suggestion.Field)?.Trim(),
-                    suggestion.Suggested.Trim(),
-                    // Case-sensitive, because a change of case IS the
-                    // correction. "Aamir sheikh" to "Aamir Sheikh" is one of
-                    // the fixes this check exists to offer, and an
-                    // OrdinalIgnoreCase comparison here reads it as a
-                    // suggestion the contact already holds and silently drops
-                    // it.
-                    StringComparison.Ordinal))
-                .ToList();
+            var usable = new List<ValidationSuggestionDto>();
+
+            foreach (var suggestion in suggestions ?? new List<ValidationSuggestionDto>())
+            {
+                var current = (readCurrent ?? (field => ValidationSuggestionFields.Read(contact, field)))
+                    (suggestion.Field)?.Trim();
+
+                // Case-sensitive, because a change of case IS the correction.
+                // "Aamir sheikh" to "Aamir Sheikh" is one of the fixes these
+                // checks exist to offer, and an OrdinalIgnoreCase comparison
+                // here reads it as a suggestion the contact already holds and
+                // silently drops it.
+                if (string.Equals(current, suggestion.Suggested.Trim(), StringComparison.Ordinal))
+                    continue;
+
+                if (readCurrent != null)
+                {
+                    // What the record actually says, not what the model
+                    // reported it as saying. The enhancement check is the one
+                    // that needs this: its "current" side is what the Accept
+                    // button shows as being replaced, and a model that
+                    // misreported an empty column as holding something would
+                    // otherwise have the user agreeing to overwrite a value
+                    // that was never there.
+                    suggestion.Current = current;
+                }
+
+                usable.Add(suggestion);
+            }
 
             return usable.Count == 0 ? null : ValidationSuggestionJson.Serialize(usable);
         }
@@ -2774,6 +3164,8 @@
 
         public static ValidationJobDto ToDto(ContactValidationJob job) => new()
         {
+            TargetFields = ReadTargetFields(job.TargetFieldsJson),
+            Instructions = job.Instructions,
             Id = job.Id,
             CheckType = job.CheckType,
             Status = job.Status,
