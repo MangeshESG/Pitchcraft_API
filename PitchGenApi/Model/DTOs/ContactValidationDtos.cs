@@ -282,6 +282,25 @@
         public string? ResolvedBy { get; set; }
     }
 
+    /// <summary>
+    /// Accept every pending correction one check holds, across many contacts.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="ResolveSuggestionRequestDto"/> because the
+    /// axis is different: that one names a single contact and, usually, a
+    /// single suggestion, while this one names a selection and no suggestion
+    /// at all. A user who has read one run's proposals down a column is making
+    /// one decision about the whole selection, and sending it as one request
+    /// is what keeps it one decision rather than a few hundred round trips.
+    /// </remarks>
+    public sealed class AcceptAllSuggestionsBulkRequestDto
+    {
+        public int ClientId { get; set; }
+        public List<int> ContactIds { get; set; } = new();
+        public string CheckType { get; set; } = ValidationCheckTypes.DataEnhancement;
+        public string? ResolvedBy { get; set; }
+    }
+
     public sealed class MarkVerifiedRequestDto
     {
         public int ClientId { get; set; }

@@ -802,6 +802,208 @@ namespace PitchGenApi.Controllers
                 return NotFound(new { success = false, message = "Contact not found." });
 
             var now = DateTime.UtcNow;
+
+            var (applied, refused) = await ApplyPendingSuggestionsAsync(
+                request.ClientId, contact, checkType, pending, request.ResolvedBy, now);
+
+            if (applied.Count == 0)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "None of these corrections could be applied: " +
+                              string.Join(", ", refused) +
+                              " no longer name columns this check can write."
+                });
+            }
+
+            contact.updated_at = now;
+
+            row.SetSuggestionsJson(checkType, ValidationSuggestionJson.Serialize(suggestions));
+            row.UpdatedAt = now;
+
+            await _context.SaveChangesAsync();
+
+            var message = $"{applied.Count} correction{(applied.Count == 1 ? "" : "s")} applied.";
+
+            if (refused.Count > 0)
+                message += $" {string.Join(", ", refused)} could not be written and {(refused.Count == 1 ? "is" : "are")} still waiting.";
+
+            return Ok(new
+            {
+                success = true,
+                message,
+                applied,
+                checkType,
+                suggestions,
+                suggestionsJson = row.SuggestionsJsonFor(checkType)
+            });
+        }
+
+        /// <summary>
+        /// Applies every correction one check still has pending, across a whole
+        /// selection of contacts, in a single save.
+        /// </summary>
+        /// <remarks>
+        /// The per-contact endpoint above is the one a popover calls, and it
+        /// stays the normal path. This one is for the other shape the same job
+        /// takes: an enhancement run over five hundred contacts comes back with
+        /// a proposal on nearly every row, the user reads a sample, decides the
+        /// run was good, and the remaining work is clicking Accept five hundred
+        /// times. That is not review, it is typing, and it is five hundred
+        /// round trips each rewriting one row.
+        ///
+        /// Every proposal still goes through exactly the same checks as a
+        /// single Accept - the field is re-resolved against this client's live
+        /// columns and attributes, and anything that no longer names a writable
+        /// column is left pending and counted rather than silently dropped. A
+        /// contact with nothing pending is skipped rather than failing the
+        /// request: in a bulk selection, most rows being done already is the
+        /// normal case.
+        ///
+        /// Everything is written in one SaveChanges, so the selection either
+        /// lands or it does not - a half-applied bulk accept would leave the
+        /// user with no way to tell which rows they still have to read.
+        /// </remarks>
+        [HttpPost("suggestions/accept-all-bulk")]
+        public async Task<IActionResult> AcceptAllSuggestionsBulk(
+            [FromBody] AcceptAllSuggestionsBulkRequestDto request)
+        {
+            if (request == null || request.ClientId <= 0)
+                return BadRequest(new { success = false, message = "A valid client is required." });
+
+            var checkType = ValidationCheckTypes.Normalize(
+                request.CheckType ?? ValidationCheckTypes.DataEnhancement);
+
+            if (!ValidationCheckTypes.IsKnown(checkType))
+                return BadRequest(new { success = false, message = "Unknown check." });
+
+            var ids = (request.ContactIds ?? new List<int>())
+                .Where(id => id > 0)
+                .Distinct()
+                .ToList();
+
+            if (ids.Count == 0)
+                return BadRequest(new { success = false, message = "Select at least one contact." });
+
+            var rows = await _context.contact_validations
+                .Where(v => v.ClientId == request.ClientId && ids.Contains(v.ContactId))
+                .ToListAsync();
+
+            // Scoped to the client's own data files, like every other write in
+            // here: a contact id arriving in the body must not be able to reach
+            // another client's record.
+            var contacts = await _context.contacts
+                .Where(c => ids.Contains(c.id) &&
+                            _context.data_files.Any(f =>
+                                f.id == c.DataFileId && f.client_id == request.ClientId))
+                .ToListAsync();
+
+            var contactById = contacts.ToDictionary(c => c.id);
+            var now = DateTime.UtcNow;
+
+            var appliedCount = 0;
+            var refusedCount = 0;
+            var contactsChanged = 0;
+            var contactsWithNothingPending = 0;
+            var results = new List<object>();
+
+            foreach (var row in rows)
+            {
+                var suggestions = ValidationSuggestionJson.Deserialize(
+                    row.SuggestionsJsonFor(checkType));
+
+                var pending = suggestions
+                    .Where(item => item.Status == ValidationSuggestionStatuses.Pending)
+                    .ToList();
+
+                if (pending.Count == 0)
+                {
+                    contactsWithNothingPending++;
+                    continue;
+                }
+
+                if (!contactById.TryGetValue(row.ContactId, out var contact))
+                    continue;
+
+                var (applied, refused) = await ApplyPendingSuggestionsAsync(
+                    request.ClientId, contact, checkType, pending, request.ResolvedBy, now);
+
+                refusedCount += refused.Count;
+
+                if (applied.Count == 0) continue;
+
+                contact.updated_at = now;
+                row.SetSuggestionsJson(checkType, ValidationSuggestionJson.Serialize(suggestions));
+                row.UpdatedAt = now;
+
+                appliedCount += applied.Count;
+                contactsChanged++;
+
+                // Returned per contact so a caller that keeps rows on screen
+                // can patch them, the same way the single-contact endpoint lets
+                // a popover patch its own row.
+                results.Add(new
+                {
+                    contactId = row.ContactId,
+                    applied,
+                    suggestions,
+                    suggestionsJson = row.SuggestionsJsonFor(checkType)
+                });
+            }
+
+            if (contactsChanged > 0)
+                await _context.SaveChangesAsync();
+
+            // Nothing to apply is reported as a success with a count of zero
+            // rather than as a failure: the caller usually has another step
+            // after this one, and "these were all done already" must not read
+            // to it as a broken request.
+            var message = contactsChanged == 0
+                ? (contactsWithNothingPending > 0
+                    ? "There was nothing left to accept on the selected contacts."
+                    : "None of the selected contacts have corrections waiting.")
+                : $"{appliedCount} correction{(appliedCount == 1 ? "" : "s")} applied across " +
+                  $"{contactsChanged} contact{(contactsChanged == 1 ? "" : "s")}.";
+
+            if (refusedCount > 0)
+                message += $" {refusedCount} could not be written and {(refusedCount == 1 ? "is" : "are")} still waiting.";
+
+            return Ok(new
+            {
+                success = true,
+                message,
+                checkType,
+                appliedCount,
+                refusedCount,
+                contactsUpdated = contactsChanged,
+                contactsSkipped = ids.Count - contactsChanged,
+                results
+            });
+        }
+
+        /// <summary>
+        /// Writes one contact's pending corrections and marks each one
+        /// accepted, returning what landed and what was refused.
+        /// </summary>
+        /// <remarks>
+        /// Shared by the single-contact and bulk accept-all endpoints so the
+        /// two cannot drift: the rules about which field a check may write are
+        /// the whole safety of this feature, and keeping them in two loops is
+        /// how one of them ends up out of date.
+        ///
+        /// It mutates the suggestion objects it is given - the caller still
+        /// holds the full list, including the ones already resolved, and is the
+        /// one that serializes it back onto the row.
+        /// </remarks>
+        private async Task<(List<object> Applied, List<string> Refused)> ApplyPendingSuggestionsAsync(
+            int clientId,
+            PitchGenApi.Models.Contact contact,
+            string checkType,
+            List<ValidationSuggestionDto> pending,
+            string? resolvedBy,
+            DateTime now)
+        {
             var applied = new List<object>();
             var refused = new List<string>();
 
@@ -812,7 +1014,7 @@ namespace PitchGenApi.Controllers
                 if (checkType == ValidationCheckTypes.DataEnhancement)
                 {
                     outcome = await ApplyEnhancementValueAsync(
-                        request.ClientId, contact, suggestion, now);
+                        clientId, contact, suggestion, now);
                 }
                 else if (ValidationSuggestionFields.IsWritableBy(checkType, suggestion.Field) &&
                          ValidationSuggestionFields.Apply(contact, suggestion.Field, suggestion.Suggested))
@@ -847,41 +1049,10 @@ namespace PitchGenApi.Controllers
 
                 suggestion.Status = ValidationSuggestionStatuses.Accepted;
                 suggestion.ResolvedAt = now;
-                suggestion.ResolvedBy = request.ResolvedBy;
+                suggestion.ResolvedBy = resolvedBy;
             }
 
-            if (applied.Count == 0)
-            {
-                return BadRequest(new
-                {
-                    success = false,
-                    message = "None of these corrections could be applied: " +
-                              string.Join(", ", refused) +
-                              " no longer name columns this check can write."
-                });
-            }
-
-            contact.updated_at = now;
-
-            row.SetSuggestionsJson(checkType, ValidationSuggestionJson.Serialize(suggestions));
-            row.UpdatedAt = now;
-
-            await _context.SaveChangesAsync();
-
-            var message = $"{applied.Count} correction{(applied.Count == 1 ? "" : "s")} applied.";
-
-            if (refused.Count > 0)
-                message += $" {string.Join(", ", refused)} could not be written and {(refused.Count == 1 ? "is" : "are")} still waiting.";
-
-            return Ok(new
-            {
-                success = true,
-                message,
-                applied,
-                checkType,
-                suggestions,
-                suggestionsJson = row.SuggestionsJsonFor(checkType)
-            });
+            return (applied, refused);
         }
 
         private async Task<IActionResult> ResolveSuggestionAsync(
