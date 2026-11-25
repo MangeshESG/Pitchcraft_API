@@ -185,8 +185,9 @@ namespace PitchGenApi.Controllers
 
                 runtimeReplacements[PlaceholderEngine.ManualInstructionKey] = manualInstruction;
 
-                foreach (var kv in customFields)
-                    runtimeReplacements[kv.Key] = kv.Value ?? "";
+                // Per-attribute tokens as before, plus the all-in-one
+                // {all_custom_attributes} block. See PlaceholderEngine.
+                PlaceholderEngine.RegisterCustomAttributes(runtimeReplacements, customFields);
 
                 // Runtime keys must SURVIVE the campaign-level pass.
                 var campaignOnlyValues = campaignPlaceholderValues

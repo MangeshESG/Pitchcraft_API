@@ -152,6 +152,137 @@ namespace PitchGenApi.Services
         public const string ManualInstructionKey = "manual_instruction";
 
         /// <summary>
+        /// {all_custom_attributes} — every custom attribute the contact has a
+        /// value for, rendered as one "Name: value" line each:
+        ///
+        ///     Event name: Evom tech fest
+        ///     Event Date: 21/11/2027
+        ///     Event location: Pune
+        ///
+        /// It is an ADDITION to the per-attribute tokens, not a replacement:
+        /// a blueprint that writes {Event name} keeps filling exactly as it did,
+        /// and the two can be used together in the same blueprint.
+        ///
+        /// Why it exists: a blueprint can only name the attributes it was
+        /// written against, so an attribute added to the CRM afterwards never
+        /// reaches the model. This token always carries whatever the contact
+        /// actually has.
+        /// </summary>
+        public const string AllCustomAttributesKey = "all_custom_attributes";
+
+        /// <summary>
+        /// Every spelling of the token above that a blueprint may contain.
+        /// All of them resolve to the same block.
+        ///
+        /// Several spellings rather than one because the author types this token
+        /// by hand into a rich-text field — singular/plural and the "custome"
+        /// misspelling are the forms that actually get typed, and a token that
+        /// does not resolve reaches the model as a literal "{...}".
+        /// </summary>
+        public static readonly string[] AllCustomAttributeKeys =
+        {
+            AllCustomAttributesKey,
+            "all_custom_attribute",
+            "all_custome_attributes",
+            "all_custome_attribute",
+            "custom_attributes",
+            "all_custom_fields"
+        };
+
+        /// <summary>
+        /// What separates two attributes in the rendered block. A plain newline,
+        /// so the model reads one "Name: value" pair per line.
+        /// </summary>
+        private const string LineBreak = "\n";
+
+        /// <summary>
+        /// Flattens the line breaks inside a single attribute value, so one
+        /// attribute stays one line of the block.
+        /// </summary>
+        private static readonly Regex CollapseWhitespacePattern =
+            new(@"\s*[\r\n]+\s*", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Renders the contact's custom attributes as "Name: value" lines, in
+        /// the order they are enumerated (the callers feed them in the CRM's own
+        /// column order, so the block reads the way the user sees the columns).
+        ///
+        /// Attributes with no value are left out: "Event Date: " tells the model
+        /// nothing and invites it to invent one.
+        /// </summary>
+        public static string RenderCustomAttributes(
+            IEnumerable<KeyValuePair<string, string>>? attributes)
+        {
+            if (attributes == null)
+                return "";
+
+            var lines = new List<string>();
+
+            foreach (var (name, rawValue) in attributes)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                var value = rawValue ?? "";
+
+                // A CRM value can arrive as markup when it was pasted in from a
+                // rich-text source. The model only needs the words.
+                if (PromptTextCleaner.LooksLikeHtml(value))
+                    value = PromptTextCleaner.StripHtml(value);
+
+                value = value.Trim();
+
+                if (value.Length == 0)
+                    continue;
+
+                // One attribute per line, so the "Name: value" shape survives a
+                // multi-line value - a value holding its own newlines would
+                // otherwise read as further unnamed attributes.
+                value = CollapseWhitespacePattern.Replace(value, " ");
+
+                lines.Add($"{name.Trim()}: {value}");
+            }
+
+            return string.Join(LineBreak, lines);
+        }
+
+        /// <summary>
+        /// Registers the contact's custom attributes for substitution: one key
+        /// per attribute (the existing behaviour, unchanged) plus every spelling
+        /// of the all-in-one token.
+        ///
+        /// The aggregate is written LAST and unconditionally, so a client who
+        /// happens to have an attribute literally named "all_custom_attributes"
+        /// cannot shadow it, and so a blueprint keeping the token sees an empty
+        /// string rather than a literal "{all_custom_attributes}" on a contact
+        /// with no custom values at all.
+        /// </summary>
+        public static void RegisterCustomAttributes(
+            Dictionary<string, string> runtimeReplacements,
+            IEnumerable<KeyValuePair<string, string>>? attributes)
+        {
+            if (runtimeReplacements == null)
+                return;
+
+            // Materialized once: the aggregate and the per-attribute keys read
+            // the same sequence, and the caller may hand us a lazy query.
+            var materialized = attributes?.ToList() ?? new List<KeyValuePair<string, string>>();
+
+            foreach (var (name, value) in materialized)
+            {
+                if (string.IsNullOrWhiteSpace(name))
+                    continue;
+
+                runtimeReplacements[name] = value ?? "";
+            }
+
+            var block = RenderCustomAttributes(materialized);
+
+            foreach (var key in AllCustomAttributeKeys)
+                runtimeReplacements[key] = block;
+        }
+
+        /// <summary>
         /// Reads the yes/no switch out of a blueprint's saved placeholder values.
         /// </summary>
         public static bool IsHistoryEnabled(

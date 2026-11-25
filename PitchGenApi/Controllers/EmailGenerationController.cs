@@ -140,12 +140,18 @@ namespace PitchGenApi.Controllers
                 // clients' seeded fields share names ("Status", "Contact type",
                 // …) — without the client filter those collide when keyed by
                 // name below.
+                //
+                // Ordered by the CRM's own column order: {all_custom_attributes}
+                // renders these as a list, and it should read the way the user
+                // sees the columns rather than in whatever order the value rows
+                // happen to come back.
                 var customFieldRows = await (
                     from value in _dbContext.contact_custom_field_values
                     join field in _dbContext.crm_custom_fields
                         on value.field_id equals field.id
                     where value.contact_id == request.ContactId
                        && field.client_id == parsedClientId
+                    orderby field.sort_order, field.id
                     select new { field.field_name, value.value }
                 ).ToListAsync();
 
@@ -233,8 +239,11 @@ namespace PitchGenApi.Controllers
                 // carries no instruction.
                 runtimeReplacements[PlaceholderEngine.ManualInstructionKey] = manualInstruction;
 
-                foreach (var kv in customFields)
-                    runtimeReplacements[kv.Key] = kv.Value ?? "";
+                // One key per attribute — {Event name}, {Event Date}, … exactly as
+                // before — PLUS {all_custom_attributes}, which carries every
+                // attribute the contact has a value for as "Name: value" lines.
+                // Both work in the same blueprint.
+                PlaceholderEngine.RegisterCustomAttributes(runtimeReplacements, customFields);
 
                 // The signature is picked from Settings, not typed into the
                 // blueprint, so the saved copy is refreshed from that

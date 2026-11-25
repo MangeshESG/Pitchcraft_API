@@ -104,6 +104,10 @@ namespace PitchGenApi.Services
                     on value.field_id equals field.id
                 where value.contact_id == contactId
                    && field.client_id == clientId
+                // The CRM's own column order: {all_custom_attributes} renders
+                // these as a list, so it should read the way the user sees the
+                // columns rather than in value-row order.
+                orderby field.sort_order, field.id
                 select new { field.field_name, value.value }
             ).ToListAsync();
 

@@ -1378,12 +1378,17 @@ namespace PitchGenApi.Controllers
                 // note in EmailGenerationController. A contact carrying another
                 // client's values would otherwise collide on shared field names
                 // ("Status", "Contact type", …) when keyed by name below.
+                //
+                // Ordered by the CRM's own column order, for the reason given in
+                // EmailGenerationController: {all_custom_attributes} renders
+                // these as a list and should read the way the columns do.
                 var customFieldRows = await (
                     from value in _dbContext.contact_custom_field_values
                     join field in _dbContext.crm_custom_fields
                         on value.field_id equals field.id
                     where value.contact_id == request.ContactId
                        && field.client_id == parsedClientId
+                    orderby field.sort_order, field.id
                     select new { field.field_name, value.value }
                 ).ToListAsync();
 
@@ -1420,8 +1425,9 @@ namespace PitchGenApi.Controllers
                     ["search_output_summary"] = ""
                 };
 
-                foreach (var kv in customFields)
-                    runtimeReplacements[kv.Key] = kv.Value ?? "";
+                // Per-attribute tokens as before, plus the all-in-one
+                // {all_custom_attributes} block. See PlaceholderEngine.
+                PlaceholderEngine.RegisterCustomAttributes(runtimeReplacements, customFields);
 
                 // Refreshed from Settings → Email signature before the prompt
                 // is built, for the reason given in SignatureResolver: the
