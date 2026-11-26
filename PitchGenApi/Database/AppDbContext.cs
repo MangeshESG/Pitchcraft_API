@@ -28,6 +28,8 @@ namespace PitchGenApi.Database
         public DbSet<ContactListCategory> contact_list_categories { get; set; }
         public DbSet<WebsiteContactIntegration> website_api_keys { get; set; }
         public DbSet<Contact> contacts { get; set; }
+        public DbSet<FavoriteContact> favorite_contacts { get; set; }
+        public DbSet<FavoriteCollection> favorite_collections { get; set; }
         public DbSet<Segment> segments { get; set; }
         public DbSet<SegmentContact> segmentContacts { get; set; }
         public DbSet<ToneSettings> ToneSettings { get; set; }
@@ -176,6 +178,12 @@ namespace PitchGenApi.Database
             modelBuilder.Entity<Contact>()
                 .HasIndex(c => new { c.DataFileId, c.email })
                 .IsUnique();
+
+            modelBuilder.Entity<FavoriteContact>()
+                .HasKey(favorite => new { favorite.client_id, favorite.contact_id });
+
+            modelBuilder.Entity<FavoriteCollection>()
+                .HasKey(favorite => new { favorite.client_id, favorite.item_type, favorite.item_id });
 
             // Composite primary key for SegmentContact
             modelBuilder.Entity<SegmentContact>()

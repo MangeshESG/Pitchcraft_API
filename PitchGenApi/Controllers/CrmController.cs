@@ -2092,6 +2092,9 @@ namespace PitchGenApi.Controllers
         ");
 
                 // 3️⃣ Delete data file
+                await _context.favorite_collections.Where(item =>
+                    item.client_id == clientId && item.item_type == "list" && item.item_id == dataFileId)
+                    .ExecuteDeleteAsync();
                 _context.data_files.Remove(dataFile);
                 await _context.SaveChangesAsync();
 
@@ -2999,12 +3002,136 @@ namespace PitchGenApi.Controllers
                 chartData
             });
         }
+        [HttpGet("favorite-contacts")]
+        public async Task<IActionResult> GetFavoriteContacts([FromQuery] int clientId)
+        {
+            if (clientId <= 0) return BadRequest(new { message = "Valid clientId is required." });
+
+            var contactIds = await _context.favorite_contacts.AsNoTracking()
+                .Where(favorite => favorite.client_id == clientId)
+                .Select(favorite => favorite.contact_id)
+                .ToListAsync();
+
+            return Ok(new { contactIds });
+        }
+
+        public sealed class FavoriteContactRequest
+        {
+            public int ClientId { get; set; }
+            public int ContactId { get; set; }
+            public bool IsFavorite { get; set; }
+        }
+
+        [HttpPost("favorite-contacts")]
+        public async Task<IActionResult> SetFavoriteContact([FromBody] FavoriteContactRequest request)
+        {
+            if (request.ClientId <= 0 || request.ContactId <= 0)
+                return BadRequest(new { message = "Valid clientId and contactId are required." });
+
+            var belongsToClient = await _context.contacts.AsNoTracking()
+                .AnyAsync(contact => contact.id == request.ContactId &&
+                    contact.DataFileId.HasValue && _context.data_files.Any(file =>
+                        file.id == contact.DataFileId.Value && file.client_id == request.ClientId));
+            if (!belongsToClient) return NotFound(new { message = "Contact not found for this client." });
+
+            var favorite = await _context.favorite_contacts.FindAsync(request.ClientId, request.ContactId);
+            if (request.IsFavorite && favorite == null)
+                _context.favorite_contacts.Add(new FavoriteContact
+                {
+                    client_id = request.ClientId,
+                    contact_id = request.ContactId
+                });
+            else if (!request.IsFavorite && favorite != null)
+                _context.favorite_contacts.Remove(favorite);
+
+            await _context.SaveChangesAsync();
+            return Ok(new { request.ContactId, request.IsFavorite });
+        }
+
+        [HttpGet("favorite-collections")]
+        public async Task<IActionResult> GetFavoriteCollections([FromQuery] int clientId)
+        {
+            if (clientId <= 0) return BadRequest(new { message = "Valid clientId is required." });
+
+            var favorites = await _context.favorite_collections.AsNoTracking()
+                .Where(item => item.client_id == clientId)
+                .Select(item => new { item.item_type, item.item_id })
+                .ToListAsync();
+
+            return Ok(new
+            {
+                listIds = favorites.Where(item => item.item_type == "list").Select(item => item.item_id),
+                viewIds = favorites.Where(item => item.item_type == "view").Select(item => item.item_id)
+            });
+        }
+
+        public sealed class FavoriteCollectionRequest
+        {
+            public int ClientId { get; set; }
+            public string ItemType { get; set; } = "";
+            public int ItemId { get; set; }
+            public bool IsFavorite { get; set; }
+        }
+
+        [HttpPost("favorite-collections")]
+        public async Task<IActionResult> SetFavoriteCollection([FromBody] FavoriteCollectionRequest request)
+        {
+            if (request.ClientId <= 0 || (request.ItemType != "list" && request.ItemType != "view"))
+                return BadRequest(new { message = "Valid clientId and itemType are required." });
+
+            var belongsToClient = request.ItemType == "list"
+                ? request.ItemId > 0 && await _context.data_files.AnyAsync(item =>
+                    item.id == request.ItemId && item.client_id == request.ClientId)
+                : request.ItemId == UnsubscribeSystemViewId || await _context.crm_views.AnyAsync(item =>
+                    item.id == request.ItemId && item.client_id == request.ClientId);
+            if (!belongsToClient) return NotFound(new { message = "List or view not found for this client." });
+
+            var favorite = await _context.favorite_collections.FindAsync(
+                request.ClientId, request.ItemType, request.ItemId);
+            if (request.IsFavorite && favorite == null)
+                _context.favorite_collections.Add(new FavoriteCollection
+                {
+                    client_id = request.ClientId,
+                    item_type = request.ItemType,
+                    item_id = request.ItemId
+                });
+            else if (!request.IsFavorite && favorite != null)
+                _context.favorite_collections.Remove(favorite);
+
+            await _context.SaveChangesAsync();
+            return Ok(new { request.ItemType, request.ItemId, request.IsFavorite });
+        }
+
+        [HttpGet("dashboard-recent-unsubscribed")]
+        public async Task<IActionResult> GetDashboardRecentUnsubscribed([FromQuery] int clientId)
+        {
+            if (clientId <= 0) return BadRequest(new { message = "Valid clientId is required." });
+
+            var contacts = await _context.UnsubscribedContacts.AsNoTracking()
+                .Where(item => item.ClientId == clientId)
+                .OrderByDescending(item => item.CreatedAt)
+                .Take(3)
+                .Select(item => new
+                {
+                    item.Email,
+                    item.CreatedAt,
+                    name = _context.contacts.Where(contact => contact.id == item.ContactId)
+                        .Select(contact => contact.full_name).FirstOrDefault(),
+                    company = _context.contacts.Where(contact => contact.id == item.ContactId)
+                        .Select(contact => contact.company_name).FirstOrDefault()
+                })
+                .ToListAsync();
+
+            return Ok(contacts);
+        }
+
         [HttpGet("dashboard-contacts")]
         public async Task<IActionResult> GetDashboardContacts(
             [FromQuery] int clientId,
             [FromQuery] int pageNumber = 1,
             [FromQuery] int pageSize = 8,
-            [FromQuery] string? search = null)
+            [FromQuery] string? search = null,
+            [FromQuery] bool favoritesOnly = false)
         {
             try
             {
@@ -3026,6 +3153,10 @@ namespace PitchGenApi.Controllers
                 var contactsQuery = _context.contacts
                     .AsNoTracking()
                     .Where(c => c.DataFileId.HasValue && dataFileIds.Contains(c.DataFileId.Value));
+
+                if (favoritesOnly)
+                    contactsQuery = contactsQuery.Where(contact => _context.favorite_contacts.Any(favorite =>
+                        favorite.client_id == clientId && favorite.contact_id == contact.id));
 
                 if (!string.IsNullOrWhiteSpace(search))
                 {
@@ -4863,6 +4994,9 @@ namespace PitchGenApi.Controllers
                 _context.crm_view_excluded_datafiles.RemoveRange(
                     _context.crm_view_excluded_datafiles.Where(x => x.view_id == viewId));
 
+                await _context.favorite_collections.Where(item =>
+                    item.client_id == view.client_id && item.item_type == "view" && item.item_id == viewId)
+                    .ExecuteDeleteAsync();
                 _context.crm_views.Remove(view);
 
                 await _context.SaveChangesAsync();
