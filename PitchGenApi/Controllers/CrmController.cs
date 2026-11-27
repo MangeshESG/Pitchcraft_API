@@ -3102,13 +3102,53 @@ namespace PitchGenApi.Controllers
             return Ok(new { request.ItemType, request.ItemId, request.IsFavorite });
         }
 
-        [HttpGet("dashboard-recent-unsubscribed")]
-        public async Task<IActionResult> GetDashboardRecentUnsubscribed([FromQuery] int clientId)
+        private static (DateTime? from, DateTime? to) DashboardActivityWindow(string dateRange)
+        {
+            var now = DateTime.Now;
+            return (dateRange ?? "1d").ToLowerInvariant() switch
+            {
+                "all" => (null, null),
+                "24h" => (now.AddHours(-24), null),
+                "yesterday" => (now.Date.AddDays(-1), now.Date),
+                "7d" => (now.AddDays(-7), null),
+                "30d" => (now.AddDays(-30), null),
+                _ => (now.Date, null)
+            };
+        }
+
+        [HttpGet("dashboard-website-enquiries")]
+        public async Task<IActionResult> GetDashboardWebsiteEnquiries(
+            [FromQuery] int clientId, [FromQuery] string dateRange = "1d")
         {
             if (clientId <= 0) return BadRequest(new { message = "Valid clientId is required." });
+            var (from, to) = DashboardActivityWindow(dateRange);
+            var websiteListIds = _context.website_api_keys.AsNoTracking()
+                .Where(item => item.client_id == clientId)
+                .Select(item => item.data_file_id);
+
+            var counts = await _context.contacts.AsNoTracking()
+                .Where(contact => contact.DataFileId.HasValue &&
+                    websiteListIds.Contains(contact.DataFileId.Value) &&
+                    (!from.HasValue || contact.created_at >= from.Value) &&
+                    (!to.HasValue || contact.created_at < to.Value))
+                .GroupBy(contact => contact.DataFileId!.Value)
+                .Select(group => new { dataFileId = group.Key, filteredCount = group.Count() })
+                .ToListAsync();
+
+            return Ok(counts);
+        }
+
+        [HttpGet("dashboard-recent-unsubscribed")]
+        public async Task<IActionResult> GetDashboardRecentUnsubscribed(
+            [FromQuery] int clientId, [FromQuery] string dateRange = "1d")
+        {
+            if (clientId <= 0) return BadRequest(new { message = "Valid clientId is required." });
+            var (from, to) = DashboardActivityWindow(dateRange);
 
             var contacts = await _context.UnsubscribedContacts.AsNoTracking()
-                .Where(item => item.ClientId == clientId)
+                .Where(item => item.ClientId == clientId &&
+                    (!from.HasValue || item.CreatedAt >= from.Value) &&
+                    (!to.HasValue || item.CreatedAt < to.Value))
                 .OrderByDescending(item => item.CreatedAt)
                 .Take(3)
                 .Select(item => new
@@ -3123,6 +3163,46 @@ namespace PitchGenApi.Controllers
                 .ToListAsync();
 
             return Ok(contacts);
+        }
+
+        [HttpGet("dashboard-recent-mail-events")]
+        public async Task<IActionResult> GetDashboardRecentMailEvents(
+            [FromQuery] int clientId, [FromQuery] string dateRange = "1d")
+        {
+            if (clientId <= 0) return BadRequest(new { message = "Valid clientId is required." });
+            var (from, to) = DashboardActivityWindow(dateRange);
+
+            var bounceBack = await _context.EmailLogs.AsNoTracking()
+                .Where(log => log.ClientId == clientId && log.IsBounced && log.process_name != "ThreadReply" &&
+                    (!from.HasValue || (log.BounceDate ?? log.SentAt) >= from.Value) &&
+                    (!to.HasValue || (log.BounceDate ?? log.SentAt) < to.Value))
+                .OrderByDescending(log => log.BounceDate ?? log.SentAt)
+                .Take(3)
+                .Select(log => new
+                {
+                    email = log.ToEmail,
+                    name = log.EmailRecipientName,
+                    detail = log.BounceReason,
+                    date = log.BounceDate ?? log.SentAt
+                })
+                .ToListAsync();
+
+            var autoReplies = await _context.EmailReplies.AsNoTracking()
+                .Where(reply => reply.ClientId == clientId && reply.IsAutoReply && reply.IsDeleted != true &&
+                    (!from.HasValue || (reply.Date ?? reply.CreatedAt) >= from.Value) &&
+                    (!to.HasValue || (reply.Date ?? reply.CreatedAt) < to.Value))
+                .OrderByDescending(reply => reply.Date ?? reply.CreatedAt)
+                .Take(3)
+                .Select(reply => new
+                {
+                    email = reply.FromEmail,
+                    name = reply.FromName,
+                    detail = reply.Subject,
+                    date = reply.Date ?? reply.CreatedAt
+                })
+                .ToListAsync();
+
+            return Ok(new { bounceBack, autoReplies });
         }
 
         [HttpGet("dashboard-contacts")]
