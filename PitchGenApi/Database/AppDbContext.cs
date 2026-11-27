@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using PitchGenApi.Model;
 using PitchGenApi.Models;
 
@@ -93,6 +93,7 @@ namespace PitchGenApi.Database
 
         // ✅ Audience Assurance — the four validation checks run over contacts
         public DbSet<ContactFitBrief> contact_fit_briefs { get; set; }
+        public DbSet<EnrichmentPreset> enrichment_presets { get; set; }
         public DbSet<ContactValidation> contact_validations { get; set; }
         public DbSet<ContactValidationJob> contact_validation_jobs { get; set; }
         public DbSet<ContactValidationJobItem> contact_validation_job_items { get; set; }
@@ -267,6 +268,20 @@ namespace PitchGenApi.Database
 
                 // At most one default per client, enforced in the database so a
                 // concurrent "set default" cannot leave two.
+                entity.HasIndex(e => e.ClientId)
+                      .IsUnique()
+                      .HasFilter("[is_default] = 1");
+            });
+
+            // The saved column-and-instruction combinations the enrich panel
+            // offers. Same shape of rules as a brief: names unique per client,
+            // at most one default.
+            modelBuilder.Entity<EnrichmentPreset>(entity =>
+            {
+                entity.ToTable("enrichment_presets");
+                entity.HasKey(e => e.Id);
+                entity.HasIndex(e => new { e.ClientId, e.Name }).IsUnique();
+
                 entity.HasIndex(e => e.ClientId)
                       .IsUnique()
                       .HasFilter("[is_default] = 1");

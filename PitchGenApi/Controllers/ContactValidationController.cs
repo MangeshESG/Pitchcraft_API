@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using PitchGenApi.Background;
@@ -359,6 +359,203 @@ namespace PitchGenApi.Controllers
             UpdatedAt = brief.UpdatedAt,
             UpdatedBy = brief.UpdatedBy
         };
+
+        // =============================================================
+        // Enrichment presets
+        // =============================================================
+        //
+        // A preset is the enrich panel's column selection and instruction,
+        // saved under a name so the same run is one click next week. Scoped to
+        // the client, like a brief, because that is the account the panel runs
+        // in wherever it is opened from.
+
+        /// <summary>
+        /// The ceiling a run enforces, repeated so a preset cannot be saved
+        /// that no run would accept.
+        /// </summary>
+        private const int MaxPresetFields = 25;
+
+        /// <summary>Matches the run's own truncation point.</summary>
+        private const int MaxPresetInstructionLength = 4000;
+
+        [HttpGet("presets")]
+        public async Task<IActionResult> GetPresets([FromQuery] int clientId)
+        {
+            if (clientId <= 0)
+                return BadRequest(new { success = false, message = "clientId must be greater than 0." });
+
+            var rows = await _context.enrichment_presets
+                .AsNoTracking()
+                .Where(p => p.ClientId == clientId)
+                // Default first, then alphabetical - the panel preselects the
+                // default and the rest read as a plain list.
+                .OrderByDescending(p => p.IsDefault)
+                .ThenBy(p => p.Name)
+                .ToListAsync();
+
+            return Ok(new { success = true, presets = rows.Select(ToDto).ToList() });
+        }
+
+        [HttpPost("presets")]
+        public async Task<IActionResult> SavePreset([FromBody] SaveEnrichmentPresetDto dto)
+        {
+            if (dto == null || dto.ClientId <= 0)
+                return BadRequest(new { success = false, message = "A valid client is required." });
+
+            if (string.IsNullOrWhiteSpace(dto.Name))
+                return BadRequest(new { success = false, message = "Give the preset a name." });
+
+            // Duplicates would make the chips lie about how many columns a run
+            // covers, and the ceiling is the run's, not this endpoint's.
+            var fields = (dto.Fields ?? new List<string>())
+                .Select(f => f?.Trim() ?? "")
+                .Where(f => f.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (fields.Count == 0)
+                return BadRequest(new { success = false, message = "Pick at least one column before saving a preset." });
+
+            if (fields.Count > MaxPresetFields)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = $"A preset can hold at most {MaxPresetFields} columns."
+                });
+            }
+
+            var name = dto.Name.Trim();
+
+            var clash = await _context.enrichment_presets
+                .AnyAsync(p => p.ClientId == dto.ClientId && p.Name == name && p.Id != dto.Id);
+
+            if (clash)
+                return BadRequest(new { success = false, message = $"A preset called '{name}' already exists." });
+
+            var instructions = dto.Instructions?.Trim();
+            if (instructions?.Length > MaxPresetInstructionLength)
+                instructions = instructions[..MaxPresetInstructionLength];
+
+            EnrichmentPreset preset;
+
+            if (dto.Id > 0)
+            {
+                var existing = await _context.enrichment_presets
+                    .FirstOrDefaultAsync(p => p.Id == dto.Id && p.ClientId == dto.ClientId);
+
+                if (existing == null)
+                    return NotFound(new { success = false, message = "That preset no longer exists." });
+
+                preset = existing;
+                preset.Name = name;
+                preset.FieldsJson = JsonConvert.SerializeObject(fields);
+                preset.Instructions = string.IsNullOrWhiteSpace(instructions) ? null : instructions;
+                preset.UpdatedAt = DateTime.UtcNow;
+                preset.UpdatedBy = dto.UpdatedBy;
+            }
+            else
+            {
+                preset = new EnrichmentPreset
+                {
+                    ClientId = dto.ClientId,
+                    Name = name,
+                    FieldsJson = JsonConvert.SerializeObject(fields),
+                    Instructions = string.IsNullOrWhiteSpace(instructions) ? null : instructions,
+                    CreatedAt = DateTime.UtcNow,
+                    UpdatedBy = dto.UpdatedBy
+                };
+
+                _context.enrichment_presets.Add(preset);
+            }
+
+            if (dto.IsDefault)
+                await ClearOtherPresetDefaultsAsync(dto.ClientId, preset);
+
+            preset.IsDefault = dto.IsDefault;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { success = true, preset = ToDto(preset) });
+        }
+
+        [HttpPost("presets/set-default")]
+        public async Task<IActionResult> SetDefaultPreset([FromQuery] int clientId, [FromQuery] int presetId)
+        {
+            var preset = await _context.enrichment_presets
+                .FirstOrDefaultAsync(p => p.Id == presetId && p.ClientId == clientId);
+
+            if (preset == null)
+                return NotFound(new { success = false, message = "That preset no longer exists." });
+
+            await ClearOtherPresetDefaultsAsync(clientId, preset);
+            preset.IsDefault = true;
+            preset.UpdatedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { success = true, preset = ToDto(preset) });
+        }
+
+        [HttpPost("presets/delete/{id}")]
+        public async Task<IActionResult> DeletePreset(int id, [FromQuery] int clientId)
+        {
+            var preset = await _context.enrichment_presets
+                .FirstOrDefaultAsync(p => p.Id == id && p.ClientId == clientId);
+
+            if (preset == null)
+                return NotFound(new { success = false, message = "That preset no longer exists." });
+
+            _context.enrichment_presets.Remove(preset);
+            await _context.SaveChangesAsync();
+
+            // Runs started from it are untouched: a preset is a shortcut to a
+            // selection, not a record of what was run.
+            return Ok(new { success = true, message = "Preset deleted." });
+        }
+
+        /// <summary>
+        /// Clears the flag on whatever else currently holds it, so the
+        /// filtered unique index cannot be violated by promoting a second one.
+        /// </summary>
+        private async Task ClearOtherPresetDefaultsAsync(int clientId, EnrichmentPreset keeping)
+        {
+            var others = await _context.enrichment_presets
+                .Where(p => p.ClientId == clientId && p.IsDefault)
+                .ToListAsync();
+
+            foreach (var other in others.Where(o => !ReferenceEquals(o, keeping)))
+                other.IsDefault = false;
+        }
+
+        private static EnrichmentPresetDto ToDto(EnrichmentPreset preset)
+        {
+            List<string> fields;
+
+            try
+            {
+                // A row hand-edited in SSMS should cost one empty preset, not
+                // a 500 that takes the whole list down with it.
+                fields = JsonConvert.DeserializeObject<List<string>>(preset.FieldsJson ?? "[]")
+                         ?? new List<string>();
+            }
+            catch (JsonException)
+            {
+                fields = new List<string>();
+            }
+
+            return new EnrichmentPresetDto
+            {
+                Id = preset.Id,
+                Name = preset.Name,
+                Fields = fields,
+                Instructions = preset.Instructions,
+                IsDefault = preset.IsDefault,
+                CreatedAt = preset.CreatedAt,
+                UpdatedAt = preset.UpdatedAt,
+                UpdatedBy = preset.UpdatedBy
+            };
+        }
 
          //=============================================================
          //Runs
